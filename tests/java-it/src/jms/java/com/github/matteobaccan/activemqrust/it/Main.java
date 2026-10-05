@@ -47,6 +47,12 @@ public final class Main {
             case "integration":
                 code = new Integration(url, user, password, opts.containsKey("long")).runAll(opts.get("only"));
                 break;
+            case "compression":
+                code = new CompressionChecks(url, user, password, opts).run();
+                break;
+            case "compression-golden":
+                code = new CompressionChecks(url, user, password, opts).golden();
+                break;
             case "bench":
                 code = new Bench(url, user, password, opts).run();
                 break;

@@ -293,6 +293,12 @@ impl Dest {
         self.dest.kind.is_queue()
     }
 
+    /// Holds this destination's lock until the returned guard is dropped (lock-scope tests).
+    #[doc(hidden)]
+    pub fn hold_lock(&self) -> impl Sized + '_ {
+        self.state.lock()
+    }
+
     // -- producers ----------------------------------------------------------
 
     pub fn add_producer(&self, id: ProducerId, meta: ProducerMeta) {

@@ -8,8 +8,8 @@ use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
+use bytes::Buf;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, watch, Notify};
 
@@ -30,32 +30,100 @@ const INVALID_SELECTOR: &str = "javax.jms.InvalidSelectorException";
 const SECURITY_EXCEPTION: &str = "java.lang.SecurityException";
 const UNSUPPORTED: &str = "java.lang.UnsupportedOperationException";
 
-/// Reads one frame body (without the size prefix). `Ok(None)` on clean EOF.
-async fn read_frame(r: &mut OwnedReadHalf, max: i64) -> std::io::Result<Option<Bytes>> {
-    let mut len = [0u8; 4];
-    match r.read_exact(&mut len).await {
-        Ok(_) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
-        Err(e) => return Err(e),
-    }
-    let size = i32::from_be_bytes(len);
-    if size < 0 || size as i64 > max {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            format!("frame of {size} bytes exceeds the maximum frame size of {max} bytes"),
-        ));
-    }
-    let mut buf = BytesMut::zeroed(size as usize);
-    r.read_exact(&mut buf).await?;
-    Ok(Some(buf.freeze()))
+/// Size of the reusable per-connection read buffer. Frames larger than this are read
+/// directly into their own allocation.
+const READ_BUF: usize = 64 * 1024;
+
+/// Buffered frame reader of one connection. Many small frames arrive with one `recv`; each is
+/// cut from the reusable buffer without allocating (`split_to`). A message frame, which the broker
+/// may keep for a long time, is copied into its own exactly sized allocation so that a stored
+/// message never keeps the shared read buffer (and its neighbouring frames) alive. A frame larger
+/// than the buffer is read straight from the socket into its own allocation, without a copy.
+/// The message `content` and `marshalledProperties` are then `Bytes` slices of that frame.
+pub struct FrameReader<R> {
+    r: R,
+    buf: BytesMut,
 }
 
-/// Writes all chunks with vectored writes (large bodies are sent without copying).
-async fn write_chunks(w: &mut OwnedWriteHalf, chunks: &mut std::collections::VecDeque<Bytes>) -> std::io::Result<()> {
-    use bytes::Buf;
+impl<R: AsyncRead + Unpin> FrameReader<R> {
+    pub fn new(r: R) -> Self {
+        FrameReader { r, buf: BytesMut::with_capacity(READ_BUF) }
+    }
+
+    /// Reads more bytes into the buffer; 0 means end of stream.
+    async fn fill(&mut self) -> std::io::Result<usize> {
+        if self.buf.capacity() - self.buf.len() < READ_BUF / 4 {
+            // Reclaims the space of frames already handed out when they have been dropped.
+            self.buf.reserve(READ_BUF);
+        }
+        self.r.read_buf(&mut self.buf).await
+    }
+
+    /// Reads one frame body (without the size prefix). `Ok(None)` on clean EOF.
+    pub async fn next(&mut self, max: i64) -> std::io::Result<Option<Bytes>> {
+        while self.buf.len() < 4 {
+            if self.fill().await? == 0 {
+                return Ok(None);
+            }
+        }
+        let size = i32::from_be_bytes([self.buf[0], self.buf[1], self.buf[2], self.buf[3]]);
+        if size < 0 || size as i64 > max {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("frame of {size} bytes exceeds the maximum frame size of {max} bytes"),
+            ));
+        }
+        let size = size as usize;
+        if size > READ_BUF && self.buf.len() < 4 + size {
+            // Large frame: own allocation, the rest is read without passing through the buffer.
+            self.buf.advance(4);
+            let mut frame = BytesMut::with_capacity(size);
+            frame.extend_from_slice(&self.buf);
+            self.buf.clear();
+            while frame.len() < size {
+                let want = (size - frame.len()) as u64;
+                if (&mut self.r).take(want).read_buf(&mut frame).await? == 0 {
+                    return Err(std::io::ErrorKind::UnexpectedEof.into());
+                }
+            }
+            return Ok(Some(frame.freeze()));
+        }
+        while self.buf.len() < 4 + size {
+            self.buf.reserve(4 + size - self.buf.len());
+            if self.r.read_buf(&mut self.buf).await? == 0 {
+                return Err(std::io::ErrorKind::UnexpectedEof.into());
+            }
+        }
+        self.buf.advance(4);
+        let frame = self.buf.split_to(size);
+        if size > 0 && t::is_message_type(frame[0]) {
+            Ok(Some(Bytes::copy_from_slice(&frame)))
+        } else {
+            Ok(Some(frame.freeze()))
+        }
+    }
+}
+
+/// Reads one frame body (without the size prefix). `Ok(None)` on clean EOF.
+async fn read_frame<R: AsyncRead + Unpin>(r: &mut FrameReader<R>, max: i64) -> std::io::Result<Option<Bytes>> {
+    r.next(max).await
+}
+
+/// Most slices passed to one vectored write.
+const MAX_IO_SLICES: usize = 64;
+/// Encoded bytes gathered from the queue before they are written.
+const BATCH_BYTES: usize = 256 * 1024;
+
+/// Writes all chunks with vectored writes (large bodies are sent without copying), at most
+/// `MAX_IO_SLICES` slices per call.
+async fn write_chunks<W: AsyncWrite + Unpin>(w: &mut W, chunks: &mut std::collections::VecDeque<Bytes>) -> std::io::Result<()> {
     while !chunks.is_empty() {
-        let slices: Vec<std::io::IoSlice> = chunks.iter().take(64).map(|c| std::io::IoSlice::new(c)).collect();
-        let mut n = w.write_vectored(&slices).await?;
+        let mut slices = [std::io::IoSlice::new(&[]); MAX_IO_SLICES];
+        let count = chunks.len().min(MAX_IO_SLICES);
+        for (s, c) in slices.iter_mut().zip(chunks.iter()) {
+            *s = std::io::IoSlice::new(c);
+        }
+        let mut n = w.write_vectored(&slices[..count]).await?;
         if n == 0 {
             return Err(std::io::Error::new(std::io::ErrorKind::WriteZero, "socket closed"));
         }
@@ -74,14 +142,15 @@ async fn write_chunks(w: &mut OwnedWriteHalf, chunks: &mut std::collections::Vec
 }
 
 /// Writer task: batches queued commands into few socket writes and sends keep-alives.
-async fn writer_task(
-    mut w: OwnedWriteHalf,
+/// It never waits for more commands: whatever is already queued (up to `BATCH_BYTES` of
+/// encoded data) is written together, then the next batch starts.
+async fn writer_task<W: AsyncWrite + Unpin>(
+    mut w: W,
     mut rx: mpsc::UnboundedReceiver<Out>,
-    version: i32,
+    codec: Box<dyn WireCodec>,
     keepalive: Option<Duration>,
     closed: Arc<Notify>,
 ) {
-    let codec: Box<dyn WireCodec> = Box::new(LooseCodec::new(version));
     let mut buf = ChunkBuf::new();
     loop {
         let first = match keepalive {
@@ -103,7 +172,7 @@ async fn writer_task(
             }
         };
         push(first, &mut buf, &mut close);
-        while !close && buf.len() < 256 * 1024 {
+        while !close && buf.len() < BATCH_BYTES {
             match rx.try_recv() {
                 Ok(o) => push(o, &mut buf, &mut close),
                 Err(_) => break,
@@ -121,6 +190,10 @@ async fn writer_task(
     closed.notify_waiters();
     closed.notify_one();
 }
+
+#[cfg(test)]
+#[path = "connection_tests.rs"]
+mod tests;
 
 struct ConsumerReg {
     dest: Option<Arc<Dest>>,
@@ -153,10 +226,30 @@ struct Conn {
     closing: bool,
 }
 
+/// Builds the wire codec of a connection for its negotiated version.
+pub type CodecFactory = fn(i32) -> Box<dyn WireCodec>;
+
+fn loose_codec(version: i32) -> Box<dyn WireCodec> {
+    Box::new(LooseCodec::new(version))
+}
+
 /// Serves one TCP connection until it closes.
-pub async fn serve(stream: TcpStream, remote: SocketAddr, broker: Arc<Broker>, mut shutdown: watch::Receiver<bool>) {
+pub async fn serve(stream: TcpStream, remote: SocketAddr, broker: Arc<Broker>, shutdown: watch::Receiver<bool>) {
+    serve_with_codec(stream, remote, broker, shutdown, loose_codec).await
+}
+
+/// Like `serve`, with every command after the `WireFormatInfo` exchange encoded and decoded
+/// by the codec that `make_codec` builds.
+pub async fn serve_with_codec(
+    stream: TcpStream,
+    remote: SocketAddr,
+    broker: Arc<Broker>,
+    mut shutdown: watch::Receiver<bool>,
+    make_codec: CodecFactory,
+) {
     let _ = stream.set_nodelay(true);
-    let (mut r, w) = stream.into_split();
+    let (r, w) = stream.into_split();
+    let mut r = FrameReader::new(r);
     let max_frame = broker.cfg.max_frame_size;
 
     // 1. The client's WireFormatInfo (always loose encoding, version independent).
@@ -202,7 +295,7 @@ pub async fn serve(stream: TcpStream, remote: SocketAddr, broker: Arc<Broker>, m
     handle.info.lock().version = neg.version;
     let keepalive = (neg.max_inactivity_ms > 0).then(|| Duration::from_millis((neg.max_inactivity_ms / 2).max(1) as u64));
     let closed = Arc::new(Notify::new());
-    let writer = tokio::spawn(writer_task(w, rx, neg.version, keepalive, closed.clone()));
+    let writer = tokio::spawn(writer_task(w, rx, make_codec(neg.version), keepalive, closed.clone()));
     handle.send(Command::WireFormatInfo(wireformat::broker_wire_format(&client_wf, max_frame)));
     handle.send(Command::BrokerInfo(BrokerInfo {
         header: Header::default(),
@@ -234,7 +327,7 @@ pub async fn serve(stream: TcpStream, remote: SocketAddr, broker: Arc<Broker>, m
         txs: HashMap::new(),
         closing: false,
     };
-    let codec: Box<dyn WireCodec> = Box::new(LooseCodec::new(neg.version));
+    let codec = make_codec(neg.version);
 
     // 3. Read loop with the inactivity timeout.
     let inactivity = (neg.max_inactivity_ms > 0).then(|| Duration::from_millis(neg.max_inactivity_ms as u64));

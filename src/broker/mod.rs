@@ -24,13 +24,14 @@ use entry::{Entry, Memory, Meta, ENTRY_OVERHEAD};
 
 pub const DLQ_NAME: &str = "ActiveMQ.DLQ";
 
-const SHARDS: usize = 16;
+/// Number of registry partitions (a power of two, so the shard is a mask of the hash).
+pub const SHARDS: usize = 64;
 
 fn shard_of(d: &Destination) -> usize {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     d.hash(&mut h);
-    (h.finish() as usize) % SHARDS
+    (h.finish() as usize) & (SHARDS - 1)
 }
 
 pub fn now_ms() -> i64 {
@@ -59,6 +60,11 @@ pub struct BrokerStats {
     pub dropped_async: AtomicU64,
     pub expired_on_arrival: AtomicU64,
     pub duplicates: AtomicU64,
+    /// Bodies compressed by the broker on entry.
+    pub compressed: AtomicU64,
+    /// Bodies compressed by the broker and then discarded because the saving was below
+    /// `compress_min_saving_pct` (CPU spent for nothing: a hint to raise the threshold).
+    pub compress_discarded: AtomicU64,
 }
 
 pub struct Broker {
@@ -318,8 +324,14 @@ impl Broker {
         self.cfg.compress_threshold_bytes > 0 && !msg.compressed && msg.content_len() > 1024 * 1024
     }
 
-    pub fn compress(&self, msg: &mut Message) {
-        compress::maybe_compress(msg, self.cfg.compress_threshold_bytes, self.cfg.compress_min_saving_pct);
+    pub fn compress(&self, msg: &mut Message) -> compress::Outcome {
+        let outcome = compress::maybe_compress(msg, self.cfg.compress_threshold_bytes, self.cfg.compress_min_saving_pct);
+        match outcome {
+            compress::Outcome::Compressed => self.stats.compressed.fetch_add(1, Ordering::Relaxed),
+            compress::Outcome::Discarded => self.stats.compress_discarded.fetch_add(1, Ordering::Relaxed),
+            compress::Outcome::Skipped => 0,
+        };
+        outcome
     }
 
     /// Checks the memory limit for a message of `size` bytes.

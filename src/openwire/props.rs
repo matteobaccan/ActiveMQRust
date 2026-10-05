@@ -8,6 +8,15 @@ use bytes::{Bytes, BytesMut};
 
 use super::codec::{decode_modified_utf8, encode_modified_utf8, err, CodecResult, Reader, Writer};
 
+/// Number of marshalled property maps decoded since start-up (exposed to tests: the hot path
+/// must not decode properties unless a selector needs them).
+static DECODE_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Property maps decoded so far, by any part of the broker.
+pub fn decode_count() -> u64 {
+    DECODE_COUNT.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 pub const NULL: u8 = 0;
 pub const BOOLEAN: u8 = 1;
 pub const BYTE: u8 = 2;
@@ -127,6 +136,7 @@ impl PrimitiveMap {
 
     /// Decodes a marshalled map (i32 count, then name/value pairs). A negative count means null.
     pub fn decode(data: &Bytes) -> CodecResult<Option<PrimitiveMap>> {
+        DECODE_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let mut r = Reader::new(data.clone());
         decode_map(&mut r, 0)
     }
