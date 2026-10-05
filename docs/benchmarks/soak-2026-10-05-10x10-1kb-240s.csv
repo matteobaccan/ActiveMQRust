@@ -1,4 +1,0 @@
-"Broker","Status","Reason","StartupMs","Sent","Received","Missing","Duplicates","OutOfOrder","P50us","P99us","MaxUs","MaxSendLagMs","BrokerCpuPctOneCore","BrokerCpuPctMachine","BrokerCpuMsPer1000Msg","ClientCpuPctOneCore","MachineCpuPct","BrokerWsAvgMB","BrokerWsPeakMB","BrokerPbAvgMB","BrokerPbPeakMB","ClientWsPeakMB","Seconds"
-"ActiveMQRust","ok","","72","24000","24000","0","0","0","693","1033","8779","0","3","0.375","301.4","6.72","4","10.6","10.9","14.8","15.6","334.3","240.9"
-"ActiveMQ 5.18.7","ok","","1838","24000","24000","0","0","0","742","1250","11998","0","5.58","0.697","560.5","6.49","3.7","182.4","234.8","641.9","667.3","238.7","241.3"
-"ActiveMQ 6.3.2","ok","","1877","24000","24000","0","0","0","746","1280","14565","0","5.68","0.71","571","6.61","4.2","192.2","246.9","644.8","666","241","241.3"

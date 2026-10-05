@@ -11,5 +11,5 @@
 
 ## 3. Documentation
 
-- [ ] 3.1 README: features list, configuration and load-test results explain the default and the measured trade-off
+- [x] 3.1 README: features list, configuration and load-test results explain the default and the measured trade-off
 - [x] 3.2 `openspec validate disable-broker-compression-by-default` passes

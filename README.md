@@ -7,7 +7,23 @@ Java applications that use the ActiveMQ driver (`activemq-client`) connect witho
 
 The goal is a broker that is **compatible** with ActiveMQ, **uses less RAM** and is **faster** than ActiveMQ, shipped as a single Windows executable with no dependencies.
 
-> **Project status:** version **0.2.0**. The broker is implemented and passes the Rust and Java test suites listed in [Tests and results](#tests-and-results). The specifications are [OpenSpec](https://github.com/Fission-AI/OpenSpec) specs in [`openspec/specs/`](openspec/specs/) (completed changes are archived in [`openspec/changes/archive/`](openspec/changes/archive/)). A soak comparison with ActiveMQ 5.18.7 and 6.3.2 is published; the full benchmark comparison is still to be run.
+> **Project status:** version **0.2.0**. The broker is implemented and passes every Rust and Java test suite listed in [Tests and results](#tests-and-results), which also holds all the load-test results against ActiveMQ 5.18.7 and 6.3.2. The specifications are [OpenSpec](https://github.com/Fission-AI/OpenSpec) specs in [`openspec/specs/`](openspec/specs/).
+
+## Performance at a glance
+
+Measured on the same Windows machine against Apache ActiveMQ 5.18.7 and 6.3.2 (both configured to keep everything in RAM), with the **same Java client** (`activemq-client` 5.18.7) for every broker: only the server changes. Every message was checked for losses, duplicates and order: ActiveMQRust delivered every message, in order and exactly once, in every run.
+
+| | **ActiveMQRust** | ActiveMQ 5.18.7 | ActiveMQ 6.3.2 |
+|---|---|---|---|
+| Start-up (process start → port open) | **57–72 ms** | 1.8–2.1 s | 1.8–2.2 s |
+| Memory at a steady 100 msg/s | **10.6 MB** | 182 MB | 193 MB |
+| CPU per 1,000 messages at a steady 100 msg/s | **301 ms** | 561 ms | 533 ms |
+| 50 KB messages, 20 + 20 clients at full speed | **529 MB/s, 153 MB RAM** | 404 MB/s, 1,080 MB | out of memory ¹ |
+| 15 KB messages, 20 + 20 clients at full speed | **1.66 million delivered, 390 MB/s** | out of memory ¹ | out of memory ¹ |
+| 300 KB messages, 20 + 20 clients at full speed | **547 MB/s, 202 MB RAM** | 545 MB/s, 1,237 MB | 544 MB/s, 1,097 MB |
+
+¹ The 4 GB JVM heap filled up with queued messages and the broker closed the connections; most messages were never delivered. With an **8 GB heap** ActiveMQ still ran out of memory at 15 KB, and at 50 KB ActiveMQ 6.3.2 completed at 405 MB/s with a 7.7 GB peak (ActiveMQRust: 529 MB/s, 225 MB peak). Details, every figure and the test conditions are in [Load tests](#load-tests).
+
 
 ## What it is good at
 
@@ -47,7 +63,7 @@ After a restart the broker starts empty. Clients that use a `failover:` URL reco
 - **Message IDs** structurally identical to ActiveMQ's.
 - **JMS SQL-92 selectors** (`JMSCorrelationID IN ('A','C')`, `LIKE`, `BETWEEN`, …).
 - **Message expiration** (time-to-live): expired messages are deleted from memory.
-- **Compression**: messages compressed by the client (`useCompression=true`) pass through untouched; the broker quickly compresses those larger than 32 KB.
+- **Compression**: messages compressed by the client (`useCompression=true`) pass through untouched. The broker can also compress large bodies itself to save RAM (`compress_threshold_kb`); this is off by default because it costs CPU and throughput (see [Load tests](#load-tests)).
 - **Non-durable topics**, **local transactions**, **temporary queues** (request/reply), **QueueBrowser**.
 - **Authentication** with username and password (plain text or Argon2 hash).
 - **Web admin console** with a login form and sessions: queues (every column sortable), consumers, producers, connections and queue contents, a formatted view of XML bodies, a responsive layout with light and dark themes that follow the system, plus a JSON API.
@@ -254,26 +270,109 @@ While the soak scenario was being written, the multi-producer runs found a bug: 
 
 ### Load tests
 
-Soak test, 2026-10-05, one shared queue, every message checked for order per producer, losses and duplicates ([full report](docs/benchmarks/soak-2026-10-05.md)):
+**Conditions.** Windows 11 Pro for Workstations (build 26200), Intel Xeon W-2123 @ 3.60 GHz (4 cores, 8 logical processors), 31.7 GB RAM, OpenJDK 21.0.12. Brokers ran one at a time on the same machine, each restarted for every run:
+
+- **ActiveMQRust** release build with its default configuration (no broker compression, which is the default from 0.2.0), unless a row says otherwise.
+- **ActiveMQ 5.18.7 and 6.3.2** with [`scripts/activemq-bench/activemq-tuned.xml`](scripts/activemq-bench/activemq-tuned.xml): no persistence, VM queue cursor (no spooling to disk), no producer flow control, 3 GB memory limit, JVM `-Xmx4g`. No run logged a memory-limit, flow-control or spooling line, so ActiveMQ kept everything in RAM.
+- **Client**: the same Java program and the same driver for every broker, `activemq-client` 5.18.7 (the ActiveMQ 6.3.2 runs were repeated with this driver so that only the server changes). XML `TextMessage`s, NON_PERSISTENT, AUTO_ACKNOWLEDGE, async send, prefetch 1000, one shared queue.
+- **Checks on every message**: per-producer sequence increasing at every consumer, no message lost, none delivered twice, body length.
+- **Measures**: latency from send to receive of every message (p50 / p99 / max), broker CPU time over the run (as % of one core and as CPU milliseconds per 1,000 messages), broker Working Set and Private Bytes sampled every 0.5 s (average / peak), client CPU. Start-up is the time from process start to the OpenWire port listening.
+- Each row is a single run of `scripts\soak-compare.ps1` (scenario `soak` of the Java client); repeated runs vary by a few percent, except where noted.
+
+#### Steady load: 10 producers × 10 msg/s for 240 s, 10 consumers, 1 KB (24,000 messages)
 
 | | ActiveMQRust | ActiveMQ 5.18.7 | ActiveMQ 6.3.2 |
 |---|---|---|---|
-| **10 producers × 10 msg/s × 240 s, 10 consumers, 1 KB** | ok, 24,000 / 24,000 | ok, 24,000 / 24,000 | ok, 24,000 / 24,000 |
-| Missing / duplicates / out of order | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 |
-| Startup | **72 ms** | 1,838 ms | 1,877 ms |
-| Latency p50 / p99 | **0.69 / 1.03 ms** | 0.74 / 1.25 ms | 0.75 / 1.28 ms |
-| Broker CPU (one core) / per 1,000 messages | **3.0 % / 301 ms** | 5.6 % / 561 ms | 5.7 % / 571 ms |
-| Broker Working Set / Private Bytes (average) | **10.6 / 14.8 MB** | 182 / 642 MB | 192 / 645 MB |
-| **20 producers × 10 msg/s × 60 s, 20 consumers, 10 KB** | ok, 12,000 / 12,000 | ok, 12,000 / 12,000 | ok, 12,000 / 12,000 |
-| Missing / duplicates / out of order | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 |
-| Startup | **62 ms** | 1,825 ms | 1,825 ms |
-| Latency p50 / p99 | **0.75 / 1.14 ms** | 0.81 / 1.26 ms | 0.83 / 1.26 ms |
-| Broker CPU (one core) / per 1,000 messages | **6.2 % / 314 ms** | 16.2 % / 832 ms | 14.7 % / 757 ms |
-| Broker Working Set / Private Bytes (average) | **12.7 / 17.7 MB** | 222 / 651 MB | 228 / 649 MB |
+| Delivered | 24,000 / 24,000 | 24,000 / 24,000 | 24,000 / 24,000 |
+| Start-up | **72 ms** | 1,838 ms | 1,998 ms |
+| Latency p50 / p99 / max | **0.69 / 1.03 / 8.8 ms** | 0.74 / 1.25 / 12.0 ms | 0.73 / 1.12 / 23.2 ms |
+| Broker CPU, % of one core | **3.0 %** | 5.6 % | 5.3 % |
+| Broker CPU per 1,000 messages | **301 ms** | 561 ms | 533 ms |
+| Working Set average / peak | **10.6 / 10.9 MB** | 182 / 235 MB | 193 / 250 MB |
+| Private Bytes average / peak | **14.8 / 15.6 MB** | 642 / 667 MB | 647 / 671 MB |
 
-At a steady load all three brokers delivered every message exactly once and in order; ActiveMQRust used about 17 times less Working Set, about 40 times less Private Bytes and roughly half to a third of the CPU per message, and started about 25 times faster. These are single runs at a moderate fixed rate: they show resource use and correctness, not maximum throughput.
+#### Steady load: 20 producers × 10 msg/s for 60 s, 20 consumers, 10 KB (12,000 messages)
 
-Still to run: the full comparison (`scripts\compare-activemq.ps1`, measurements (a)–(f) with 3 runs each) and the criterion micro-benchmarks (`cargo bench`). [`docs/benchmarks/activemq-comparison-2026-10-05.md`](docs/benchmarks/activemq-comparison-2026-10-05.md) is an early partial run of version 0.1.0 (only measurement (e), one run, before the compression and concurrency fixes) and is kept for reference only.
+| | ActiveMQRust | ActiveMQ 5.18.7 | ActiveMQ 6.3.2 |
+|---|---|---|---|
+| Delivered | 12,000 / 12,000 | 12,000 / 12,000 | 12,000 / 12,000 |
+| Start-up | **62 ms** | 1,825 ms | 2,017 ms |
+| Latency p50 / p99 / max | 0.75 / **1.14** / **5.5 ms** | 0.81 / 1.26 / 13.3 ms | **0.66** / 1.55 / 19.4 ms |
+| Broker CPU, % of one core | **6.2 %** | 16.2 % | 14.8 % |
+| Broker CPU per 1,000 messages | **314 ms** | 832 ms | 760 ms |
+| Working Set average / peak | **12.7 / 13.7 MB** | 222 / 287 MB | 227 / 303 MB |
+| Private Bytes average / peak | **17.7 / 18.6 MB** | 651 / 665 MB | 652 / 668 MB |
+
+#### Full speed: 20 producers and 20 consumers as fast as they can for 60 s
+
+Producers send without pauses, so a backlog builds up in the broker whenever they are faster than the consumers; latency then measures that backlog, not the broker's own processing time. At these rates the machine is saturated, mostly by the Java client (5–7 cores), so throughput is partly limited by the client.
+
+**15 KB messages**
+
+| | ActiveMQRust | ActiveMQ 5.18.7 | ActiveMQ 6.3.2 |
+|---|---|---|---|
+| Result | **ok** | failed: out of memory ¹ | failed: out of memory ¹ |
+| Delivered | **1,663,252 / 1,663,252** | 92,163 / 359,407 | 128,017 / 395,347 |
+| Received | **26,644 msg/s, 390 MB/s** | 4,913 msg/s before failing | 6,622 msg/s before failing |
+| Broker CPU per 1,000 messages | **36 ms** | 6,502 ms | 5,028 ms |
+| Working Set average / peak | 1,501 / 2,434 MB | 4,037 / 4,285 MB | 3,925 / 4,289 MB |
+| Latency p50 / p99 | 3.4 / 5.2 s (backlog) | 5.5 / 11.7 s | 5.0 / 10.6 s |
+
+**50 KB messages**
+
+| | ActiveMQRust | ActiveMQRust, broker compression on ² | ActiveMQ 5.18.7 | ActiveMQ 6.3.2 |
+|---|---|---|---|---|
+| Result | **ok** | ok | ok | failed: out of memory ¹ ³ |
+| Delivered | **652,952** | 192,252 | 497,083 | 27,008 / 108,402 |
+| Received | **10,838 msg/s, 529 MB/s** | 3,183 msg/s, 155 MB/s | 8,282 msg/s, 404 MB/s | 2,475 msg/s before failing |
+| Broker CPU, % of one core | **96 %** | 433 % | 202 % | 541 % |
+| Broker CPU per 1,000 messages | **91 ms** | 1,400 ms | 251 ms | 20,342 ms |
+| Working Set average / peak | 153 / 225 MB | **89 / 123 MB** | 1,080 / 2,286 MB | 4,045 / 4,270 MB |
+| Latency p50 / p99 | 0.14 / **0.81 s** | 0.27 / 1.77 s | **0.06** / 2.52 s | 3.8 / 6.7 s |
+
+**300 KB messages**
+
+| | ActiveMQRust | ActiveMQRust, broker compression above 256 KB ² | ActiveMQ 5.18.7 | ActiveMQ 6.3.2 |
+|---|---|---|---|---|
+| Delivered (all ok) | 112,595 | 30,622 | 111,768 | 111,569 |
+| Received | **1,868 msg/s, 547 MB/s** | 505 msg/s, 148 MB/s | 1,861 msg/s, 545 MB/s | 1,858 msg/s, 544 MB/s |
+| Broker CPU, % of one core | **114 %** | 478 % | 170 % | 177 % |
+| Broker CPU per 1,000 messages | **635 ms** | 9,779 ms | 949 ms | 990 ms |
+| Working Set average / peak | **202 / 286 MB** | 542 / 835 MB | 1,237 / 1,559 MB | 1,097 / 1,473 MB |
+| Latency p50 / p99 | 0.19 / **0.85 s** | 1.81 / 7.88 s | **0.11** / 1.38 s | **0.11** / 1.05 s |
+
+**Same full-speed runs with an 8 GB heap for ActiveMQ** (`-Xmx8g`, memory limit 7 GB), repeated for the runs that ran out of memory with 4 GB:
+
+| | ActiveMQ 5.18.7, 15 KB | ActiveMQ 6.3.2, 15 KB | ActiveMQ 6.3.2, 50 KB |
+|---|---|---|---|
+| Result | failed: out of memory | failed: out of memory | ok |
+| Delivered | 312,090 / 847,865 | 383,198 / 918,767 | 550,045 / 550,045 |
+| Received | 6,715 msg/s before failing | 6,955 msg/s before failing | 8,297 msg/s, 405 MB/s |
+| Broker CPU per 1,000 messages | 2,109 ms | 1,831 ms | 263 ms |
+| Working Set average / peak | 7,066 / 8,467 MB | 6,352 / 8,468 MB | 4,112 / 7,682 MB |
+| Latency p50 / p99 | 4.0 / 22.0 s | 2.2 / 20.8 s | 2.8 / 9.5 s |
+
+With twice the heap ActiveMQ accepts more messages before failing, but at 15 KB its backlog still outgrows 8 GB; at 50 KB it completes using about 34 times the memory of ActiveMQRust (7.7 GB against 225 MB peak), at 405 MB/s against 529 MB/s.
+
+**50 KB messages compressed by the client** (`useCompression=true`; no broker compression)
+
+| | ActiveMQRust | ActiveMQ 5.18.7 | ActiveMQ 6.3.2 |
+|---|---|---|---|
+| Delivered (all ok) | 113,008 | 110,859 | 110,444 |
+| Received | **1,883 msg/s** | 1,847 msg/s | 1,840 msg/s |
+| Broker CPU per 1,000 messages | **171 ms** | 309 ms | 318 ms |
+| Working Set average / peak | **27 / 30 MB** | 394 / 418 MB | 281 / 298 MB |
+| Latency p50 / p99 | **4.5 / 79 ms** | 5.3 / 368 ms | 4.9 / 756 ms |
+
+Here the Java client compressing every message is the bottleneck (about 7 cores), so all brokers reach the same rate; the broker's own cost and memory still differ.
+
+¹ The 4 GB JVM heap filled up with queued messages; the broker spent its CPU in garbage collection and closed the connections, so most sent messages were never delivered. ActiveMQRust has no fixed heap: it used what the backlog needed and delivered everything.
+
+² Broker compression is optional (`compress_threshold_kb`). It keeps memory low at a steady rate but, as these runs show, at full speed it costs 4–5 cores of zlib work and cuts throughput by about 3.5×; that is why it is off by default from version 0.2.0.
+
+³ ActiveMQ at 50 KB full speed is at the edge of its 4 GB heap: an earlier run of ActiveMQ 6.3.2 with its own 6.3.2 driver completed (437 MB/s, 1.7 GB peak) while this run with the 5.18.7 driver ran out of memory. Single runs; the outcome depends on how fast the backlog grows.
+
+**Reading the results.** With the same client and the same load, ActiveMQRust started 25–30 times faster, used 6–17 times less memory and 1.5–2.8 times less CPU per message, delivered every message in every run, and matched or exceeded ActiveMQ's throughput; ActiveMQ ran out of memory in three of the full-speed runs with its 4 GB heap, and in two of them even with 8 GB. Still to run: the full comparison (`scripts\compare-activemq.ps1`, measurements (a)–(f) with 3 runs each) and the criterion micro-benchmarks (`cargo bench`).
 
 ## Comparison with ActiveMQ
 
@@ -297,7 +396,7 @@ pwsh scripts\compare-activemq.ps1 -ActiveMQ5 C:\tools\apache-activemq-5.18.7 -Ac
 
 The full comparison takes a few hours. Run it first with `-DryRun`: it only checks the paths, the ports, free RAM and CPU load and prints what would run, without starting anything. Other options: `-Quick` (one short run of everything, to check the setup; not a valid comparison), `-OutDir <dir>` (default `docs\benchmarks`), `-Port` / `-AdminPort` (default 61616 / 8161, used for every broker), `-SkipActiveMQ5`, `-SkipActiveMQ6`, `-SkipDefault` (skip ActiveMQ with its default configuration), `-Runs <n>` and `-Force` (only warn about CPU load and free memory). The fair ActiveMQ configuration and the ActiveMQRust configuration files are in [`scripts/activemq-bench/`](scripts/activemq-bench/).
 
-The script writes `activemq-comparison-<date>.md` (machine details, every run, medians, ratios and a met / not met verdict for every criterion) and `activemq-comparison-<date>.csv` (one row per run). Reports are published in [`docs/benchmarks/`](docs/benchmarks/).
+The script writes a Markdown report (machine details, every run, medians, ratios and a met / not met verdict for every criterion) and a CSV with one row per run into `-OutDir` (default `docs\benchmarks`); the results worth keeping are copied into [Tests and results](#tests-and-results).
 
 ### Soak test
 
@@ -308,7 +407,7 @@ pwsh scripts\soak-compare.ps1 -ActiveMQ5 C:\tools\apache-activemq-5.18.7 -Active
 pwsh scripts\soak-compare.ps1 -ActiveMQ5 ... -ActiveMQ6 ... -Duration 60 -Producers 20 -Consumers 20 -Size 10240 -Results docs\benchmarks\soak-20x20.csv
 ```
 
-Defaults: 10 producers at 10 messages per second each, 10 consumers on one shared queue (`-Queues` for more), 1 KB messages, 300 s, results in `docs\benchmarks\soak-results.csv`. The same scenario can be run directly: `java -jar tests\java-it\target\amq5\mqrust-acceptance.jar bench --scenario soak --producers 10 --consumers 10 --rate 10 --duration-seconds 300`.
+Defaults: 10 producers at 10 messages per second each, 10 consumers on one shared queue (`-Queues` for more), 1 KB messages, 300 s, results in `docs\benchmarks\soak-results.csv`. Other options: `-Rate 0` (producers send as fast as they can for the duration; the result adds throughput), `-ClientCompression` (`useCompression=true` in the client), `-MqrustConfig <file>` (configuration for ActiveMQRust, e.g. with `compress_threshold_kb`), `-AmqHeap 8g` and `-AmqMemoryLimitGB 7` (ActiveMQ heap and memory limit; defaults 4g and 3), `-ClientProfile amq5|amq6` (the client build used for every broker; default `amq5`) and `-Only <name>` (run one broker). After each ActiveMQ run the script checks its log for memory-limit, flow-control or spooling lines, which would mean it did not keep everything in RAM. The same scenario can be run directly: `java -jar tests\java-it\target\amq5\mqrust-acceptance.jar bench --scenario soak --producers 10 --consumers 10 --rate 10 --duration-seconds 300`.
 
 ## License
 

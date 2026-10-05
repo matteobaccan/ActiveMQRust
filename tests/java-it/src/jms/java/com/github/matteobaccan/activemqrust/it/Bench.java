@@ -12,6 +12,7 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
@@ -60,6 +61,7 @@ public final class Bench {
     private final int holdSeconds;
     private final long timeoutMs;
     private final int durationSeconds;
+    private final boolean clientCompression;
 
     public Bench(String url, String user, String password, Map<String, String> o) {
         this.baseUrl = url;
@@ -77,13 +79,14 @@ public final class Bench {
                 : 1;
         this.rate = Integer.parseInt(o.getOrDefault("rate", "soak".equals(scenario) ? "10" : "1000"));
         this.durationSeconds = Integer.parseInt(o.getOrDefault("duration-seconds", "300"));
+        this.clientCompression = Boolean.parseBoolean(o.getOrDefault("client-compression", "false"));
         this.warmup = Integer.parseInt(o.getOrDefault("warmup", "0"));
         this.holdSeconds = Integer.parseInt(o.getOrDefault("hold-seconds", "10"));
         this.timeoutMs = Math.max(1, Long.parseLong(o.getOrDefault("timeout-seconds", "1800"))) * 1000L;
     }
 
     private String url() {
-        String opts = "jms.prefetchPolicy.queuePrefetch=1000&jms.useCompression=false&"
+        String opts = "jms.prefetchPolicy.queuePrefetch=1000&jms.useCompression=" + clientCompression + "&"
                 + (async ? "jms.useAsyncSend=true" : "jms.alwaysSyncSend=true");
         return baseUrl + (baseUrl.contains("?") ? "&" : "?") + opts;
     }
@@ -108,9 +111,10 @@ public final class Bench {
 
     private BenchResult result() {
         return new BenchResult(scenario)
-                .put("messages", "soak".equals(scenario) ? (long) rate * durationSeconds * producers : messages)
+                .put("messages", "soak".equals(scenario) ? (rate == 0 ? 0 : (long) rate * durationSeconds * producers) : messages)
                 .put("size", size)
-                .put("send", async ? "async" : "sync");
+                .put("send", async ? "async" : "sync")
+                .put("client_compression", clientCompression);
     }
 
     public int run() {
@@ -543,16 +547,18 @@ public final class Bench {
      * {@code soak}: every producer sends {@code rate} messages per second for {@code duration-seconds}
      * to queue p mod Q while the consumers read queue c mod Q. Checks, per producer: increasing
      * {@code seq} at every consumer (consecutive when a consumer has its queue alone), no message
-     * lost and none delivered twice; reports end-to-end latency.
+     * lost and none delivered twice; reports end-to-end latency. With {@code rate} 0 the producers send
+     * as fast as they can until the duration has elapsed, and the result also reports throughput.
      */
     private int soak() throws Exception {
         if (producers < 1 || consumers < 1 || queues < 1 || queues > Math.min(producers, consumers)
-                || rate < 1 || durationSeconds < 1) {
-            throw new IllegalArgumentException("need 1 <= queues <= min(producers, consumers), rate >= 1 and"
+                || rate < 0 || durationSeconds < 1) {
+            throw new IllegalArgumentException("need 1 <= queues <= min(producers, consumers), rate >= 0 and"
                     + " duration-seconds >= 1; got producers=" + producers + " consumers=" + consumers
                     + " queues=" + queues + " rate=" + rate + " duration-seconds=" + durationSeconds);
         }
-        int perProducer = rate * durationSeconds;
+        boolean unlimited = rate == 0;
+        int perProducer = unlimited ? Integer.MAX_VALUE - 1 : rate * durationSeconds;
         int[] consumersOnQueue = new int[queues];
         for (int c = 0; c < consumers; c++) {
             consumersOnQueue[c % queues]++;
@@ -560,16 +566,19 @@ public final class Bench {
         String[] docs = generate(SEED_RUN + size, Math.min(perProducer, 1000), size);
         BitSet[] seen = new BitSet[producers];
         for (int p = 0; p < producers; p++) {
-            seen[p] = new BitSet(perProducer + 1);
+            seen[p] = new BitSet(unlimited ? 1024 : perProducer + 1);
         }
-        long total = (long) perProducer * producers;
+        long[] sentBy = new long[producers];
+        AtomicLong sent = new AtomicLong();
+        AtomicBoolean producing = new AtomicBoolean(true);
         AtomicLong received = new AtomicLong();
         AtomicLong duplicates = new AtomicLong();
         AtomicLong outOfOrder = new AtomicLong();
         AtomicReference<String> failure = new AtomicReference<>();
-        long[] latencies = new long[(int) Math.min(total, 50_000_000L)];
+        long[] latencies = new long[(int) Math.min(unlimited ? 5_000_000L : (long) perProducer * producers, 50_000_000L)];
         AtomicInteger latencyCount = new AtomicInteger();
         long[] perConsumer = new long[consumers];
+        AtomicLong lastReceiveNs = new AtomicLong();
         List<Connection> conns = Collections.synchronizedList(new ArrayList<>());
         try {
             ActiveMQConnectionFactory f = new ActiveMQConnectionFactory(url());
@@ -597,7 +606,7 @@ public final class Bench {
                     int[] last = new int[producers];
                     long lastProgress = System.nanoTime();
                     try {
-                        while (received.get() < total) {
+                        while (producing.get() || received.get() < sent.get()) {
                             Message m = consumer.receive(200);
                             long now = System.nanoTime();
                             if (m == null) {
@@ -634,6 +643,7 @@ public final class Bench {
                             }
                             perConsumer[ci]++;
                             received.incrementAndGet();
+                            lastReceiveNs.accumulateAndGet(now, Math::max);
                         }
                     } catch (Exception e) {
                         failure.compareAndSet(null, e.toString());
@@ -654,10 +664,10 @@ public final class Bench {
                 mp[p].setDeliveryMode(DeliveryMode.NON_PERSISTENT);
             }
             CountDownLatch start = new CountDownLatch(1);
-            AtomicLong sent = new AtomicLong();
             AtomicLong maxLagMs = new AtomicLong();
             List<Thread> prods = new ArrayList<>();
-            long intervalNs = 1_000_000_000L / rate;
+            long intervalNs = unlimited ? 0 : 1_000_000_000L / rate;
+            long[] stopAt = new long[1];
             for (int p = 0; p < producers; p++) {
                 final int idx = p;
                 Thread t = new Thread(() -> {
@@ -666,8 +676,13 @@ public final class Bench {
                         // Producers are spread over one interval so they do not all send at once.
                         long next = System.nanoTime() + intervalNs * idx / producers;
                         for (int n = 0; n < perProducer; n++) {
+                            if (unlimited && System.nanoTime() >= stopAt[0]) {
+                                break;
+                            }
                             long wait = next - System.nanoTime();
-                            if (wait > 0) {
+                            if (unlimited) {
+                                // as fast as possible
+                            } else if (wait > 0) {
                                 Thread.sleep(wait / 1_000_000, (int) (wait % 1_000_000));
                             } else {
                                 maxLagMs.accumulateAndGet(-wait / 1_000_000, Math::max);
@@ -677,6 +692,7 @@ public final class Bench {
                             m.setIntProperty("seq", n + 1);
                             m.setLongProperty("sendNanos", System.nanoTime());
                             mp[idx].send(m);
+                            sentBy[idx]++;
                             sent.incrementAndGet();
                             next += intervalNs;
                         }
@@ -690,13 +706,16 @@ public final class Bench {
             }
             phase("produce-start");
             long t0 = System.nanoTime();
+            stopAt[0] = t0 + durationSeconds * 1_000_000_000L;
             start.countDown();
             for (Thread t : prods) {
                 t.join();
             }
+            producing.set(false);
             long produceMs = (System.nanoTime() - t0) / 1_000_000;
             phase("produce-end");
-            long deadline = System.currentTimeMillis() + Math.min(timeoutMs, IDLE_LIMIT_MS + 5_000);
+            // Consumers stop by themselves once everything sent is received, or after IDLE_LIMIT_MS without messages.
+            long deadline = System.currentTimeMillis() + timeoutMs;
             for (Thread t : cons) {
                 t.join(Math.max(1, deadline - System.currentTimeMillis()));
             }
@@ -709,12 +728,12 @@ public final class Bench {
                 int count;
                 synchronized (seen[p]) {
                     count = seen[p].cardinality();
-                    if (count < perProducer && firstMissingProducer < 0) {
+                    if (count < sentBy[p] && firstMissingProducer < 0) {
                         firstMissingProducer = p;
                         firstMissingSeq = seen[p].nextClearBit(1);
                     }
                 }
-                missing += perProducer - count;
+                missing += sentBy[p] - count;
             }
             if (missing > 0) {
                 failure.compareAndSet(null, "missing-" + missing + "-first-producer-" + firstMissingProducer
@@ -723,6 +742,8 @@ public final class Bench {
             int n = Math.min(latencyCount.get(), latencies.length);
             long[] sorted = Arrays.copyOf(latencies, n);
             Arrays.sort(sorted);
+            long lastNs = lastReceiveNs.get();
+            long consumeMs = lastNs == 0 ? 0 : (lastNs - t0) / 1_000_000;
             long minC = Arrays.stream(perConsumer).min().orElse(0);
             long maxC = Arrays.stream(perConsumer).max().orElse(0);
             BenchResult r = result()
@@ -736,6 +757,10 @@ public final class Bench {
                     .put("out_of_order", outOfOrder.get())
                     .put("produce_ms", produceMs)
                     .put("elapsed_ms", elapsedMs)
+                    .put("consume_ms", consumeMs)
+                    .put("send_msgs_s", produceMs > 0 ? sent.get() * 1000.0 / produceMs : 0, 1)
+                    .put("recv_msgs_s", consumeMs > 0 ? received.get() * 1000.0 / consumeMs : 0, 1)
+                    .put("recv_mb_s", consumeMs > 0 ? received.get() * (double) size / 1048576.0 * 1000.0 / consumeMs : 0, 2)
                     .put("max_send_lag_ms", maxLagMs.get())
                     .put("per_consumer_min", minC)
                     .put("per_consumer_max", maxC)
