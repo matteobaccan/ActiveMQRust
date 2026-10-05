@@ -101,6 +101,26 @@ The comparison script SHALL sample the broker process every 250 ms with PowerShe
 - **WHEN** a hold run is in its hold window
 - **THEN** the script reports the median Working Set and Private Bytes of the last 5 s of the window as hold steady values, and the run's peaks
 
+### Requirement: Resource usage under load
+For every run of every measurement (startup, idle, produce, hold, consume, throughput) the comparison script SHALL record, per phase, how much the load costs the system:
+- broker process memory: Working Set and Private Bytes, average and peak over the phase (from the 250 ms samples);
+- broker process CPU: the process CPU time used in the phase (`TotalProcessorTime` read at the start and end of the phase), reported as average CPU % of one core and as % of the whole machine (divided by the logical processor count);
+- benchmark client process CPU and peak Working Set, measured the same way, so the client's share is visible;
+- whole-machine CPU % average over the phase, and the CPU % used by other processes (machine minus broker minus client), which also feeds the load check that invalidates a run.
+From these the report SHALL derive the cost per unit of work for each broker: broker CPU milliseconds per 1,000 messages and per MB moved, and broker memory per held message ((hold Working Set − idle Working Set) / messages held). The report SHALL show these figures next to the times, with the same mean/median/min/max as the other values, and the CSV SHALL hold every individual value.
+
+#### Scenario: CPU per phase
+- **WHEN** a hold run produces 100,000 messages in 8 s and the broker process uses 4,000 ms of CPU time in that phase on an 8-processor machine
+- **THEN** the report shows for the produce phase broker CPU 50 % of one core, 6.25 % of the machine, and 40 ms of CPU per 1,000 messages
+
+#### Scenario: Memory under load
+- **WHEN** a hold run holds 100,000 messages of 10 KB
+- **THEN** the report shows the broker's average and peak Working Set and Private Bytes for the produce, hold and consume phases and the memory per held message
+
+#### Scenario: Client share visible
+- **WHEN** any run completes
+- **THEN** the report shows, for each phase, the CPU of the broker, of the benchmark client and of the rest of the machine
+
 ### Requirement: Fair ActiveMQ configuration
 The primary ActiveMQ runs SHALL use ActiveMQ 5.18.x and 6.x with `scripts\activemq-bench\activemq-tuned.xml`: `persistent="false"`; a `vmQueueCursor` pending queue policy so no message is spooled to temporary storage; `producerFlowControl="false"`; memory limits of 3 GB; JMX, advisory support and the scheduler disabled; only an OpenWire transport connector on `127.0.0.1:61616`; and a `simpleAuthenticationPlugin` with the benchmark user. The JVM SHALL run with `-Xmx4g`, no `-Xms`, the default garbage collector and the same JDK as the client. The report SHALL include the exact XML and the full JVM command line.
 
