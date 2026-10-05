@@ -11,6 +11,7 @@ use tokio::sync::mpsc;
 
 use mqrust::broker::conn::{ConnHandle, Out};
 use mqrust::broker::destination::SubSpec;
+use mqrust::broker::entry::{Entry, Meta};
 use mqrust::broker::{now_ms, Broker, DLQ_NAME};
 use mqrust::config::{build, ConfigSource, FileConfig, Overrides};
 use mqrust::openwire::model::*;
@@ -1357,4 +1358,25 @@ fn expiry_summary_counts_every_kind_of_expiry() {
     assert_eq!(d.snapshot().stats.expired, 4);
     assert_eq!(d.take_expired_since_summary(), 4);
     assert_eq!(d.take_expired_since_summary(), 0, "reset after each summary");
+}
+
+#[test]
+fn enqueue_out_of_sequence_is_still_dispatched() {
+    // Two connections take sequence numbers 1 and 2, but the second one reaches the queue first:
+    // the consumer must still receive the message with the lower sequence number.
+    let b = broker();
+    let q = Destination::queue("RACE");
+    let mut c = Client::new(&b, "c1");
+    subscribe(&b, &c, 1, &q, 1000, None);
+    let d = b.get_or_create(&q, None);
+    let entry = |seq: u64, body: &str| {
+        let m = msg(&q, body);
+        let meta = Meta::new(b.memory.clone(), &m);
+        Entry { seq, msg: Arc::new(m), meta, redelivery: 0 }
+    };
+    d.enqueue(entry(1_000_002, "second"), now_ms());
+    d.enqueue(entry(1_000_001, "first"), now_ms());
+    let mut got = texts(&c.drain());
+    got.sort();
+    assert_eq!(got, vec!["first".to_string(), "second".to_string()]);
 }

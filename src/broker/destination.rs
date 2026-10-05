@@ -390,7 +390,13 @@ impl Dest {
             if entry.msg.expiration > 0 {
                 st.expiry.insert((entry.msg.expiration, entry.seq));
             }
-            st.pending.insert(entry.seq, entry);
+            // Sequence numbers are taken before this lock, so a concurrent producer can enqueue a
+            // lower one after a consumer's cursor has moved past it: move such cursors back.
+            let seq = entry.seq;
+            for sub in st.subs.iter_mut() {
+                sub.cursor = sub.cursor.min(seq.saturating_sub(1));
+            }
+            st.pending.insert(seq, entry);
             st.idle_since = None;
             self.dispatch_queue(&mut st, now_ms);
         } else {
