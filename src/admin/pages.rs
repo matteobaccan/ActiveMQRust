@@ -5,7 +5,7 @@
 
 use axum::extract::{FromRequestParts, Path, Query, State};
 use axum::http::request::Parts;
-use axum::http::{header, HeaderMap, StatusCode};
+use axum::http::{header, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use std::collections::HashMap;
 use std::convert::Infallible;
@@ -14,10 +14,7 @@ use std::sync::Arc;
 
 use super::body::{full_text, hex_dump, render, stored_size, BodyView, HEX_LIMIT};
 use super::xml::{self, XmlError};
-use super::{
-    cookie, fmt_bytes, fmt_duration, fmt_expiration, fmt_time_ms, process_memory, AdminState, CurrentUser, CSS,
-    THEME_COOKIE,
-};
+use super::{fmt_bytes, fmt_duration, fmt_expiration, fmt_time_ms, process_memory, AdminState, CurrentUser, CSS};
 use crate::broker::destination::{Dest, DestSnapshot};
 use crate::broker::entry::Entry;
 use crate::broker::now_ms;
@@ -58,35 +55,9 @@ pub fn enc(s: &str) -> String {
     o
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Theme {
-    Auto,
-    Light,
-    Dark,
-}
-
-impl Theme {
-    pub fn from_headers(h: &HeaderMap) -> Theme {
-        match cookie(h, THEME_COOKIE).as_deref() {
-            Some("light") => Theme::Light,
-            Some("dark") => Theme::Dark,
-            _ => Theme::Auto,
-        }
-    }
-
-    fn attr(self) -> &'static str {
-        match self {
-            Theme::Auto => "",
-            Theme::Light => " data-theme=\"light\"",
-            Theme::Dark => " data-theme=\"dark\"",
-        }
-    }
-}
-
-/// What a page needs from the request: user, theme, path and query.
+/// What a page needs from the request: user, path and query.
 pub struct Ctx {
     pub user: Option<String>,
-    pub theme: Theme,
     /// Request path as received (percent-encoded).
     pub path: String,
     pub q: HashMap<String, String>,
@@ -99,7 +70,6 @@ impl<S: Send + Sync> FromRequestParts<S> for Ctx {
         let q = Query::<HashMap<String, String>>::try_from_uri(&parts.uri).map(|q| q.0).unwrap_or_default();
         Ok(Ctx {
             user: parts.extensions.get::<CurrentUser>().map(|u| u.0.clone()),
-            theme: Theme::from_headers(&parts.headers),
             path: parts.uri.path().to_string(),
             q,
         })
@@ -138,11 +108,6 @@ impl Ctx {
         }
         url(&self.path, &params)
     }
-
-    fn current(&self) -> String {
-        let params: Vec<(&str, &str)> = KEPT.iter().filter_map(|k| self.get(k).map(|v| (*k, v))).collect();
-        url(&self.path, &params)
-    }
 }
 
 fn url(path: &str, params: &[(&str, &str)]) -> String {
@@ -154,13 +119,12 @@ fn url(path: &str, params: &[(&str, &str)]) -> String {
     u
 }
 
-fn head(title: &str, theme: Theme, refresh: bool) -> String {
+fn head(title: &str, refresh: bool) -> String {
     format!(
-        "<!doctype html><html lang=\"en\"{}><head><meta charset=\"utf-8\">\
+        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">\
          <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\
          <meta name=\"color-scheme\" content=\"light dark\">{}\
          <title>{} - {PROVIDER_NAME}</title><link rel=\"stylesheet\" href=\"/style.css\"></head>",
-        theme.attr(),
         if refresh { "<meta http-equiv=\"refresh\" content=\"5\">" } else { "" },
         esc(title),
     )
@@ -174,17 +138,7 @@ fn footer() -> String {
     )
 }
 
-fn theme_links(theme: Theme, next: &str) -> String {
-    let mut s = String::from("<div class=\"theme\" role=\"group\" aria-label=\"Theme\">");
-    for (mode, label, t) in [("auto", "Auto", Theme::Auto), ("light", "Light", Theme::Light), ("dark", "Dark", Theme::Dark)] {
-        let current = if theme == t { " aria-current=\"true\"" } else { "" };
-        let _ = write!(s, "<a href=\"/theme/{mode}?next={}\"{current}>{label}</a>", enc(next));
-    }
-    s.push_str("</div>");
-    s
-}
-
-/// The page shell: top bar (navigation, theme, refresh, user, logout), content and footer.
+/// The page shell: top bar (navigation, refresh, user, logout), content and footer.
 fn layout(ctx: &Ctx, title: &str, section: &str, content: &str) -> Response {
     let mut nav = String::new();
     for (href, label) in [("/", "Overview"), ("/queues", "Queues"), ("/topics", "Topics"), ("/connections", "Connections")] {
@@ -208,11 +162,10 @@ fn layout(ctx: &Ctx, title: &str, section: &str, content: &str) -> Response {
         "{}<body><header class=\"top\"><a class=\"brand\" href=\"{}\">ActiveMQ<span>Rust</span></a>\
          <nav class=\"nav-wide\" aria-label=\"Main\">{nav}</nav>\
          <details class=\"nav-menu\"><summary>Menu</summary><nav aria-label=\"Main menu\">{nav}</nav></details>\
-         <div class=\"tools\">{refresh}{}{user}</div></header>\
+         <div class=\"tools\">{refresh}{user}</div></header>\
          <main>{content}</main>{}</body></html>",
-        head(title, ctx.theme, ctx.refresh()),
+        head(title, ctx.refresh()),
         ctx.link("/", &[]),
-        theme_links(ctx.theme, &ctx.current()),
         footer(),
     );
     Html(html).into_response()
@@ -235,9 +188,9 @@ fn not_found_page(ctx: &Ctx, what: &str) -> Response {
 
 // -- login --------------------------------------------------------------------
 
-pub fn login_page(state: &AdminState, theme: Theme, user: &str, error: Option<&str>, next: Option<&str>) -> Html<String> {
+pub fn login_page(state: &AdminState, user: &str, error: Option<&str>, next: Option<&str>) -> Html<String> {
     let mut c = String::new();
-    let _ = write!(c, "{}<body class=\"login\"><main><div class=\"login-box\">", head("Log in", theme, false));
+    let _ = write!(c, "{}<body class=\"login\"><main><div class=\"login-box\">", head("Log in", false));
     let _ = write!(c, "<p class=\"brand\">ActiveMQ<span>Rust</span></p><h1>Log in</h1>");
     if state.broker.cfg.default_credentials {
         c.push_str(
@@ -260,12 +213,12 @@ pub fn login_page(state: &AdminState, theme: Theme, user: &str, error: Option<&s
         esc(user),
         esc(next.unwrap_or("/")),
     );
-    let _ = write!(c, "{}</div></main>{}</body></html>", theme_links(theme, &format!("/login?next={}", enc(next.unwrap_or("/")))), footer());
+    let _ = write!(c, "</div></main>{}</body></html>", footer());
     Html(c)
 }
 
 pub async fn login(State(s): State<AdminState>, ctx: Ctx) -> Html<String> {
-    login_page(&s, ctx.theme, "", None, ctx.get("next"))
+    login_page(&s, "", None, ctx.get("next"))
 }
 
 // -- data pages -------------------------------------------------------------------
@@ -298,7 +251,14 @@ pub async fn overview(State(s): State<AdminState>, ctx: Ctx) -> Response {
     let (ws, private) = process_memory();
     let uptime = (chrono::Local::now() - b.started).num_seconds();
     let limit = if b.memory.limit == 0 { "no limit".to_string() } else { format!("of {}", fmt_bytes(b.memory.limit)) };
-    let mut c = format!("<h1>{PROVIDER_NAME} {PROVIDER_VERSION}</h1><div class=\"cards\">");
+    let openwire = esc(&format!("tcp://{}:{}", b.cfg.bind, b.cfg.port));
+    let admin = esc(&format!("http://{}:{}", b.cfg.admin_bind, b.cfg.admin_port));
+    let mut c = format!(
+        "<h1>{PROVIDER_NAME} {PROVIDER_VERSION}</h1>\
+         <p class=\"addresses\"><span><span class=\"label\">OpenWire</span> <code>{openwire}</code></span>\
+         <span><span class=\"label\">Admin console</span> <code>{admin}</code></span></p>\
+         <div class=\"cards\">"
+    );
     c.push_str(&card("Uptime", &fmt_duration(uptime)));
     c.push_str(&card("Active connections", &b.connections().len().to_string()));
     c.push_str(&card("Queues", &queues.to_string()));
@@ -314,8 +274,6 @@ pub async fn overview(State(s): State<AdminState>, ctx: Ctx) -> Response {
     c.push_str(&card("Compressions discarded", &b.stats.compress_discarded.load(relaxed).to_string()));
     c.push_str(&card("Working Set (RSS)", &fmt_bytes(ws)));
     c.push_str(&card("Private Bytes", &fmt_bytes(private)));
-    c.push_str(&card("OpenWire", &format!("<span class=\"id\">tcp://{}:{}</span>", b.cfg.bind, b.cfg.port)));
-    c.push_str(&card("Admin", &format!("<span class=\"id\">http://{}:{}</span>", b.cfg.admin_bind, b.cfg.admin_port)));
     c.push_str("</div>");
     layout(&ctx, "Overview", "/", &c)
 }
@@ -737,8 +695,7 @@ mod tests {
     fn links_keep_parameters() {
         let q: HashMap<String, String> =
             [("sort", "pending"), ("order", "desc"), ("refresh", "5"), ("junk", "x")].iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
-        let ctx = Ctx { user: None, theme: Theme::Auto, path: "/queues".into(), q };
-        assert_eq!(ctx.current(), "/queues?sort=pending&order=desc&refresh=5");
+        let ctx = Ctx { user: None, path: "/queues".into(), q };
         assert_eq!(ctx.with("refresh", None), "/queues?sort=pending&order=desc");
         assert_eq!(ctx.link("/topics", &[]), "/topics?refresh=5");
         assert_eq!(ctx.link("/queues", &[("sort", "name"), ("order", "asc")]), "/queues?sort=name&order=asc&refresh=5");

@@ -169,7 +169,7 @@ The read-only web console answers on `http://127.0.0.1:8161/` (keys `[admin] bin
 - **Throttling**: after `login_max_failures` failed logins from one IP within 15 minutes, that IP is refused (`429`) for `login_lockout_seconds`. Failed logins are logged with IP and username, never the password.
 - **Pages**: overview (version, uptime, connections, memory, broker compression counters), queues (every column sortable, numeric order, ties by name), queue detail with consumers, producers and paginated contents (50 per page), message detail (headers, properties, body by JMS type), topics and connections. Add `?refresh=5` to refresh every 5 seconds.
 - **XML bodies**: a TextMessage holding well-formed XML gets a **Formatted** view (indented and coloured) next to the unchanged **Raw** view. DTDs and entities are never resolved; bodies above 1 MB are not formatted.
-- **Theme**: light or dark following the operating system, or forced with the Auto / Light / Dark selector (remembered in a cookie). No JavaScript and no external resources are loaded.
+- **Theme**: follows the system light/dark setting. No JavaScript and no external resources are loaded.
 
 ```toml
 [admin]

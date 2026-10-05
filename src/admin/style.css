@@ -3,8 +3,8 @@
 
 /*
  * Admin console stylesheet: embedded in mqrust.exe, no external fonts, images or scripts.
- * Light palette on :root, dark palette for prefers-color-scheme: dark unless the page forces
- * data-theme="light", and again for data-theme="dark" (the manual choice wins).
+ * Light palette on :root, dark palette under prefers-color-scheme: dark: the theme follows the
+ * light/dark setting of the operating system or browser only.
  *
  * Contrast ratios (WCAG 2.x relative luminance), text >= 4.5:1, non-text >= 3:1:
  *                         light    dark
@@ -48,7 +48,7 @@
   --mono: ui-monospace, "Cascadia Mono", "Cascadia Code", Consolas, "Liberation Mono", Menlo, monospace;
 }
 @media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
+  :root {
     color-scheme: dark;
     --bg: #14161a; --surface: #1d2025; --surface-2: #23272e;
     --fg: #e7e9ec; --muted: #a7aeb9; --line: #6c7482;
@@ -57,15 +57,6 @@
     --err-fg: #ffa3a3; --err-bg: #3c1519;
     --x-tag: #ff9cc4; --x-attr: #cfadff; --x-val: #8fdd9d; --x-com: #a7aeb9; --x-cdata: #ffd27a; --x-pi: #a3c8ff;
   }
-}
-:root[data-theme="dark"] {
-  color-scheme: dark;
-  --bg: #14161a; --surface: #1d2025; --surface-2: #23272e;
-  --fg: #e7e9ec; --muted: #a7aeb9; --line: #6c7482;
-  --accent: #ff8f62; --on-accent: #14161a; --focus: #80b2ff;
-  --warn-fg: #ffd27a; --warn-bg: #3a2d0e; --info-fg: #a3c8ff; --info-bg: #162740;
-  --err-fg: #ffa3a3; --err-bg: #3c1519;
-  --x-tag: #ff9cc4; --x-attr: #cfadff; --x-val: #8fdd9d; --x-com: #a7aeb9; --x-cdata: #ffd27a; --x-pi: #a3c8ff;
 }
 
 /* -- base ------------------------------------------------------------------ */
@@ -95,7 +86,7 @@ small { color: var(--muted); font-size: .8em; }
 .brand { font-weight: 700; font-size: 1.15rem; color: var(--fg); text-decoration: none; white-space: nowrap; }
 .brand span { color: var(--accent); }
 .top nav { display: flex; flex-wrap: wrap; gap: var(--sp-1); }
-.top nav a, .theme a, .chip, .views a, .pager a {
+.top nav a, .chip, .views a, .pager a {
   display: inline-flex; align-items: center; min-height: 2.5rem; min-width: 2.5rem;
   padding: 0 var(--sp-3); border-radius: var(--radius-sm); text-decoration: none;
 }
@@ -111,9 +102,7 @@ small { color: var(--muted); font-size: .8em; }
 .nav-menu summary::before { content: "\2630"; margin-right: var(--sp-2); }
 .nav-menu[open] nav { flex-direction: column; padding-top: var(--sp-2); }
 .tools { margin-left: auto; display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); }
-.theme { display: inline-flex; border: 1px solid var(--line); border-radius: var(--radius-sm); overflow: hidden; }
-.theme a { color: var(--fg); border-radius: 0; font-size: .875rem; }
-.theme a[aria-current="true"], .views a[aria-current="true"], .chip.on {
+.views a[aria-current="true"], .chip.on {
   background: var(--accent); color: var(--on-accent); font-weight: 600;
 }
 .chip { border: 1px solid var(--line); color: var(--fg); font-size: .875rem; }
@@ -138,6 +127,9 @@ button, .login-form button {
 /* -- content ------------------------------------------------------------------- */
 main { flex: 1; width: 100%; max-width: 80rem; margin: 0 auto; padding: var(--sp-4); }
 .crumbs { margin: 0 0 var(--sp-2); }
+.addresses { display: flex; flex-direction: column; gap: var(--sp-1); margin: calc(-1 * var(--sp-2)) 0 var(--sp-4); }
+.addresses .label { color: var(--muted); margin-right: var(--sp-1); }
+.addresses code { overflow-wrap: anywhere; word-break: break-word; }
 .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr)); gap: var(--sp-3); margin-bottom: var(--sp-4); }
 .card {
   display: flex; flex-direction: column; gap: var(--sp-1); min-width: 0;
@@ -214,7 +206,6 @@ body.login main { display: flex; align-items: center; justify-content: center; p
   border: 1px solid var(--line); border-radius: var(--radius-sm);
 }
 .login-form button { margin-top: var(--sp-3); width: 100%; }
-.login-box .theme { display: flex; width: max-content; margin: 0 auto; }
 
 /* -- footer -------------------------------------------------------------------- */
 .foot {

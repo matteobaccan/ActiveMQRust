@@ -12,7 +12,7 @@ mod session;
 mod xml;
 
 use axum::body::Body;
-use axum::extract::{ConnectInfo, Path, Query, Request, State};
+use axum::extract::{ConnectInfo, Request, State};
 use axum::http::{header, HeaderMap, HeaderValue, Method, Response, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::IntoResponse;
@@ -32,7 +32,6 @@ use session::{sha256, Gate, Sessions, Throttle};
 
 pub const CSS: &str = include_str!("style.css");
 pub const SESSION_COOKIE: &str = "mqrust_session";
-pub const THEME_COOKIE: &str = "mqrust_theme";
 const CSP: &str = "default-src 'none'; style-src 'self'; form-action 'self'; frame-ancestors 'none'";
 
 #[derive(Clone)]
@@ -105,7 +104,6 @@ fn router(state: AdminState) -> Router {
         .route("/style.css", get(pages::style))
         .route("/login", get(pages::login).post(login_submit))
         .route("/logout", post(logout))
-        .route("/theme/{mode}", get(theme))
         .route("/queues", get(pages::queues))
         .route("/queues/{name}", get(pages::queue_detail))
         .route("/queues/{name}/messages/{id}", get(pages::message_detail))
@@ -292,7 +290,7 @@ async fn guard(State(state): State<AdminState>, mut req: Request, next: Next) ->
     if path == "/style.css" {
         return secure(next.run(req).await, false);
     }
-    if path == "/login" || path == "/logout" || path.starts_with("/theme/") {
+    if path == "/login" || path == "/logout" {
         return secure(next.run(req).await, true);
     }
     let session_user = cookie(req.headers(), SESSION_COOKIE).and_then(|t| state.sessions.lookup(&t));
@@ -320,7 +318,7 @@ async fn guard(State(state): State<AdminState>, mut req: Request, next: Next) ->
     secure(next.run(req).await, true)
 }
 
-// -- login, logout, theme -------------------------------------------------------
+// -- login, logout -------------------------------------------------------
 
 async fn login_submit(
     State(state): State<AdminState>,
@@ -334,11 +332,10 @@ async fn login_submit(
     let ip = addr.ip();
     let user = form.get("username").cloned().unwrap_or_default();
     let next = form.get("next").map(String::as_str);
-    let theme = pages::Theme::from_headers(&headers);
     if let Gate::Locked { remaining, log } = state.throttle.check(ip) {
         log_locked(ip, log);
         let msg = format!("Too many failed logins. Try again in {} seconds.", remaining.as_secs().max(1));
-        let mut r = pages::login_page(&state, theme, &user, Some(&msg), next).into_response();
+        let mut r = pages::login_page(&state, &user, Some(&msg), next).into_response();
         *r.status_mut() = StatusCode::TOO_MANY_REQUESTS;
         return r;
     }
@@ -348,7 +345,7 @@ async fn login_submit(
     };
     if !ok {
         log_failure(&state, ip, &user);
-        return pages::login_page(&state, theme, &user, Some("Invalid username or password"), next).into_response();
+        return pages::login_page(&state, &user, Some("Invalid username or password"), next).into_response();
     }
     state.throttle.success(ip);
     // A new session at every login: a cookie sent with the login is discarded.
@@ -376,19 +373,6 @@ async fn logout(State(state): State<AdminState>, headers: HeaderMap) -> Response
         header::SET_COOKIE,
         HeaderValue::from_static("mqrust_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0"),
     );
-    r
-}
-
-/// Display preference only: sets or clears the theme cookie and goes back.
-async fn theme(Path(mode): Path<String>, Query(q): Query<HashMap<String, String>>) -> Response<Body> {
-    let cookie = match mode.as_str() {
-        "auto" => "mqrust_theme=; SameSite=Strict; Path=/; Max-Age=0",
-        "light" => "mqrust_theme=light; SameSite=Strict; Path=/; Max-Age=31536000",
-        "dark" => "mqrust_theme=dark; SameSite=Strict; Path=/; Max-Age=31536000",
-        _ => return pages::not_found().await,
-    };
-    let mut r = redirect(&safe_next(q.get("next").map(String::as_str)));
-    r.headers_mut().insert(header::SET_COOKIE, HeaderValue::from_static(cookie));
     r
 }
 
@@ -499,9 +483,9 @@ mod tests {
     #[test]
     fn cookies_are_parsed() {
         let mut h = HeaderMap::new();
-        h.insert(header::COOKIE, HeaderValue::from_static("a=1; mqrust_session=tok; mqrust_theme=dark"));
+        h.insert(header::COOKIE, HeaderValue::from_static("a=1; mqrust_session=tok; other=dark"));
         assert_eq!(cookie(&h, SESSION_COOKIE).as_deref(), Some("tok"));
-        assert_eq!(cookie(&h, THEME_COOKIE).as_deref(), Some("dark"));
+        assert_eq!(cookie(&h, "other").as_deref(), Some("dark"));
         assert_eq!(cookie(&h, "missing"), None);
     }
 

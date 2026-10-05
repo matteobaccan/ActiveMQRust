@@ -418,7 +418,7 @@ async fn login_flow_sessions_and_headers() {
 }
 
 #[tokio::test]
-async fn session_fixation_open_redirect_and_theme() {
+async fn session_fixation_and_open_redirect() {
     let c = start().await;
     let first = login(&c).await;
     // A cookie sent with the login is discarded and a new token issued.
@@ -434,28 +434,36 @@ async fn session_fixation_open_redirect_and_theme() {
         assert_eq!(r.header("location").as_deref(), Some("/"), "{bad}");
     }
 
-    // Theme cookie: forced dark on every page, the login page included; auto clears it.
-    let r = req("GET", "/theme/dark?next=%2Fqueues%3Fsort%3Dpending%26order%3Ddesc").send(c.port).await;
-    assert_eq!(r.status, 303);
-    assert_eq!(r.header("location").as_deref(), Some("/queues?sort=pending&order=desc"));
-    let set = r.header("set-cookie").unwrap();
-    assert!(set.starts_with("mqrust_theme=dark;") && set.contains("SameSite=Strict") && set.contains("Max-Age=31536000"));
-    let r = req("GET", "/queues?sort=pending&order=desc")
-        .header("Cookie", &format!("mqrust_session={second}; mqrust_theme=dark"))
-        .send(c.port)
-        .await;
-    assert!(r.body.contains("<html lang=\"en\" data-theme=\"dark\">"));
-    // Theme links keep the current sort.
-    assert!(r.body.contains("/theme/light?next=%2Fqueues%3Fsort%3Dpending%26order%3Ddesc"), "{}", r.body);
-    let r = req("GET", "/login").header("Cookie", "mqrust_theme=dark").send(c.port).await;
-    assert!(r.body.contains("data-theme=\"dark\""));
-    let r = req("GET", "/theme/light?next=//evil.example").send(c.port).await;
-    assert_eq!(r.header("location").as_deref(), Some("/"));
-    let r = req("GET", "/theme/auto?next=%2F").send(c.port).await;
-    assert!(r.header("set-cookie").unwrap().contains("Max-Age=0"));
-    let r = get(&c, "/", &second).await;
-    assert!(r.body.contains("<html lang=\"en\">"));
-    assert_eq!(req("GET", "/theme/purple").send(c.port).await.status, 404);
+}
+
+#[tokio::test]
+async fn theme_follows_the_system_only() {
+    let c = start().await;
+    let token = login(&c).await;
+    let mut pages: Vec<Resp> = Vec::new();
+    for page in ["/", "/queues", "/topics", "/connections", "/queues?sort=pending&order=desc&refresh=5"] {
+        // An old theme cookie is ignored.
+        pages.push(req("GET", page).header("Cookie", &format!("mqrust_session={token}; mqrust_theme=dark")).send(c.port).await);
+    }
+    pages.push(req("GET", "/login").header("Cookie", "mqrust_theme=dark").send(c.port).await);
+    for r in &pages {
+        assert_eq!(r.status, 200, "{r:?}");
+        assert!(r.body.contains("<html lang=\"en\"><head>"), "{}", r.body);
+        assert!(r.body.contains("<meta name=\"color-scheme\" content=\"light dark\">"));
+        assert!(!r.body.contains("data-theme"), "{}", r.body);
+        assert!(!r.body.contains("/theme/") && !r.body.contains("class=\"theme\""), "{}", r.body);
+        assert!(!r.body.contains("aria-label=\"Theme\""));
+        assert!(r.header("set-cookie").is_none_or(|v| !v.contains("mqrust_theme")), "{r:?}");
+    }
+    for mode in ["dark", "light", "auto"] {
+        let r = get(&c, &format!("/theme/{mode}?next=%2F"), &token).await;
+        assert_eq!(r.status, 404, "{mode}");
+        assert!(r.header("set-cookie").is_none(), "{mode}");
+    }
+    let css = req("GET", "/style.css").send(c.port).await.body;
+    assert!(!css.contains("data-theme"));
+    assert!(css.contains("@media (prefers-color-scheme: dark) {
+  :root {"));
 }
 
 #[tokio::test]
@@ -901,9 +909,25 @@ async fn overview_footer_and_version() {
     let token = login(&c).await;
     let r = get(&c, "/", &token).await.body;
     assert!(r.contains(&format!("<h1>ActiveMQRust {VERSION}</h1>")));
-    for s in ["Uptime", "Active connections", "Working Set", "Private Bytes", "no limit", "tcp://0.0.0.0:61616", "Compressed by the broker", "Compressions discarded"] {
+    for s in ["Uptime", "Active connections", "Working Set", "Private Bytes", "no limit", "Compressed by the broker", "Compressions discarded"] {
         assert!(r.contains(s), "{s}");
     }
+    // Listen addresses: two labelled lines right below the title, outside the cards.
+    let admin = format!("http://{}:{}", c.broker.cfg.admin_bind, c.broker.cfg.admin_port);
+    let h1_end = r.find("</h1>").expect("h1") + "</h1>".len();
+    let cards = r.find("<div class=\"cards\">").expect("cards");
+    let between = &r[h1_end..cards];
+    assert!(between.starts_with("<p class=\"addresses\">"), "{between}");
+    assert!(between.contains("<span class=\"label\">OpenWire</span> <code>tcp://0.0.0.0:61616</code>"), "{between}");
+    assert!(between.contains(&format!("<span class=\"label\">Admin console</span> <code>{admin}</code>")), "{between}");
+    let cards_html = &r[cards..r.find("</main>").expect("main")];
+    for addr in ["tcp://", "http://"] {
+        assert!(!cards_html.contains(addr), "{addr} in a card");
+    }
+    assert!(!cards_html.contains(">OpenWire<") && !cards_html.contains(">Admin<"));
+    // The JSON API keeps the addresses.
+    let j = api(&c, "/api/overview").await.json();
+    assert_eq!(j["openwire"], "tcp://0.0.0.0:61616");
     for page in ["/", "/queues", "/topics", "/connections"] {
         let body = get(&c, page, &token).await.body;
         let footer = &body[body.find("<footer").expect("footer")..];
