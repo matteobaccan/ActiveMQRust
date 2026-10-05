@@ -108,5 +108,68 @@ fn selectors(c: &mut Criterion) {
     g.finish();
 }
 
-criterion_group!(benches, codec, dispatch, compression, selectors);
+criterion_group!(benches, codec, dispatch, compression, selectors, selective_dispatch);
 criterion_main!(benches);
+
+/// Selective dispatch: 10 consumers with disjoint property selectors (`n = '0'` .. `n = '9'`)
+/// attached to a queue that already holds 100,000 messages; measures until every message
+/// has been dispatched to its consumer.
+fn selective_dispatch(c: &mut Criterion) {
+    use mqrust::openwire::props::{PrimitiveMap, Value};
+    const MESSAGES: usize = 100_000;
+    const CONSUMERS: usize = 10;
+    let q = Destination::queue("BENCH.SELECTIVE");
+    let fill = || {
+        let cfg = build(FileConfig::default(), ConfigSource::Defaults, &Overrides::default()).unwrap();
+        let broker = Broker::new(Arc::new(cfg));
+        for i in 0..MESSAGES {
+            let mut m = text_message(64);
+            m.destination = Some(q.clone());
+            m.message_id.as_mut().unwrap().producer_sequence_id = i as i64 + 1;
+            let mut p = PrimitiveMap::new();
+            p.set("n", Value::String((i % CONSUMERS).to_string()));
+            m.marshalled_properties = Some(p.encode());
+            broker.deliver(m, false, now_ms()).unwrap();
+        }
+        broker
+    };
+    let mut g = c.benchmark_group("selector");
+    g.sample_size(10);
+    g.throughput(Throughput::Elements(MESSAGES as u64));
+    g.bench_function("dispatch_10_selective_consumers_100k", |b| {
+        b.iter_batched(
+            fill,
+            |broker| {
+                let d = broker.get_or_create(&q, None);
+                let mut receivers = Vec::with_capacity(CONSUMERS);
+                for k in 0..CONSUMERS {
+                    let (tx, rx) = mpsc::unbounded_channel();
+                    let handle = Arc::new(ConnHandle::new(k as u64 + 1, "127.0.0.1:1".parse().unwrap(), tx));
+                    let selector = Selector::compile(&format!("n = '{k}'")).unwrap().map(Arc::new);
+                    d.add_sub(
+                        SubSpec {
+                            id: ConsumerId { connection_id: Arc::from(format!("c{k}")), session_id: 1, value: 1 },
+                            conn: handle,
+                            prefetch: i32::MAX,
+                            selector,
+                            no_local: false,
+                            browser: false,
+                        },
+                        now_ms(),
+                    );
+                    receivers.push(rx);
+                }
+                let mut received = 0;
+                for rx in receivers.iter_mut() {
+                    while rx.try_recv().is_ok() {
+                        received += 1;
+                    }
+                }
+                assert!(received >= MESSAGES);
+                black_box(broker)
+            },
+            criterion::BatchSize::PerIteration,
+        )
+    });
+    g.finish();
+}

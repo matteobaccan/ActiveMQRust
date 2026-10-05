@@ -501,7 +501,7 @@ impl Conn {
         let selector = match ci.selector.as_deref() {
             Some(text) => match Selector::compile(text) {
                 Ok(s) => s.map(Arc::new),
-                Err(e) => return Err((INVALID_SELECTOR, format!("{} in selector: {}", e, text))),
+                Err(e) => return Err((INVALID_SELECTOR, e.exception_message(text))),
             },
             None => None,
         };
