@@ -6,7 +6,7 @@
 ## 2. Configuration and dependency
 
 - [x] 2.1 Add `flate2` with the `zlib-rs` backend and confirm `scripts/check-deps.cmd` still passes
-- [ ] 2.2 Add `[broker] compress_threshold_kb = 32` and `compress_min_saving_pct = 10` with validation (non-negative threshold, percentage 0–99, field-named errors, exit code 2), `init-config` and `mqrust.example.toml`
+- [x] 2.2 Add `[broker] compress_threshold_kb = 32` and `compress_min_saving_pct = 10` with validation (non-negative threshold, percentage 0–99, field-named errors, exit code 2), `init-config` and `mqrust.example.toml`
 - [x] 2.3 Unit tests for defaults, threshold 0 and invalid values
 
 ## 3. Compression module

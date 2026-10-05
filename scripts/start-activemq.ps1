@@ -4,7 +4,7 @@
 # Starts a local Apache ActiveMQ (5.18.x or 6.x) in the foreground, for reference runs of the
 # Java acceptance and integration suites, with a fresh temporary data directory.
 #
-#   pwsh scripts\start-activemq.ps1 -Home C:\tools\apache-activemq-6.3.2 [-Config reference|tuned|default]
+#   pwsh scripts\start-activemq.ps1 -ActiveMQHome C:\tools\apache-activemq-6.3.2 [-Config reference|tuned|default]
 
 param(
     [Parameter(Mandatory = $true)][string]$ActiveMQHome,

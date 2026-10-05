@@ -39,6 +39,7 @@ base64 = "0.22"
 sha2 = "0.10"
 quick-xml = "0.41"
 flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
+toml_edit = "0.22"
 windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_ProcessStatus", "Win32_System_Threading"] }
 
 [dev-dependencies]

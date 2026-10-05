@@ -9,7 +9,7 @@ use tokio::net::TcpListener;
 use tokio::sync::watch;
 
 use crate::broker::Broker;
-use crate::config::{Config, ConfigSource};
+use crate::config::{Config, ConfigSource, Secret, User, DEFAULT_PASSWORD, DEFAULT_USER};
 use crate::openwire::types::MAX_VERSION;
 use crate::openwire::wireformat::{PROVIDER_NAME, PROVIDER_VERSION};
 
@@ -19,15 +19,7 @@ pub type StopSignal = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + S
 /// Runs the broker until `stop` resolves. `on_ready` is called once the OpenWire port is bound.
 pub async fn run(cfg: Config, stop: StopSignal, on_ready: impl FnOnce()) -> Result<(), String> {
     tracing::info!("{PROVIDER_NAME} {PROVIDER_VERSION} starting");
-    match &cfg.source {
-        ConfigSource::File(p) => tracing::info!("config: {} ({} users)", p.display(), cfg.users.len()),
-        ConfigSource::Defaults => tracing::info!("config: no file, using built-in defaults"),
-    }
-    if cfg.default_credentials {
-        tracing::warn!("default credentials admin/admin in use: configure [[users]] and [admin] in mqrust.toml");
-    } else if cfg.plain_text_in_use() {
-        tracing::warn!("plain-text passwords in the configuration: use password_hash (mqrust.exe hash-password)");
-    }
+    startup_messages(&cfg);
 
     let cfg = Arc::new(cfg);
     let addr = std::net::SocketAddr::new(cfg.bind, cfg.port);
@@ -75,6 +67,50 @@ pub async fn run(cfg: Config, stop: StopSignal, on_ready: impl FnOnce()) -> Resu
     let discarded = broker.message_count();
     tracing::info!("stopped; {discarded} in-memory messages discarded");
     Ok(())
+}
+
+/// Logs where the configuration comes from, the console address and users, and how to fix
+/// default or plain-text credentials.
+fn startup_messages(cfg: &Config) {
+    use std::io::IsTerminal;
+    match &cfg.source {
+        ConfigSource::File(p) => tracing::info!("configuration: {}", p.display()),
+        ConfigSource::Defaults => tracing::info!("configuration: built-in defaults (no mqrust.toml found)"),
+    }
+    let console = std::net::SocketAddr::new(cfg.admin_bind, cfg.admin_port);
+    tracing::info!("admin console on http://{console} (login with the [admin] user {})", cfg.admin_user.username);
+    let n = cfg.users.len();
+    let anonymous = if cfg.allow_anonymous { ", anonymous access allowed" } else { "" };
+    tracing::info!("{n} messaging user{}{anonymous}", if n == 1 { "" } else { "s" });
+
+    let is_default = |u: &User| {
+        u.username == DEFAULT_USER && matches!(&u.secret, Secret::Plain(p) if p == DEFAULT_PASSWORD)
+    };
+    if cfg.default_credentials {
+        tracing::warn!(
+            "default credentials admin/admin in use for the admin console and the messaging clients: \
+             run `mqrust.exe set-admin` (console user) and `mqrust.exe user add <name>` (messaging users)"
+        );
+        if cfg.source == ConfigSource::Defaults && std::io::stdout().is_terminal() {
+            println!("hint: run `mqrust.exe init-config` to create a commented mqrust.toml next to the executable");
+        }
+        return;
+    }
+    if is_default(&cfg.admin_user) {
+        tracing::warn!("the admin console still uses admin/admin: run `mqrust.exe set-admin`");
+    }
+    if cfg.users.iter().any(is_default) {
+        tracing::warn!(
+            "messaging user admin/admin still configured: run `mqrust.exe user add <name>`, \
+             then `mqrust.exe user remove admin`"
+        );
+    }
+    if cfg.plain_text_in_use() {
+        tracing::warn!(
+            "plain-text passwords in the configuration: replace them with `mqrust.exe set-admin` \
+             and `mqrust.exe user passwd <name>`"
+        );
+    }
 }
 
 /// Resolves on Ctrl+C, console close, logoff or system shutdown.

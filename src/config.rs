@@ -481,6 +481,12 @@ pub const TEMPLATE: &str = r#"# ActiveMQRust by Matteo Baccan
 # SPDX-License-Identifier: MIT
 #
 # ActiveMQRust configuration. Every key is optional; missing keys take the default shown.
+# Changes apply when the broker (or the Windows service) is restarted.
+#
+# Set the users with the command line instead of editing this file by hand:
+#   mqrust.exe set-admin            admin console user ([admin])
+#   mqrust.exe user add <name>      messaging users of the JMS/OpenWire clients ([[users]])
+#   mqrust.exe check-config         validate this file
 
 [broker]
 # name = "ActiveMQRust"
@@ -515,9 +521,11 @@ password = "admin"                     # replace with password_hash = "..." (mqr
 [log]
 # level = "info"                       # error | warn | info | debug | trace
 
+# Messaging users: one [[users]] entry each, with password_hash (Argon2id) or password.
+# Replace this default user: mqrust.exe user add <name>, then mqrust.exe user remove admin
 [[users]]
 username = "admin"
-password = "admin"                     # replace with password_hash = "..." (mqrust.exe hash-password)
+password = "admin"                     # replace with password_hash = "..." (mqrust.exe user passwd admin)
 "#;
 
 #[cfg(test)]
