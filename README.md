@@ -134,16 +134,26 @@ The same program is also run against a real ActiveMQ to confirm that both broker
 
 ## Comparison with ActiveMQ
 
-A planned benchmark uses the same Java client against both brokers on the same machine, with ActiveMQ configured without persistence so that both process messages in RAM. It measures:
+`scripts\compare-activemq.ps1` runs the same Java client against ActiveMQRust and Apache ActiveMQ 5.18.x and 6.x on the same machine, with ActiveMQ configured without persistence so that both process messages in RAM. It measures:
 
-- memory at idle;
+- memory at idle, and the start-up time of each broker;
 - memory while holding **100,000 messages of 10 KB** each, and while holding **10,000 messages of 50 KB** each;
 - time to **produce** and time to **consume** those messages;
-- throughput with 1 KB messages.
+- throughput with 1 KB messages and with 3,600 messages of 12 KB, with async and sync send.
 
 Every test message is an XML `TextMessage` with 20 fields holding random values, plus a base64 buffer that pads the document to the exact target size. Payloads are generated from a fixed seed, so both brokers receive identical messages.
 
-Results will be published in `docs/benchmarks/`.
+### Running the comparison
+
+You need PowerShell 7, JDK 17 or later, the release build (`cargo build --release`) and the ActiveMQ distributions unpacked somewhere (they are not part of this repository). Use a quiet machine: the script stops if the CPU load is above 20% or less than 8 GB of RAM is free, and repeats any run disturbed by other processes.
+
+```
+pwsh scripts\compare-activemq.ps1 -ActiveMQ5 C:\tools\apache-activemq-5.18.7 -ActiveMQ6 C:\tools\apache-activemq-6.3.2
+```
+
+The full comparison takes a few hours. Useful options: `-Quick` (one short run of everything, to check the setup; not a valid comparison), `-OutDir <dir>` (default `docs\benchmarks`), `-Port` / `-AdminPort` (default 61616 / 8161, used for every broker), `-SkipActiveMQ5`, `-SkipActiveMQ6`, `-SkipDefault` (skip ActiveMQ with its default configuration), `-Runs <n>` and `-Force` (only warn about CPU load and free memory). The fair ActiveMQ configuration and the ActiveMQRust configuration files are in [`scripts/activemq-bench/`](scripts/activemq-bench/).
+
+The script writes `activemq-comparison-<date>.md` (machine details, every run, medians, ratios and a met / not met verdict for every criterion) and `activemq-comparison-<date>.csv` (one row per run). Reports are published in [`docs/benchmarks/`](docs/benchmarks/).
 
 ## License
 

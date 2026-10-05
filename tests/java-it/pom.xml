@@ -24,6 +24,17 @@
     <main.class>com.github.matteobaccan.activemqrust.it.Main</main.class>
   </properties>
 
+  <!-- Unit tests (src/test/java) cover the parts that do not need a broker: payload generation
+       and RESULT lines. They run with `mvnw test` and are skipped by `package -DskipTests`. -->
+  <dependencies>
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <version>5.10.2</version>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
   <build>
     <!-- Sources are added by the active profile (javax or rewritten to jakarta). -->
     <sourceDirectory>src/none</sourceDirectory>
@@ -32,6 +43,11 @@
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-compiler-plugin</artifactId>
         <version>3.14.0</version>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-surefire-plugin</artifactId>
+        <version>3.2.5</version>
       </plugin>
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>

@@ -6,11 +6,11 @@ The reason to adopt ActiveMQRust is that it is **compatible** with ActiveMQ, **u
 
 - The `bench` mode of the Java program in `tests/java-it` (from `optimize-broker-performance`) gains a `hold` workload: produce N messages with no consumer, hold them in the broker, then consume them, timing the produce and consume phases separately and reporting msgs/s and MB/s. The same jar and the same settings are used against both brokers.
 - Every benchmark message is a JMS `TextMessage` holding an XML document with an `<id>`, 20 fields `field01` … `field20` with random values of mixed kinds, and a base64 buffer of random bytes that fills the document to the exact target size (1,024, 10,240 or 51,200 bytes). Messages are generated from a fixed seed before timing starts, so both brokers receive identical message sets.
-- Measurements: (a) idle memory after startup; (b) memory while holding 100,000 messages of 10 KB; (c) produce and consume time for those messages; (d) 1 KB throughput with async and sync send; (e) memory, produce time and consume time while holding 10,000 messages of 50 KB.
+- Measurements: (a) idle memory after startup; (b) memory while holding 100,000 messages of 10 KB; (c) produce and consume time for those messages; (d) 1 KB throughput with async and sync send; (e) memory, produce time and consume time while holding 10,000 messages of 50 KB; (f) throughput with 3,600 messages of 12 KB, async and sync send. The start-up time of every broker (process start to OpenWire port listening) is measured in every run.
 - Scenario (e) is above the 32 KB broker compression threshold, so ActiveMQRust runs twice: with default settings (broker compression active) and with `compress_threshold_kb = 0` (like-for-like). The report labels which runs had broker compression active and states the compression ratio achieved.
 - Memory sampling of the broker process on Windows (Working Set and Private Bytes, peak and steady values; `java.exe` for ActiveMQ).
 - A fair ActiveMQ setup for 5.18.x and 6.x: persistence disabled, all messages kept in memory with no producer flow control and no spooling to temporary storage, documented XML and JVM flags; plus a secondary run with ActiveMQ's default configuration.
-- `scripts\compare-activemq.ps1`, which starts each broker, samples memory, runs the bench, stops the broker, repeats (warm-up plus 3 measured runs, broker restarted for each) and writes a Markdown report and a CSV file in `docs/benchmarks/`.
+- `scripts\compare-activemq.ps1`, which checks the machine first (paths, free ports, free RAM, CPU load), starts each broker on a configurable port, samples memory, runs the bench, stops the broker, repeats (warm-up plus 3 measured runs, broker restarted for each; runs disturbed by other processes or by ActiveMQ spooling are repeated) and writes a Markdown report and a CSV file in `docs/benchmarks/` once everything has finished. A `-Quick` switch runs a short smoke test.
 - Success criteria evaluated in the report: ActiveMQRust uses less memory in (a) and (b) and is faster in (c); the §14.3 targets are reported as met or not met.
 
 ## Capabilities
@@ -25,7 +25,7 @@ None.
 
 ## Impact
 
-- `tests/java-it/`: `hold` workload, XML message generator and verifier, and `PHASE` / `RESULT` output in the `bench` mode of `mqrust-acceptance.jar`.
+- `tests/java-it/`: `hold` workload, XML message generator and verifier, and `PHASE` / `RESULT` output in the `bench` mode of `mqrust-acceptance.jar`; JUnit unit tests for the generator and the `RESULT` line (`src/test/java`, run with `mvnw test`).
 - New `scripts\compare-activemq.ps1` and `scripts\activemq-bench\` (ActiveMQ XML configurations, JVM flags, the two ActiveMQRust configuration files used for the runs).
 - New output in `docs/benchmarks/`: `activemq-comparison-<yyyy-MM-dd>.md` and `.csv`; a README section linking the latest report.
 - External tools on the benchmark machine only: JDK 17+ (the development machine has JDK 21), ActiveMQ 5.18.x and 6.x distributions (downloaded by the user, not committed), PowerShell 7, at least 16 GB of RAM. No change to `mqrust.exe` or its dependencies.

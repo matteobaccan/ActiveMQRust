@@ -3,14 +3,16 @@
 
 package com.github.matteobaccan.activemqrust.it;
 
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import javax.jms.Connection;
 import javax.jms.DeliveryMode;
@@ -24,15 +26,23 @@ import org.apache.activemq.ActiveMQConnectionFactory;
 import org.apache.activemq.ActiveMQMessageProducer;
 
 /**
- * Benchmark workloads: hold (produce all, hold, consume all), throughput (producers and
- * consumers in parallel) and latency (fixed rate, end-to-end latency).
- * Prints timestamped PHASE lines and one RESULT line.
+ * Benchmark workloads:
+ * <ul>
+ *   <li>{@code hold}: produce all, hold, consume all, with separately timed phases;</li>
+ *   <li>{@code throughput}: producers and consumers running at the same time on one queue;</li>
+ *   <li>{@code scale}: producers and consumers spread over several queues (default 10 / 10 / 10);</li>
+ *   <li>{@code latency}: fixed send rate, end-to-end latency percentiles.</li>
+ * </ul>
+ * Prints timestamped PHASE lines and one RESULT line; the exit code is 1 when the run failed.
  */
 public final class Bench {
 
-    private static final long SEED_RUN = 20261005L;
-    private static final long SEED_WARMUP = 7L;
-    private static final double MB = 1024.0 * 1024.0;
+    static final long SEED_RUN = 20261005L;
+    static final long SEED_WARMUP = 7L;
+    /** Distinct documents cycled through by the warm-up phase. */
+    static final int WARMUP_DOCUMENTS = 1000;
+    /** A consumer that receives nothing for this long declares the remaining messages missing. */
+    private static final long IDLE_LIMIT_MS = 60_000;
 
     private final String baseUrl;
     private final String user;
@@ -43,6 +53,7 @@ public final class Bench {
     private final boolean async;
     private final int producers;
     private final int consumers;
+    private final int queues;
     private final int rate;
     private final int warmup;
     private final int holdSeconds;
@@ -56,12 +67,16 @@ public final class Bench {
         this.messages = Integer.parseInt(o.getOrDefault("messages", "100000"));
         this.size = Integer.parseInt(o.getOrDefault("size", "1024"));
         this.async = !"sync".equals(o.getOrDefault("send", "async"));
-        this.producers = Integer.parseInt(o.getOrDefault("producers", "1"));
-        this.consumers = Integer.parseInt(o.getOrDefault("consumers", o.getOrDefault("producers", "1")));
+        String defaultClients = "scale".equals(scenario) ? "10" : "1";
+        this.producers = Integer.parseInt(o.getOrDefault("producers", defaultClients));
+        this.consumers = Integer.parseInt(o.getOrDefault("consumers", defaultClients));
+        this.queues = "scale".equals(scenario)
+                ? Integer.parseInt(o.getOrDefault("queues", Integer.toString(Math.min(producers, consumers))))
+                : 1;
         this.rate = Integer.parseInt(o.getOrDefault("rate", "1000"));
         this.warmup = Integer.parseInt(o.getOrDefault("warmup", "0"));
         this.holdSeconds = Integer.parseInt(o.getOrDefault("hold-seconds", "10"));
-        this.timeoutMs = Long.parseLong(o.getOrDefault("timeout-seconds", "1800")) * 1000L;
+        this.timeoutMs = Math.max(1, Long.parseLong(o.getOrDefault("timeout-seconds", "1800"))) * 1000L;
     }
 
     private String url() {
@@ -79,7 +94,8 @@ public final class Bench {
         return prefix + "." + UUID.randomUUID().toString().substring(0, 8);
     }
 
-    private static String[] generate(long seed, int count, int size) {
+    /** Generates and size-checks a whole message set (document for seq n at index n - 1). */
+    static String[] generate(long seed, int count, int size) {
         String[] docs = new String[count];
         for (int i = 0; i < count; i++) {
             docs[i] = XmlPayload.document(seed, i + 1, size);
@@ -87,12 +103,11 @@ public final class Bench {
         return docs;
     }
 
-    private static double perSec(long n, long ms) {
-        return ms <= 0 ? 0 : n * 1000.0 / ms;
-    }
-
-    private String common() {
-        return "messages=" + messages + " size=" + size + " send=" + (async ? "async" : "sync");
+    private BenchResult result() {
+        return new BenchResult(scenario)
+                .put("messages", messages)
+                .put("size", size)
+                .put("send", async ? "async" : "sync");
     }
 
     public int run() {
@@ -101,27 +116,28 @@ public final class Bench {
                 case "hold":
                     return hold();
                 case "throughput":
-                    return throughput();
+                case "scale":
+                    return flow();
                 case "latency":
                     return latency();
                 default:
-                    System.out.println("RESULT scenario=" + scenario + " status=failed reason=unknown-scenario");
+                    new BenchResult(scenario).fail("unknown-scenario").print();
                     return 1;
             }
         } catch (Throwable t) {
-            System.out.println("RESULT scenario=" + scenario + " status=failed reason=" + t.toString().replace(' ', '_'));
+            new BenchResult(scenario).fail(t.toString()).print();
             t.printStackTrace();
             return 1;
         }
     }
 
-    /** Exchanges warm-up messages on a separate queue (not timed). */
+    /** Exchanges warm-up messages on a separate queue (not timed), cycling 1,000 documents. */
     private void doWarmup(Session s) throws Exception {
         if (warmup <= 0) {
             return;
         }
         phase("warmup-start");
-        String[] docs = generate(SEED_WARMUP, Math.min(warmup, 1000), size);
+        String[] docs = generate(SEED_WARMUP, Math.min(warmup, WARMUP_DOCUMENTS), size);
         Queue wq = s.createQueue(q("BENCH.WARMUP"));
         MessageProducer p = s.createProducer(wq);
         p.setDeliveryMode(DeliveryMode.NON_PERSISTENT);
@@ -144,6 +160,23 @@ public final class Bench {
         c.close();
         p.close();
         phase("warmup-end");
+    }
+
+    /** Checks the sampled documents after timing: XML structure and equality with the expected text. */
+    private static String verifySample(List<int[]> keys, List<String> texts, String[] docs) {
+        for (int i = 0; i < texts.size(); i++) {
+            int seq = keys.get(i)[1];
+            String doc = texts.get(i);
+            try {
+                XmlPayload.verify(doc);
+            } catch (Exception e) {
+                return "malformed-document-seq-" + seq + ":" + e.getMessage();
+            }
+            if (!doc.equals(docs[seq - 1])) {
+                return "content-mismatch-seq-" + seq;
+            }
+        }
+        return null;
     }
 
     private int hold() throws Exception {
@@ -180,24 +213,28 @@ public final class Bench {
             long t1 = System.nanoTime();
             MessageConsumer c = s.createConsumer(queue);
             int expectedSeq = 1;
-            List<int[]> sampleSeqs = new ArrayList<>();
+            List<int[]> sampleKeys = new ArrayList<>();
             List<String> sample = new ArrayList<>();
             String failure = null;
             for (int i = 0; i < messages; i++) {
-                Message m = c.receive(60_000);
+                Message m = c.receive(IDLE_LIMIT_MS);
                 if (m == null) {
-                    failure = "missing-message-after-seq-" + (expectedSeq - 1);
+                    failure = "missing-message-expected-seq-" + expectedSeq;
                     break;
                 }
                 TextMessage t = (TextMessage) m;
                 int seq = t.getIntProperty("seq");
                 String text = t.getText();
-                if (seq != expectedSeq || text.length() != size) {
-                    failure = "bad-message-seq-" + seq;
+                if (seq != expectedSeq) {
+                    failure = "out-of-order-expected-seq-" + expectedSeq + "-received-seq-" + seq;
                     break;
                 }
-                if (seq == 1 || seq == messages || seq % 100 == 0) {
-                    sampleSeqs.add(new int[] {seq});
+                if (text.length() != size) {
+                    failure = "wrong-length-seq-" + seq + "-length-" + text.length();
+                    break;
+                }
+                if (XmlPayload.sampled(seq, messages)) {
+                    sampleKeys.add(new int[] {0, seq});
                     sample.add(text);
                 }
                 expectedSeq++;
@@ -205,41 +242,66 @@ public final class Bench {
             long consumeMs = (System.nanoTime() - t1) / 1_000_000;
             phase("consume-end");
             if (failure == null) {
-                for (int i = 0; i < sample.size(); i++) {
-                    int seq = sampleSeqs.get(i)[0];
-                    String doc = sample.get(i);
-                    XmlPayload.verify(doc);
-                    if (!doc.equals(docs[seq - 1])) {
-                        failure = "content-mismatch-seq-" + seq;
-                        break;
-                    }
-                    if (doc.getBytes(StandardCharsets.UTF_8).length != size) {
-                        failure = "size-mismatch-seq-" + seq;
-                        break;
-                    }
-                }
+                failure = verifySample(sampleKeys, sample, docs);
             }
-            double mb = (double) messages * size / MB;
-            System.out.printf("RESULT scenario=hold status=%s %s hold_seconds=%d produce_ms=%d consume_ms=%d "
-                            + "produce_msgs_s=%.1f consume_msgs_s=%.1f produce_mb_s=%.2f consume_mb_s=%.2f%s%n",
-                    failure == null ? "ok" : "failed", common(), holdSeconds, produceMs, consumeMs,
-                    perSec(messages, produceMs), perSec(messages, consumeMs),
-                    produceMs > 0 ? mb * 1000.0 / produceMs : 0, consumeMs > 0 ? mb * 1000.0 / consumeMs : 0,
-                    failure == null ? "" : " reason=" + failure);
-            return failure == null ? 0 : 1;
+            BenchResult r = result()
+                    .put("hold_seconds", holdSeconds)
+                    .put("produce_ms", produceMs)
+                    .put("consume_ms", consumeMs)
+                    .put("produce_msgs_s", BenchResult.perSecond(messages, produceMs), 1)
+                    .put("consume_msgs_s", BenchResult.perSecond(messages, consumeMs), 1)
+                    .put("produce_mb_s", BenchResult.mbPerSecond(messages, size, produceMs), 2)
+                    .put("consume_mb_s", BenchResult.mbPerSecond(messages, size, consumeMs), 2)
+                    .put("samples", sample.size())
+                    .put("deflate_ratio", XmlPayload.deflateRatio(sample), 4);
+            if (failure != null) {
+                r.fail(failure);
+            }
+            r.print();
+            return r.exitCode();
         }
     }
 
-    private int throughput() throws Exception {
-        int pairs = Math.max(producers, consumers);
-        int perQueue = messages / pairs;
-        String[] docs = generate(SEED_RUN + size, perQueue, size);
-        List<Connection> conns = new ArrayList<>();
+    /** Per-consumer state of the flow scenarios. */
+    private static final class Received {
+        final int[] lastSeq;
+        final List<int[]> sampleKeys = new ArrayList<>();
+        final List<String> sample = new ArrayList<>();
+
+        Received(int producers) {
+            lastSeq = new int[producers];
+        }
+    }
+
+    /**
+     * {@code throughput} (one queue) and {@code scale} (several queues): producer p sends to queue
+     * p mod Q and consumer c reads queue c mod Q, all at the same time. Every message carries its
+     * producer index and a per-producer {@code seq}.
+     */
+    private int flow() throws Exception {
+        if (producers < 1 || consumers < 1 || queues < 1 || queues > Math.min(producers, consumers)) {
+            throw new IllegalArgumentException("need 1 <= queues <= min(producers, consumers); got producers="
+                    + producers + " consumers=" + consumers + " queues=" + queues);
+        }
+        int[] perProducer = new int[producers];
+        long[] perQueue = new long[queues];
+        int[] consumersOnQueue = new int[queues];
+        for (int p = 0; p < producers; p++) {
+            perProducer[p] = messages / producers + (p < messages % producers ? 1 : 0);
+            perQueue[p % queues] += perProducer[p];
+        }
+        for (int c = 0; c < consumers; c++) {
+            consumersOnQueue[c % queues]++;
+        }
+        String[] docs = generate(SEED_RUN + size, perProducer[0], size);
+        List<Connection> conns = Collections.synchronizedList(new ArrayList<>());
         try {
             ActiveMQConnectionFactory f = new ActiveMQConnectionFactory(url());
-            String[] queues = new String[pairs];
-            for (int i = 0; i < pairs; i++) {
-                queues[i] = q("BENCH.TP" + i);
+            String[] names = new String[queues];
+            AtomicLong[] receivedOnQueue = new AtomicLong[queues];
+            for (int i = 0; i < queues; i++) {
+                names[i] = q("BENCH.TP" + i);
+                receivedOnQueue[i] = new AtomicLong();
             }
             if (warmup > 0) {
                 Connection w = f.createConnection(user, password);
@@ -247,88 +309,144 @@ public final class Bench {
                 w.start();
                 doWarmup(w.createSession(false, Session.AUTO_ACKNOWLEDGE));
             }
-            CountDownLatch ready = new CountDownLatch(pairs);
-            CountDownLatch done = new CountDownLatch(pairs);
             AtomicReference<String> failure = new AtomicReference<>();
-            long[] produceEnd = new long[pairs];
-            List<Thread> threads = new ArrayList<>();
-            for (int i = 0; i < pairs; i++) {
+            AtomicLong lastReceive = new AtomicLong();
+            CountDownLatch done = new CountDownLatch(consumers);
+            Received[] state = new Received[consumers];
+            for (int c = 0; c < consumers; c++) {
                 Connection cc = f.createConnection(user, password);
                 conns.add(cc);
                 cc.start();
                 Session cs = cc.createSession(false, Session.AUTO_ACKNOWLEDGE);
-                MessageConsumer consumer = cs.createConsumer(cs.createQueue(queues[i]));
-                final int idx = i;
+                int qi = c % queues;
+                MessageConsumer consumer = cs.createConsumer(cs.createQueue(names[qi]));
+                Received st = new Received(producers);
+                state[c] = st;
+                boolean strict = consumersOnQueue[qi] == 1;
                 Thread t = new Thread(() -> {
                     try {
-                        ready.countDown();
-                        int expected = 1;
-                        for (int n = 0; n < perQueue; n++) {
-                            Message m = consumer.receive(60_000);
+                        long lastProgress = System.nanoTime();
+                        while (receivedOnQueue[qi].get() < perQueue[qi] && failure.get() == null) {
+                            Message m = consumer.receive(200);
+                            long now = System.nanoTime();
                             if (m == null) {
-                                failure.compareAndSet(null, "missing-message-queue-" + idx + "-after-" + (expected - 1));
-                                return;
+                                if (now - lastProgress > IDLE_LIMIT_MS * 1_000_000L) {
+                                    failure.compareAndSet(null, "missing-messages-queue-" + qi + "-received-"
+                                            + receivedOnQueue[qi].get() + "-of-" + perQueue[qi]);
+                                }
+                                continue;
                             }
+                            lastProgress = now;
+                            int prod = m.getIntProperty("producer");
                             int seq = m.getIntProperty("seq");
-                            if (seq != expected) {
-                                failure.compareAndSet(null, "out-of-order-queue-" + idx + "-seq-" + seq);
+                            String text = ((TextMessage) m).getText();
+                            int prev = st.lastSeq[prod];
+                            if (strict ? seq != prev + 1 : seq <= prev) {
+                                failure.compareAndSet(null, "out-of-order-producer-" + prod + "-expected-seq-"
+                                        + (prev + 1) + "-received-seq-" + seq);
                                 return;
                             }
-                            expected++;
+                            if (text.length() != size) {
+                                failure.compareAndSet(null, "wrong-length-seq-" + seq + "-length-" + text.length());
+                                return;
+                            }
+                            st.lastSeq[prod] = seq;
+                            if (XmlPayload.sampled(seq, perProducer[prod])) {
+                                st.sampleKeys.add(new int[] {prod, seq});
+                                st.sample.add(text);
+                            }
+                            receivedOnQueue[qi].incrementAndGet();
+                            lastReceive.accumulateAndGet(now, Math::max);
                         }
                     } catch (Exception e) {
-                        failure.compareAndSet(null, e.toString().replace(' ', '_'));
+                        failure.compareAndSet(null, e.toString());
                     } finally {
                         done.countDown();
                     }
-                }, "consumer-" + i);
+                }, "consumer-" + c);
+                t.setDaemon(true);
                 t.start();
-                threads.add(t);
             }
-            ready.await();
-            phase("produce-start");
-            long t0 = System.nanoTime();
-            List<Thread> prods = new ArrayList<>();
-            for (int i = 0; i < pairs; i++) {
+            Session[] ps = new Session[producers];
+            MessageProducer[] mp = new MessageProducer[producers];
+            for (int p = 0; p < producers; p++) {
                 Connection pc = f.createConnection(user, password);
                 conns.add(pc);
                 pc.start();
-                Session ps = pc.createSession(false, Session.AUTO_ACKNOWLEDGE);
-                MessageProducer producer = ps.createProducer(ps.createQueue(queues[i]));
-                producer.setDeliveryMode(DeliveryMode.NON_PERSISTENT);
-                final int idx = i;
+                ps[p] = pc.createSession(false, Session.AUTO_ACKNOWLEDGE);
+                mp[p] = ps[p].createProducer(ps[p].createQueue(names[p % queues]));
+                mp[p].setDeliveryMode(DeliveryMode.NON_PERSISTENT);
+            }
+            CountDownLatch start = new CountDownLatch(1);
+            long[] produceEnd = new long[producers];
+            List<Thread> prods = new ArrayList<>();
+            for (int p = 0; p < producers; p++) {
+                final int idx = p;
                 Thread t = new Thread(() -> {
                     try {
-                        for (int n = 0; n < perQueue; n++) {
-                            TextMessage m = ps.createTextMessage(docs[n]);
+                        start.await();
+                        for (int n = 0; n < perProducer[idx]; n++) {
+                            TextMessage m = ps[idx].createTextMessage(docs[n]);
+                            m.setIntProperty("producer", idx);
                             m.setIntProperty("seq", n + 1);
-                            producer.send(m);
+                            mp[idx].send(m);
                         }
-                        produceEnd[idx] = System.nanoTime();
                     } catch (Exception e) {
-                        failure.compareAndSet(null, e.toString().replace(' ', '_'));
+                        failure.compareAndSet(null, e.toString());
+                    } finally {
+                        produceEnd[idx] = System.nanoTime();
                     }
-                }, "producer-" + i);
+                }, "producer-" + p);
+                t.setDaemon(true);
                 t.start();
                 prods.add(t);
             }
+            phase("produce-start");
+            long t0 = System.nanoTime();
+            start.countDown();
             for (Thread t : prods) {
                 t.join();
             }
             long produceMs = (Arrays.stream(produceEnd).max().orElse(t0) - t0) / 1_000_000;
             phase("produce-end");
             boolean finished = done.await(timeoutMs, TimeUnit.MILLISECONDS);
-            long elapsedMs = (System.nanoTime() - t0) / 1_000_000;
+            long consumeMs = (Math.max(lastReceive.get(), t0) - t0) / 1_000_000;
             phase("consume-end");
-            long total = (long) perQueue * pairs;
-            String fail = finished ? failure.get() : "timeout";
-            double mb = (double) total * size / MB;
-            System.out.printf("RESULT scenario=throughput status=%s %s producers=%d consumers=%d produce_ms=%d elapsed_ms=%d "
-                            + "msgs_s=%.1f mb_s=%.2f%s%n",
-                    fail == null ? "ok" : "failed", common(), pairs, pairs, produceMs, elapsedMs,
-                    perSec(total, elapsedMs), elapsedMs > 0 ? mb * 1000.0 / elapsedMs : 0,
-                    fail == null ? "" : " reason=" + fail);
-            return fail == null ? 0 : 1;
+            if (!finished) {
+                failure.compareAndSet(null, "timeout-after-" + timeoutMs / 1000 + "-s");
+            }
+            List<String> sample = new ArrayList<>();
+            if (failure.get() == null) {
+                for (Received st : state) {
+                    String bad = verifySample(st.sampleKeys, st.sample, docs);
+                    if (bad != null) {
+                        failure.compareAndSet(null, bad);
+                        break;
+                    }
+                    sample.addAll(st.sample);
+                }
+            }
+            long total = messages;
+            BenchResult r = result()
+                    .put("producers", producers)
+                    .put("consumers", consumers)
+                    .put("queues", queues)
+                    .put("produce_ms", produceMs)
+                    .put("consume_ms", consumeMs)
+                    .put("elapsed_ms", consumeMs)
+                    .put("produce_msgs_s", BenchResult.perSecond(total, produceMs), 1)
+                    .put("consume_msgs_s", BenchResult.perSecond(total, consumeMs), 1)
+                    .put("msgs_s", BenchResult.perSecond(total, consumeMs), 1)
+                    .put("produce_mb_s", BenchResult.mbPerSecond(total, size, produceMs), 2)
+                    .put("consume_mb_s", BenchResult.mbPerSecond(total, size, consumeMs), 2)
+                    .put("mb_s", BenchResult.mbPerSecond(total, size, consumeMs), 2)
+                    .put("samples", sample.size())
+                    .put("deflate_ratio", XmlPayload.deflateRatio(sample), 4);
+            if (failure.get() != null) {
+                r.fail(failure.get());
+            }
+            r.print();
+            return r.exitCode();
         } finally {
             for (Connection c : conns) {
                 try {
@@ -354,28 +472,36 @@ public final class Bench {
             MessageProducer producer = ps.createProducer(ps.createQueue(name));
             producer.setDeliveryMode(DeliveryMode.NON_PERSISTENT);
             long[] lat = new long[messages];
+            AtomicInteger received = new AtomicInteger();
             AtomicReference<String> failure = new AtomicReference<>();
             Thread t = new Thread(() -> {
                 try {
                     for (int n = 0; n < messages; n++) {
-                        Message m = consumer.receive(60_000);
+                        Message m = consumer.receive(IDLE_LIMIT_MS);
                         if (m == null) {
-                            failure.compareAndSet(null, "missing-message-after-" + n);
+                            failure.compareAndSet(null, "missing-message-expected-seq-" + (n + 1));
                             return;
                         }
-                        lat[n] = (System.nanoTime() - m.getLongProperty("sendNanos")) / 1000;
+                        long now = System.nanoTime();
+                        int seq = m.getIntProperty("seq");
+                        if (seq != n + 1) {
+                            failure.compareAndSet(null, "out-of-order-expected-seq-" + (n + 1) + "-received-seq-" + seq);
+                            return;
+                        }
+                        lat[n] = (now - m.getLongProperty("sendNanos")) / 1000;
+                        received.incrementAndGet();
                     }
                 } catch (Exception e) {
-                    failure.compareAndSet(null, e.toString().replace(' ', '_'));
+                    failure.compareAndSet(null, e.toString());
                 }
-            });
+            }, "latency-consumer");
+            t.setDaemon(true);
             t.start();
             phase("produce-start");
             long intervalNs = 1_000_000_000L / Math.max(1, rate);
             long next = System.nanoTime();
             for (int n = 0; n < messages; n++) {
-                long now;
-                while ((now = System.nanoTime()) < next) {
+                while (System.nanoTime() < next) {
                     Thread.onSpinWait();
                 }
                 TextMessage m = ps.createTextMessage(docs[n % docs.length]);
@@ -387,16 +513,24 @@ public final class Bench {
             phase("produce-end");
             t.join(timeoutMs);
             phase("consume-end");
-            String fail = failure.get();
-            long[] sorted = lat.clone();
+            if (t.isAlive()) {
+                failure.compareAndSet(null, "timeout-after-" + timeoutMs / 1000 + "-s-received-"
+                        + received.get() + "-of-" + messages);
+            }
+            int n = received.get();
+            long[] sorted = Arrays.copyOf(lat, n);
             Arrays.sort(sorted);
-            long p50 = sorted[sorted.length / 2];
-            long p99 = sorted[Math.min(sorted.length - 1, (int) (sorted.length * 0.99))];
-            long max = sorted[sorted.length - 1];
-            System.out.printf("RESULT scenario=latency status=%s %s rate=%d p50_us=%d p99_us=%d max_us=%d%s%n",
-                    fail == null ? "ok" : "failed", common(), rate, p50, p99, max,
-                    fail == null ? "" : " reason=" + fail);
-            return fail == null ? 0 : 1;
+            BenchResult r = result()
+                    .put("rate", rate)
+                    .put("received", n)
+                    .put("p50_us", n == 0 ? 0 : sorted[n / 2])
+                    .put("p99_us", n == 0 ? 0 : sorted[Math.min(n - 1, (int) (n * 0.99))])
+                    .put("max_us", n == 0 ? 0 : sorted[n - 1]);
+            if (failure.get() != null) {
+                r.fail(failure.get());
+            }
+            r.print();
+            return r.exitCode();
         }
     }
 }
