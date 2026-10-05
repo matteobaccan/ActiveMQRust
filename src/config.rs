@@ -41,7 +41,7 @@ impl Default for BrokerSection {
             max_memory_mb: 0,
             auto_delete_empty_after_secs: 0,
             topic_max_pending_per_consumer: 10_000,
-            compress_threshold_kb: 32,
+            compress_threshold_kb: 0,
             compress_min_saving_pct: 10,
         }
     }
@@ -499,7 +499,7 @@ pub const TEMPLATE: &str = r#"# ActiveMQRust by Matteo Baccan
 # max_memory_mb = 0                    # 0 = no limit
 # auto_delete_empty_after_secs = 0     # 0 = keep empty queues
 # topic_max_pending_per_consumer = 10000
-# compress_threshold_kb = 32           # broker compresses larger bodies; 0 = never
+# compress_threshold_kb = 0            # 0 = never (default, best throughput); e.g. 256 = compress bodies above 256 KB to save RAM
 # compress_min_saving_pct = 10
 
 [expiry]
@@ -584,7 +584,7 @@ mod tests {
     fn partial_file_takes_defaults() {
         let c = cfg(MIN).unwrap();
         assert_eq!(c.port, 61616);
-        assert_eq!(c.compress_threshold_bytes, 32 * 1024);
+        assert_eq!(c.compress_threshold_bytes, 0);
         assert_eq!(c.socket_buffer_bytes, 1024 * 1024);
         assert_eq!(c.processors, 0);
         assert_eq!(c.socket_buffer_bytes, 1024 * 1024);

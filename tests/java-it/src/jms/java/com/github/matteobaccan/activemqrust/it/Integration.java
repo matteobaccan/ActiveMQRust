@@ -45,15 +45,21 @@ public final class Integration {
     private final String user;
     private final String password;
     private final boolean longTests;
+    private final int thresholdKb;
     private int pass;
     private int fail;
     private int skip;
 
-    public Integration(String url, String user, String password, boolean longTests) {
+    /**
+     * @param thresholdKb the broker's {@code compress_threshold_kb}: 0 (the default) checks that
+     *                    the broker compresses nothing; a positive value below 64 checks the boundary
+     */
+    public Integration(String url, String user, String password, boolean longTests, int thresholdKb) {
         this.url = url;
         this.user = user;
         this.password = password;
         this.longTests = longTests;
+        this.thresholdKb = thresholdKb;
     }
 
     interface Check {
@@ -466,9 +472,13 @@ public final class Integration {
             Queue q = s.createQueue(name("IT.BROKERZIP"));
             MessageProducer p = s.createProducer(q);
             MessageConsumer consumer = s.createConsumer(q);
-            // TextMessage content = 4-byte length + UTF-8, so text of 32764 chars is exactly 32 KB.
-            int[] lengths = {32763, 32764, 32765};
-            boolean[] expected = {false, false, true};
+            // TextMessage content = 4-byte length + UTF-8, so text of T * 1024 - 4 chars is exactly
+            // T KB. Threshold 0 (default): nothing is compressed, checked around 32 KB and on the
+            // larger bodies below (all of at least 64 KB).
+            int boundary = (thresholdKb > 0 ? thresholdKb : 32) * 1024 - 4;
+            int[] lengths = {boundary - 1, boundary, boundary + 1};
+            boolean[] expected = {false, false, thresholdKb > 0};
+            boolean large = thresholdKb > 0 && thresholdKb < 64;
             for (int i = 0; i < lengths.length; i++) {
                 String text = String.join("", Collections.nCopies(lengths[i] / 4 + 1, "abcd")).substring(0, lengths[i]);
                 p.send(s.createTextMessage(text));
@@ -486,7 +496,7 @@ public final class Integration {
             b.writeBytes(big);
             p.send(b);
             BytesMessage rb = (BytesMessage) consumer.receive(5000);
-            check(((ActiveMQMessage) rb).isCompressed(), "bytes message not compressed");
+            check(((ActiveMQMessage) rb).isCompressed() == large, "bytes message: compressed=" + !large + " expected " + large);
             byte[] back = new byte[big.length];
             check(rb.readBytes(back) == big.length && Arrays.equals(back, big), "bytes body changed");
             MapMessage mm = s.createMapMessage();
@@ -495,7 +505,7 @@ public final class Integration {
             }
             p.send(mm);
             MapMessage rm = (MapMessage) consumer.receive(5000);
-            check(((ActiveMQMessage) rm).isCompressed(), "map message not compressed");
+            check(((ActiveMQMessage) rm).isCompressed() == large, "map message: compressed=" + !large + " expected " + large);
             check(("value-value-value-2999").equals(rm.getString("k2999")), "map body changed");
             StreamMessage sm = s.createStreamMessage();
             for (int i = 0; i < 4000; i++) {
@@ -503,7 +513,7 @@ public final class Integration {
             }
             p.send(sm);
             StreamMessage rs = (StreamMessage) consumer.receive(5000);
-            check(((ActiveMQMessage) rs).isCompressed(), "stream message not compressed");
+            check(((ActiveMQMessage) rs).isCompressed() == large, "stream message: compressed=" + !large + " expected " + large);
             for (int i = 0; i < 4000; i++) {
                 check(("stream-value-" + (i % 10)).equals(rs.readString()), "stream body changed at " + i);
             }
@@ -513,7 +523,7 @@ public final class Integration {
             }
             p.send(s.createObjectMessage(list));
             ObjectMessage ro = (ObjectMessage) consumer.receive(5000);
-            check(((ActiveMQMessage) ro).isCompressed(), "object message not compressed");
+            check(((ActiveMQMessage) ro).isCompressed() == large, "object message: compressed=" + !large + " expected " + large);
             check(list.equals(ro.getObject()), "object body changed");
         }
     }

@@ -157,9 +157,11 @@ fn level_is_the_lowest_with_a_real_saving_on_xml_base64() {
 
 #[test]
 fn defaults_threshold_zero_and_discard_counter() {
-    let b = broker_with(|_| {});
+    let defaults = broker_with(|_| {});
+    assert_eq!(defaults.cfg.compress_threshold_bytes, 0);
+    assert_eq!(defaults.cfg.compress_min_saving_pct, 10);
+    let b = broker_with(|f| f.broker.compress_threshold_kb = 32);
     assert_eq!(b.cfg.compress_threshold_bytes, 32 * 1024);
-    assert_eq!(b.cfg.compress_min_saving_pct, 10);
     let q = Destination::queue("ZIP.CFG");
     let text = |content: Bytes| {
         let mut m = Message::new(t::ACTIVEMQ_TEXT_MESSAGE);
@@ -168,12 +170,16 @@ fn defaults_threshold_zero_and_discard_counter() {
         m
     };
     let big = Bytes::from(payload::plain_text(1024 * 1024, 1));
-    // Disabled: a 1 MB compressible body is stored as received.
+    // Default: a 1 MB compressible body is stored as received.
+    let mut m = text(big.clone());
+    assert_eq!(defaults.compress(&mut m), Outcome::Skipped);
+    assert_eq!(m.content.as_ref(), Some(&big));
+    // Disabled explicitly: the same.
     let off = broker_with(|f| f.broker.compress_threshold_kb = 0);
     let mut m = text(big.clone());
     assert_eq!(off.compress(&mut m), Outcome::Skipped);
     assert_eq!(m.content.as_ref(), Some(&big));
-    // Default: compressed and counted.
+    // Threshold 32 KB: compressed and counted.
     let mut m = text(big.clone());
     assert_eq!(b.compress(&mut m), Outcome::Compressed);
     // Incompressible: compressed, then discarded and counted.
@@ -191,7 +197,10 @@ fn defaults_threshold_zero_and_discard_counter() {
     assert_eq!(b.stats.compressed.load(Relaxed), 1);
     assert_eq!(b.stats.compress_discarded.load(Relaxed), 1);
     // Minimum saving of 0%: any result not larger than the original is kept.
-    let keep_all = broker_with(|f| f.broker.compress_min_saving_pct = 0);
+    let keep_all = broker_with(|f| {
+        f.broker.compress_threshold_kb = 32;
+        f.broker.compress_min_saving_pct = 0;
+    });
     let mut m = text(Bytes::from(vec![b'z'; 40 * 1024]));
     assert_eq!(keep_all.compress(&mut m), Outcome::Compressed);
 }

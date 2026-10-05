@@ -29,12 +29,14 @@ import org.apache.activemq.util.ByteSequence;
 /**
  * Message compression checks for all five body types.
  * <pre>
- *   java -jar mqrust-acceptance.jar compression --url ... --user ... --password ... [--threshold-kb 32]
+ *   java -jar mqrust-acceptance.jar compression --url ... --user ... --password ... [--threshold-kb 0|32]
  *   java -jar mqrust-acceptance.jar compression-golden --url ... --out tests/data/compression
  * </pre>
  * The checks: a client-compressed body reaches the consumer byte-for-byte as the client
  * produced it; uncompressed bodies of exactly threshold - 1, threshold and threshold + 1
  * content bytes are read correctly, and only the last one is compressed by ActiveMQRust.
+ * With {@code --threshold-kb 0} (the default, matching the broker default) the same bodies
+ * around 32 KB are read correctly and none is compressed by the broker.
  * The golden mode writes, for each type, the frame a compressing client marshals followed by
  * the frame of the same body without compression (OpenWire version 12, loose encoding).
  */
@@ -158,7 +160,9 @@ public final class CompressionChecks {
     }
 
     public int run() throws Exception {
-        int threshold = Integer.parseInt(opts.getOrDefault("threshold-kb", "32")) * 1024;
+        int thresholdKb = Integer.parseInt(opts.getOrDefault("threshold-kb", "0"));
+        // Threshold 0: the broker compresses nothing; the sizes around 32 KB check that.
+        int threshold = (thresholdKb > 0 ? thresholdKb : 32) * 1024;
         try (Connection zip = connect(true); Connection plain = connect(false)) {
             Session zs = zip.createSession(false, Session.AUTO_ACKNOWLEDGE);
             Session ps = plain.createSession(false, Session.AUTO_ACKNOWLEDGE);
@@ -195,7 +199,7 @@ public final class CompressionChecks {
                         continue;
                     }
                     boolean compressed = ((ActiveMQMessage) m).isCompressed();
-                    boolean expectCompressed = rust && delta > 0;
+                    boolean expectCompressed = rust && thresholdKb > 0 && delta > 0;
                     check(name + " compressed=" + expectCompressed, compressed == expectCompressed,
                             "compressed=" + compressed);
                     check(name + " body", payload(n).equals(body(m)), "body differs");

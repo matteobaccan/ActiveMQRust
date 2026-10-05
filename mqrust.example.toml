@@ -20,7 +20,7 @@
 # max_memory_mb = 0                    # 0 = no limit
 # auto_delete_empty_after_secs = 0     # 0 = keep empty queues
 # topic_max_pending_per_consumer = 10000
-# compress_threshold_kb = 32           # broker compresses larger bodies; 0 = never
+# compress_threshold_kb = 0            # 0 = never (default, best throughput); e.g. 256 = compress bodies above 256 KB to save RAM
 # compress_min_saving_pct = 10
 
 [expiry]

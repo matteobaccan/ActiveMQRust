@@ -170,7 +170,7 @@ fn first_setup_creates_the_file_from_the_template() {
     assert!(admin.contains("password_hash = \"$argon2id$"), "{admin}");
     assert!(!admin.contains("password = "), "{admin}");
     assert!(!file.contains(PASSWORD));
-    assert!(file.contains("# compress_threshold_kb = 32"), "template comments kept");
+    assert!(file.contains("# compress_threshold_kb = 0 "), "template comments kept");
     assert_eq!(code(&check_config(&path)), 0);
 }
 

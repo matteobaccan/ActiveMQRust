@@ -10,6 +10,7 @@ import java.util.Map;
  * Entry point.
  * <pre>
  *   java -jar mqrust-acceptance.jar [accept] --url tcp://127.0.0.1:61616 --user admin --password admin [--only 1|2|3]
+ *   java -jar mqrust-acceptance.jar integration --url ... [--only name] [--long] [--threshold-kb 0|32]
  *   java -jar mqrust-acceptance.jar expiry-options --url ... (broker started with the [expiry] options in ExpiryOptions)
  *   java -jar mqrust-acceptance.jar bench --url ... --user ... --password ... --scenario hold|throughput|latency [options]
  * </pre>
@@ -46,7 +47,8 @@ public final class Main {
                 code = new Acceptance(url, user, password).run(opts.get("only"));
                 break;
             case "integration":
-                code = new Integration(url, user, password, opts.containsKey("long")).runAll(opts.get("only"));
+                code = new Integration(url, user, password, opts.containsKey("long"),
+                        Integer.parseInt(opts.getOrDefault("threshold-kb", "0"))).runAll(opts.get("only"));
                 break;
             case "console":
                 code = new ConsoleCheck(url, user, password, opts.getOrDefault("admin", "http://127.0.0.1:8161"),

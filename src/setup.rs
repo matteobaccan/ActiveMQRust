@@ -524,7 +524,7 @@ mod tests {
         assert_eq!(cfg.users.len(), 1);
         assert_eq!(cfg.users[0].username, "app1");
         assert!(f.text().contains("# [broker]") || f.text().contains("[broker]"));
-        assert!(f.text().contains("# compress_threshold_kb = 32"));
+        assert!(f.text().contains("# compress_threshold_kb = 0 "));
     }
 
     #[test]

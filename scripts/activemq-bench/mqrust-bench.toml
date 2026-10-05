@@ -1,11 +1,12 @@
 # ActiveMQRust by Matteo Baccan
 # SPDX-License-Identifier: MIT
 #
-# ActiveMQRust configuration for the comparison benchmark: only the benchmark user is set;
-# every other key keeps its default (broker compression above 32 KB is active).
+# ActiveMQRust configuration for the comparison benchmark: the benchmark user is set and
+# broker compression is enabled above 32 KB (measurement (e) measures it; the default is 0 = off).
 
 [broker]
 bind = "127.0.0.1"
+compress_threshold_kb = 32
 
 [admin]
 username = "admin"

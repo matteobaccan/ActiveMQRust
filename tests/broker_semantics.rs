@@ -423,7 +423,7 @@ fn memory_limit_rejects_and_recovers() {
 
 #[test]
 fn broker_compresses_large_bodies() {
-    let b = broker();
+    let b = broker_with(|f| f.broker.compress_threshold_kb = 32);
     let q = Destination::queue("ZIP");
     let mut m = msg(&q, "");
     m.content = Some(Bytes::from(vec![b'a'; 40 * 1024]));

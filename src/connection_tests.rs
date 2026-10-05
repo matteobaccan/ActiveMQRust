@@ -393,8 +393,11 @@ async fn codec_is_pluggable() {
 // -- broker-side compression over real connections -------------------------------------------
 
 /// Starts a broker that serves every connection accepted on a loopback port.
-async fn start_broker() -> (Arc<Broker>, SocketAddr, watch::Sender<bool>) {
-    let broker = broker();
+/// A served broker with compression enabled above 32 KB (off by default).
+async fn start_compressing_broker() -> (Arc<Broker>, SocketAddr, watch::Sender<bool>) {
+    let mut fc = FileConfig::default();
+    fc.broker.compress_threshold_kb = 32;
+    let broker = Broker::new(Arc::new(build(fc, ConfigSource::Defaults, &Overrides::default()).unwrap()));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let (stop, shutdown) = watch::channel(false);
@@ -550,7 +553,7 @@ fn compressible(len: usize) -> Bytes {
 
 #[tokio::test]
 async fn large_compressed_message_keeps_fifo_and_headers() {
-    let (broker, addr, _stop) = start_broker().await;
+    let (broker, addr, _stop) = start_compressing_broker().await;
     let q = Destination::queue("ZIP.FIFO");
     let mut consumer = TestClient::open(addr, "ID:zip-consumer").await;
     consumer.consume(&q, 100).await;
@@ -594,7 +597,7 @@ async fn large_compressed_message_keeps_fifo_and_headers() {
 /// make progress between the end of its frame and its storage.
 #[tokio::test(flavor = "current_thread")]
 async fn other_connections_progress_during_a_large_compression() {
-    let (broker, addr, _stop) = start_broker().await;
+    let (broker, addr, _stop) = start_compressing_broker().await;
     let big_q = Destination::queue("ZIP.BIG");
     let small_q = Destination::queue("ZIP.SMALL");
     let mut other = TestClient::open(addr, "ID:zip-other").await;
