@@ -1,0 +1,261 @@
+# ActiveMQRust by Matteo Baccan
+# SPDX-License-Identifier: MIT
+
+name: Build and Test ActiveMQRust
+
+on:
+  push:
+    branches: [ "main" ]
+    tags: [ "v*" ]
+  # Any base branch: stacked pull requests (feature on top of feature) get the
+  # same tests as those targeting main.
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+# Least privilege by default: every job only reads the repository. The release job
+# raises this to `contents: write` for itself, which is the only write we need.
+permissions:
+  contents: read
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Tests: run on every push, pull request, tag and manual dispatch.
+  # Windows also enforces formatting. macOS is included because the code has
+  # platform-specific branches (Windows service, process memory, processor
+  # affinity, console signals).
+  # The project always tests in release: the suite measures the hot path.
+  # ---------------------------------------------------------------------------
+  test:
+    name: 🧪 Test (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: 🪟 Windows x86_64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+
+          - name: 🍎 macOS ARM64 (Apple Silicon)
+            os: macos-latest
+            target: aarch64-apple-darwin
+
+    steps:
+      - name: 🧰 Checkout repository
+        uses: actions/checkout@v7
+
+      - name: 🦀 Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+          components: rustfmt, clippy
+
+      # rustfmt.toml sets max_width = 120.
+      - name: 🎨 Check formatting
+        if: runner.os == 'Windows'
+        run: cargo fmt --check
+
+      - name: 📜 Restore cargo cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: test-${{ matrix.target }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      # Compile first so the timeout below measures the tests alone: a cold
+      # release build (fat LTO) takes several minutes, the suite itself much less.
+      - name: 🔨 Build test binaries
+        run: cargo test --release --no-run --target ${{ matrix.target }}
+
+      # Lints on both systems: part of the code (the Windows service, process memory,
+      # processor affinity) is compiled on one system only.
+      - name: 📎 Clippy
+        run: cargo clippy --all-targets --target ${{ matrix.target }} -- -D warnings
+
+      # A hung test fails the job in minutes instead of holding the runner for hours.
+      - name: 🧪 Run test suite
+        timeout-minutes: 10
+        run: cargo test --release --target ${{ matrix.target }}
+
+  # ---------------------------------------------------------------------------
+  # Release binaries: only for version tags and manual runs. No tests here;
+  # the `test` job runs in parallel and gates the release.
+  # The release profile strips the binaries (`strip = true`, `debug = false`):
+  # the Windows symbols archive is built only when the linker leaves a PDB.
+  # ---------------------------------------------------------------------------
+  build:
+    name: 🛠️ Build (${{ matrix.name }})
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Windows
+          - name: 🪟 Windows x86_64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            asset: activemq-rust-windows-x86_64
+            ext: zip
+            binary: mqrust.exe
+
+          # Windows ARM64 is not built: Windows on ARM runs the x86_64 exe
+          # under emulation.
+
+          # macOS
+          - name: 🍎 macOS ARM64 (Apple Silicon)
+            os: macos-latest
+            target: aarch64-apple-darwin
+            asset: activemq-rust-macos-arm64
+            ext: tar.gz
+            binary: mqrust
+
+    steps:
+      - name: 🧰 Checkout repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: 🦀 Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      # Release builds never run on `main` pushes, so the release-profile cache
+      # is written by manual runs on `main` and read by tag runs.
+      - name: 📜 Restore cargo cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
+          save-if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' }}
+
+      - name: 🛠️ Build release binary
+        run: cargo build --release --target ${{ matrix.target }}
+
+      # Asset names carry the version (activemq-rust-macos-arm64-0.3.0.tar.gz), read from
+      # Cargo.toml; on a tag run it must match the tag.
+      # macOS: tar.gz, Windows: zip, each with the executable, LICENSE, README.md and the
+      # commented configuration template mqrust.example.toml. Windows also gets a separate
+      # -symbols zip with the PDB when the linker produced one (unpacked next to the exe,
+      # it lets crash dumps resolve function names).
+      - name: 📦 Package release asset
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)"
+          if [ -z "$version" ]; then
+            echo "::error::No version in Cargo.toml"; exit 1
+          fi
+          if [ "${GITHUB_REF_TYPE}" = "tag" ] && [ "${GITHUB_REF_NAME#v}" != "$version" ]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} does not match Cargo.toml version $version"; exit 1
+          fi
+          asset="${{ matrix.asset }}-$version.${{ matrix.ext }}"
+          out="target/${{ matrix.target }}/release"
+          mkdir -p stage dist
+          cp "$out/${{ matrix.binary }}" LICENSE README.md mqrust.example.toml stage/
+          case "${{ matrix.ext }}" in
+            tar.gz)
+              chmod +x "stage/${{ matrix.binary }}"
+              tar -C stage -czf "dist/$asset" "${{ matrix.binary }}" LICENSE README.md mqrust.example.toml
+              ;;
+            zip)
+              (cd stage && 7z a -tzip "../dist/$asset" mqrust.exe LICENSE README.md mqrust.example.toml)
+              # The release profile strips the executable, so usually there is no PDB:
+              # the symbols archive is skipped instead of failing the build.
+              if compgen -G "$out/*.pdb" > /dev/null; then
+                cp "$out"/*.pdb stage/
+                (cd stage && 7z a -tzip "../dist/${{ matrix.asset }}-symbols-$version.zip" ./*.pdb)
+              else
+                echo "No PDB in $out: no symbols archive"
+              fi
+              ;;
+          esac
+          ls -la dist
+
+      # Sizes of the executable and the archives, to compare with the previous release.
+      - name: 📏 Sizes
+        shell: bash
+        run: |
+          {
+            echo "### Sizes (${{ matrix.name }})"
+            echo
+            echo "| File | Bytes |"
+            echo "|---|---|"
+            for f in "target/${{ matrix.target }}/release/${{ matrix.binary }}" dist/*; do
+              [ -f "$f" ] && echo "| $(basename "$f") | $(wc -c < "$f" | tr -d ' ') |"
+            done
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: ⬆️ Upload build artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.asset }}
+          # `dist/*` rather than the single asset: the Windows build may also produce the
+          # symbols archive, and the release job flattens whatever arrives.
+          path: dist/*
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # Publish: tags only, after tests and every build succeeded.
+  # ---------------------------------------------------------------------------
+  release:
+    name: 🚀 Create GitHub Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [test, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: 🧰 Checkout
+        uses: actions/checkout@v7
+
+      # The release body is the CHANGELOG.md section whose heading matches the
+      # tag (v0.3.0 -> "## [0.3.0]"). generate_release_notes then appends the
+      # merged pull requests, new contributors and the compare link.
+      - name: 📝 Extract release notes from CHANGELOG.md
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          awk -v ver="$version" '
+            /^## \[/ { if (found) exit; found = index($0, "## [" ver "]") == 1; next }
+            found { print }
+          ' CHANGELOG.md > release-notes.md
+          if [ ! -s release-notes.md ]; then
+            echo "::warning::No CHANGELOG.md section for $version, the release body will only contain the generated notes"
+          fi
+          echo "--- release-notes.md ---"; cat release-notes.md
+
+      - name: ⬇️ Download all artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: release-artifacts
+
+      - name: 📁 Flatten release artifacts
+        shell: bash
+        run: |
+          mkdir -p final-release
+          find release-artifacts -type f -exec cp {} final-release/ \;
+          ls -la final-release
+
+      # A downloads grid (architecture x system, one link per asset found) goes above the
+      # CHANGELOG section.
+      - name: 🧮 Downloads grid
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/downloads_table.py final-release "$GITHUB_REF_NAME" "$GITHUB_REPOSITORY" > downloads.md
+          { cat downloads.md; echo "## What's new"; cat release-notes.md; } > release-body.md
+          echo "--- release-body.md ---"; cat release-body.md
+
+      - name: 🚀 Publish GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          files: final-release/*
+          body_path: release-body.md
+          generate_release_notes: true

@@ -1,5 +1,7 @@
 <p align="center"><img src="docs/assets/logo-wordmark.svg" alt="ActiveMQRust" width="420"></p>
 
+<p align="center"><a href="https://github.com/matteobaccan/ActiveMQRust/actions/workflows/build.yml"><img src="https://github.com/matteobaccan/ActiveMQRust/actions/workflows/build.yml/badge.svg" alt="Build and Test ActiveMQRust"></a></p>
+
 # ActiveMQRust
 
 An **in-memory** message broker written in **Rust** that speaks Apache ActiveMQ's **OpenWire** protocol.
@@ -71,6 +73,26 @@ After a restart the broker starts empty. Clients that use a `failover:` URL reco
 - The broker identifies itself as **`ActiveMQRust <version>`**.
 
 Not in this version: persistence, durable subscriptions, XA transactions, wildcards, network of brokers, protocols other than OpenWire.
+
+## Download
+
+The [latest release](https://github.com/matteobaccan/ActiveMQRust/releases/latest) has:
+
+| System | Download | Contents |
+|---|---|---|
+| Windows x86_64 | `activemq-rust-windows-x86_64-<version>.zip` | `mqrust.exe`, LICENSE, README.md, `mqrust.example.toml` |
+| macOS ARM64 (Apple Silicon) | `activemq-rust-macos-arm64-<version>.tar.gz` | `mqrust`, LICENSE, README.md, `mqrust.example.toml` |
+
+On macOS the commands are the same as below, with `./mqrust` instead of `mqrust.exe`:
+
+```
+tar -xzf activemq-rust-macos-arm64-<version>.tar.gz
+xattr -d com.apple.quarantine mqrust     # the build is not signed: allow it once
+./mqrust init-config
+./mqrust
+```
+
+The Windows service (`mqrust.exe service ...`) is available on Windows only: on macOS the `service` commands exit with code 2 and the broker runs in the foreground (Ctrl+C stops it). In the admin console on macOS, *Working Set* is the resident size of the process and *Private Bytes* its physical footprint (the "Memory" column of Activity Monitor).
 
 ## Getting started
 
@@ -210,6 +232,8 @@ cargo build --release
 ```
 
 The output is `target\release\mqrust.exe`. The C runtime is linked statically: the executable imports only Windows system DLLs.
+
+`scripts\test.cmd` formats the sources (`cargo fmt`) and runs the tests in release mode (`cargo test --release`), as the CI does on Windows and macOS.
 
 ## Acceptance test
 

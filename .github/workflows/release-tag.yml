@@ -1,0 +1,58 @@
+# ActiveMQRust by Matteo Baccan
+# SPDX-License-Identifier: MIT
+#
+# ActiveMQRust -- tag a release when its version reaches main.
+#
+# A release commit sets the version in Cargo.toml. Once it is on main, this job creates the
+# tag `vx.y.z` on that commit (when it does not exist yet and CHANGELOG.md has a `[x.y.z]`
+# section) and starts `build.yml` on the tag, which builds the archives and publishes the
+# GitHub Release. A tag pushed with the workflow token does not start other workflows by
+# itself, hence the explicit dispatch.
+
+name: Tag release
+
+on:
+  push:
+    branches: [ "main" ]
+    paths: [ "Cargo.toml" ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: release-tag
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    name: 🏷️ Tag the version and start the release build
+    runs-on: ubuntu-latest
+    steps:
+      - name: 🧰 Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: 🏷️ Tag and dispatch
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)"
+          if [ -z "$version" ]; then
+            echo "::error::No version in Cargo.toml"; exit 1
+          fi
+          tag="v$version"
+          if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+            echo "$tag already exists: nothing to do"; exit 0
+          fi
+          if ! grep -q "^## \[$version\]" CHANGELOG.md; then
+            echo "::error::CHANGELOG.md has no [$version] section: not tagging"; exit 1
+          fi
+          git tag "$tag" "$GITHUB_SHA"
+          git push origin "$tag"
+          gh workflow run build.yml --ref "$tag"
+          echo "Tagged $tag on $GITHUB_SHA and started build.yml on it"
