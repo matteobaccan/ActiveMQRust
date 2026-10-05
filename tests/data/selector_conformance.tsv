@@ -1,0 +1,578 @@
+# ActiveMQRust by Matteo Baccan
+# SPDX-License-Identifier: MIT
+#
+# Selector conformance table: each line is <result><TAB><selector>, where the result is what
+# ActiveMQ's own selector engine (org.apache.activemq.selector.SelectorParser and
+# org.apache.activemq.filter, activemq-client 5.18.7 and 6.3.2, identical results) gives for the
+# message built by conformance_message() in tests/selector_semantics.rs:
+#   TRUE / FALSE / NULL  the selector evaluates to that value (NULL = UNKNOWN)
+#   ERR                  the selector is rejected when it is parsed
+#   EXC                  evaluation raises an exception (the message is not selected)
+TRUE	color = 'red'
+FALSE	color = 'blue'
+TRUE	color <> 'blue'
+TRUE	size > 2 AND size < 4
+TRUE	size = 3.0
+TRUE	flag = TRUE
+TRUE	flag
+FALSE	off
+FALSE	size
+FALSE	color
+FALSE	NOT flag
+TRUE	NOT off
+TRUE	NOT size
+TRUE	NOT color
+NULL	NOT missing
+TRUE	NOT bytes
+ERR	NOT 5
+ERR	NOT 'x'
+ERR	NOT (size + 1)
+ERR	NOT -size
+ERR	5
+ERR	'x'
+ERR	size + 1
+FALSE	size AND flag
+FALSE	flag AND size
+TRUE	flag OR size
+TRUE	size OR flag
+NULL	missing AND flag
+TRUE	missing OR flag
+NULL	size OR missing
+NULL	missing OR size
+FALSE	a = 1 and not b is null
+FALSE	size = 3 and not color is null
+TRUE	size = 3 and not missing is null
+FALSE	size = 3 and not flag is null
+FALSE	not color is null
+TRUE	not missing is null
+TRUE	NOT color IS NOT NULL
+TRUE	(NOT missing) IS NULL
+ERR	NULL = NULL
+ERR	missing = NULL
+TRUE	missing IS NULL
+TRUE	missing = missing
+FALSE	color = missing
+NULL	missing = color
+NULL	missing <> color
+TRUE	color <> missing
+TRUE	bytes = bytes
+FALSE	bytes IS NULL
+TRUE	bytes IS NOT NULL
+FALSE	bytes = 'x'
+TRUE	bytes <> 'x'
+ERR	TRUE = 1
+FALSE	1 = TRUE
+TRUE	TRUE = TRUE
+TRUE	'a' = 'a'
+FALSE	'a' = 1
+FALSE	1 = 'a'
+ERR	TRUE = 'a'
+TRUE	FALSE = FALSE
+TRUE	TRUE <> FALSE
+ERR	color > 'a'
+ERR	'a' < color
+ERR	color > TRUE
+ERR	flag > FALSE
+ERR	size > TRUE
+ERR	size > 'a'
+ERR	size > NULL
+NULL	size > missing
+NULL	missing > 1
+TRUE	color > name
+FALSE	color < name
+TRUE	name < color
+TRUE	color >= color
+TRUE	flag > off
+TRUE	off < flag
+TRUE	flag >= flag
+FALSE	color > size
+FALSE	size > color
+FALSE	flag > size
+FALSE	t = TRUE
+TRUE	t = 'true'
+FALSE	flag = 'true'
+FALSE	str5 = 5
+TRUE	NOT (str5 = 5)
+FALSE	str5 > 4
+FALSE	c = 'x'
+TRUE	c <> 'x'
+FALSE	c LIKE 'x'
+TRUE	c NOT LIKE 'x'
+NULL	c IN ('x')
+NULL	c NOT IN ('x')
+FALSE	c IS NULL
+ERR	c > 'a'
+FALSE	size LIKE '3'
+TRUE	size NOT LIKE '3'
+NULL	size IN ('3')
+NULL	size NOT IN ('3')
+NULL	missing LIKE 'a'
+NULL	missing NOT LIKE 'a'
+NULL	missing IN ('a')
+NULL	missing NOT IN ('a')
+TRUE	color IN ('red','blue')
+FALSE	color NOT IN ('red','blue')
+FALSE	color IN ('blue')
+TRUE	color NOT IN ('blue')
+TRUE	JMSCorrelationID IN ('ORD-A-100','ORD-C')
+TRUE	JMSCorrelationID LIKE 'ORD-A-%'
+TRUE	JMSCorrelationID NOT LIKE 'ORD-B-%'
+TRUE	code1 LIKE 'A\_%' ESCAPE '\'
+FALSE	code2 LIKE 'A\_%' ESCAPE '\'
+TRUE	code1 LIKE 'A_1'
+TRUE	pct LIKE '100!%' ESCAPE '!'
+TRUE	pct LIKE '100%'
+TRUE	color LIKE '%e%'
+TRUE	color LIKE 'r%'
+TRUE	color LIKE '%d'
+TRUE	color LIKE 're_'
+TRUE	color LIKE 'red'
+FALSE	color LIKE 'RED'
+TRUE	color LIKE '%'
+TRUE	empty LIKE '%'
+FALSE	empty LIKE '_'
+TRUE	empty LIKE ''
+ERR	color LIKE 'r%' ESCAPE ''
+ERR	color LIKE 'r%' ESCAPE 'ab'
+FALSE	color LIKE 'r!%' ESCAPE '!'
+FALSE	color LIKE 'r!d' ESCAPE '!'
+TRUE	name LIKE 'O''%'
+FALSE	color LIKE 'r.d'
+FALSE	color LIKE '[r]ed'
+FALSE	color LIKE 'r*'
+ERR	color LIKE size
+ERR	size IN (3)
+NULL	(size) IN ('3')
+ERR	size + 0 IN ('3')
+TRUE	size BETWEEN 1 AND 5
+FALSE	size NOT BETWEEN 1 AND 5
+TRUE	size BETWEEN 3 AND 3
+FALSE	size BETWEEN 5 AND 1
+TRUE	size NOT BETWEEN 5 AND 1
+NULL	missing BETWEEN 1 AND 10
+NULL	missing NOT BETWEEN 1 AND 10
+NULL	size BETWEEN missing AND 10
+NULL	size NOT BETWEEN missing AND 10
+TRUE	size NOT BETWEEN missing AND 1
+NULL	size BETWEEN 1 AND missing
+TRUE	size NOT BETWEEN 4 AND missing
+ERR	color BETWEEN 'a' AND 'z'
+ERR	size BETWEEN 'a' AND 'z'
+ERR	color BETWEEN name AND 'z'
+TRUE	size * 2 + 1 = 7
+TRUE	-size = -3
+TRUE	weight / 0.5 = 5
+FALSE	size / 0 = 1
+FALSE	size / 0 IS NULL
+TRUE	size % 2 = 1
+FALSE	size % 0 IS NULL
+TRUE	weight % 2 = 0.5
+TRUE	weight / 0 > 1000000
+FALSE	weight / 0 IS NULL
+TRUE	-weight / 0 < 0
+TRUE	dzero / 0 = dzero / 0
+FALSE	dzero / 0 <> dzero / 0
+FALSE	dzero / 0 IS NULL
+FALSE	size / 2 = 1
+TRUE	size / 2.0 = 1.5
+FALSE	size / zero IS NULL
+TRUE	size / dzero > 1
+TRUE	color + 'x' = 'redx'
+TRUE	color + size = 'red3'
+NULL	color + missing = 'rednull'
+TRUE	color + flag = 'redtrue'
+TRUE	color + weight = 'red2.5'
+TRUE	color + f = 'red1.5'
+TRUE	color + l = 'red10000000000'
+FALSE	color + bytes IS NULL
+TRUE	color + 1.0 = 'red1.0'
+TRUE	color + 1e20 = 'red1.0E20'
+TRUE	color + c = 'redx'
+EXC	size + color IS NULL
+EXC	size + color = '3red'
+NULL	missing + 1 > 0
+TRUE	missing + 1 IS NULL
+TRUE	'a' + 'b' = 'ab'
+EXC	flag + 1 IS NULL
+TRUE	size + 1 = 4
+TRUE	b + s = 307
+TRUE	l + 1 = 10000000001
+TRUE	l > 9999999999
+TRUE	f = 1.5
+TRUE	f * 2 = 3
+TRUE	f = weight - 1
+TRUE	big = ff
+TRUE	ff = big
+FALSE	big > ff
+EXC	big + 0.0 = ff
+TRUE	s = 300
+FALSE	300 = s
+TRUE	b = 7
+FALSE	7 = b
+FALSE	s > b
+TRUE	b < s
+TRUE	b = s - 293
+TRUE	s = 300.0
+FALSE	300.0 = s
+TRUE	f = 1.5
+EXC	1.5 = f
+TRUE	size = 3L
+TRUE	size = 0x3
+TRUE	size = 03
+TRUE	size = 3l
+TRUE	size = 3.
+ERR	size = 3.0f
+ERR	size = 3.0d
+ERR	size = 3D
+ERR	size = 3F
+TRUE	weight = 25e-1
+TRUE	weight = 25E-1
+TRUE	weight = .25e1
+TRUE	weight = 2.5e0
+ERR	size = 0x3L
+TRUE	size = 0X3
+ERR	size = 08
+ERR	size = 09
+FALSE	size = 0
+TRUE	zero = 00
+TRUE	zero = 0x0
+TRUE	l = 10000000000
+TRUE	l = 0x2540BE400
+ERR	l = 0x2540BE400L
+TRUE	size = 3e0
+TRUE	size = 30e-1
+FALSE	size = 1e309
+FALSE	size = 9223372036854775807
+FALSE	size = 9223372036854775808
+FALSE	size = -9223372036854775808
+FALSE	size = 99999999999999999999
+ERR	size = 0xFFFFFFFFFFFFFFFF
+ERR	size = 0x
+ERR	size = 1e
+ERR	size = 1.5.5
+ERR	size = 1_000
+TRUE	size = +3
+TRUE	size = - -3
+TRUE	size = --3
+TRUE	size = -(-3)
+TRUE	- size = -3
+TRUE	color = 'r''ed' OR color = 'red'
+TRUE	name = 'O''Brien'
+ERR	name = "O'Brien"
+ERR	color = 'red
+ERR	color == 'red'
+ERR	color != 'red'
+ERR	color = = 'red'
+ERR	color = 'red' AN size > 2
+ERR	(color = 'red'
+ERR	color = 'red')
+ERR	()
+ERR	color = 'red' AND
+ERR	AND color = 'red'
+ERR	color IN ()
+ERR	color IN ('a',)
+ERR	color IN ('a' 'b')
+ERR	color IN 'a'
+ERR	color IN (size)
+ERR	color LIKE
+ERR	color LIKE 'a' ESCAPE
+ERR	color BETWEEN 1
+ERR	color IS 'x'
+ERR	color IS NOT 'x'
+ERR	color IS
+ERR	x.y = 1
+NULL	x$y = 1
+NULL	_x = 1
+NULL	$x = 1
+ERR	1x = 1
+NULL	x-y = 1
+NULL	color = 'red' and SIZE = 3
+NULL	Color = 'red'
+NULL	COLOR = 'red'
+TRUE	color = 'red' AnD size = 3
+TRUE	color = 'red' oR size = 99
+FALSE	color = 'RED'
+TRUE	flag = true
+TRUE	flag = True
+NULL	missing = 'x'
+NULL	NOT (missing = 'x')
+FALSE	missing IS NOT NULL
+TRUE	color IS NOT NULL
+NULL	missing > 1 OR missing < 1
+TRUE	missing > 1 OR size = 3
+NULL	missing > 1 AND size = 3
+FALSE	NOT (size > 2)
+NULL	NOT (missing > 2)
+TRUE	color = 'red' OR missing > 2
+NULL	color = 'red' AND missing > 2
+FALSE	size = 1 OR size = 3 AND color = 'blue'
+FALSE	(size = 1 OR size = 3) AND color = 'blue'
+TRUE	size = 3 OR size = 1 AND color = 'red'
+FALSE	NOT size = 3
+FALSE	NOT size = 4
+TRUE	NOT flag = FALSE
+FALSE	NOT off = FALSE
+ERR	NOT size > 4
+ERR	NOT size < 4
+FALSE	NOT color LIKE 'r%'
+ERR	NOT color IN ('red')
+ERR	NOT size BETWEEN 1 AND 5
+TRUE	NOT NOT flag
+FALSE	NOT NOT size
+TRUE	TRUE
+FALSE	FALSE
+NULL	NULL
+NULL	NOT NULL
+FALSE	NOT TRUE
+NULL	TRUE AND NULL
+TRUE	TRUE OR NULL
+FALSE	FALSE AND NULL
+NULL	FALSE OR NULL
+NULL	NULL AND NULL
+NULL	NULL OR NULL
+NULL	NOT (NULL AND TRUE)
+NULL	missing
+NULL	NOT missing
+TRUE	JMSPriority = 4
+TRUE	JMSPriority > 3
+TRUE	JMSDeliveryMode = 'PERSISTENT'
+FALSE	JMSDeliveryMode = 2
+TRUE	JMSCorrelationID = 'ORD-A-100'
+TRUE	JMSType = 'T1'
+TRUE	JMSTimestamp = 1000
+TRUE	JMSExpiration = 0
+TRUE	JMSXGroupID = 'G1'
+TRUE	JMSXGroupSeq = 2
+TRUE	JMSXDeliveryCount = 2
+TRUE	JMSRedelivered = TRUE
+TRUE	JMSRedelivered
+FALSE	JMSXUserID IS NULL
+TRUE	JMSDestination = 'queue://Q'
+TRUE	JMSReplyTo = 'topic://R'
+TRUE	JMSMessageID = 'ID:host-1-2-3:1:1:1:1'
+TRUE	JMSXProducerTXID = 'TX:ID:c:5'
+FALSE	JMSXProducerTXID IS NULL
+TRUE	JMSActiveMQBrokerPath = '[B1, B2]'
+TRUE	JMSActiveMQBrokerInTime = 2000
+TRUE	JMSActiveMQBrokerOutTime = 3000
+TRUE	JMSXGroupFirstForConsumer = FALSE
+FALSE	JMSXGroupFirstForConsumer
+TRUE	JMSPriority BETWEEN 0 AND 9
+FALSE	JMSPriority = '4'
+NULL	jmspriority = 4
+TRUE	JMSFoo IS NULL
+TRUE	JMSXFoo IS NULL
+TRUE	bmp = '�'
+ERR	color > 'Red'
+ERR	'red' >= color
+TRUE	size >= 3 AND size <= 3
+FALSE	size <> 3.0
+TRUE	size <> 'a'
+FALSE	NOT (size <> 'a')
+TRUE	weight > 2
+TRUE	2 < weight
+FALSE	weight > l
+TRUE	l > weight
+TRUE	size = size
+FALSE	size <> size
+TRUE	color = color
+ERR	XPATH '//a'
+ERR	xpath '//a'
+ERR	color = 'x' OR XPATH '//a'
+ERR	NOT XPATH '//a'
+ERR	color = XPATH
+ERR	xpath = 'a'
+TRUE	color = 'red' AND size BETWEEN 1 AND 5 AND flag
+TRUE	size BETWEEN 1 AND 5 AND flag
+TRUE	size BETWEEN 1 + 1 AND 2 * 3
+FALSE	size BETWEEN -5 AND -1
+NULL	size NOT IN ('a') AND size = 3
+TRUE	1 + 2 * 3 = 7
+TRUE	(1 + 2) * 3 = 9
+TRUE	10 - 2 - 3 = 5
+TRUE	12 / 2 / 3 = 2
+TRUE	7 % 3 = 1
+TRUE	-7 % 3 = -1
+FALSE	7 / 2 = 3
+FALSE	-7 / 2 = -3
+TRUE	7.0 / 2 = 3.5
+TRUE	2 * -3 = -6
+TRUE	3 - -3 = 6
+TRUE	size * 1000000000000 = 3000000000000
+TRUE	9223372036854775807 + 1 < 0
+FALSE	2147483647 + 1 > 0
+FALSE	2147483647 * 2 = 4294967294
+TRUE	size + weight = 5.5
+TRUE	size = 3 AND NOT (color = 'blue' OR size > 5)
+TRUE	color IN ('red') AND color NOT LIKE 'b%'
+FALSE	size = 3 -- comment
+TRUE	size = 3 /* c */
+TRUE	size /* c */ = 3
+ERR	città = 1
+ERR	_città = 1
+ERR	x.y IS NULL
+TRUE	-color IS NULL
+NULL	-color = 'red'
+TRUE	+color = 'red'
+TRUE	-flag IS NULL
+EXC	-b IS NULL
+EXC	-s IS NULL
+TRUE	-f = -1.5
+TRUE	-l < 0
+TRUE	-size = -3
+TRUE	-2147483648 = -2147483648
+TRUE	-2147483648 - 1 < 0
+FALSE	-2147483648 - 1 > 0
+TRUE	2147483648 - 1 = 2147483647
+TRUE	-9223372036854775808 < 0
+TRUE	-9223372036854775808 - 1 > 0
+FALSE	9223372036854775808 IS NULL
+TRUE	9223372036854775808 = 9223372036854775808
+FALSE	9223372036854775808 > 9223372036854775807
+TRUE	9223372036854775808 + 0 = 0
+TRUE	9223372036854775808 + 1 = 1
+FALSE	9223372036854775808 + 1L IS NULL
+TRUE	9223372036854775808 + l = -9223372026854775808
+TRUE	9223372036854775808 / 2 > 4.6E18
+TRUE	9223372036854775808 * 1.0 > 9.2E18
+TRUE	- 9223372036854775808 = -9223372036854775808
+TRUE	-(9223372036854775808) = -9223372036854775808
+FALSE	-9223372036854775809 < 0
+TRUE	-9223372036854775809 + 0 = -1
+TRUE	color + -9223372036854775809 = 'red-9223372036854775809'
+TRUE	color + 9223372036854775808 = 'red9223372036854775808'
+TRUE	flag OR size + color = 'x'
+EXC	size + color = 'x' OR flag
+FALSE	NOT flag AND size + color = 'x'
+EXC	size + color = 'x' AND NOT flag
+EXC	missing = size + color
+NULL	missing > size + color
+EXC	size + color > missing
+TRUE	missing + (size + color) IS NULL
+TRUE	color + missing IS NULL
+ERR	r'x' = 'x'
+FALSE	color LIKE 'r!ed' ESCAPE '!'
+FALSE	color LIKE 'red!' ESCAPE '!'
+FALSE	color LIKE 're!!d' ESCAPE '!'
+FALSE	pct LIKE '100!!' ESCAPE '!'
+TRUE	nl LIKE 'a%'
+TRUE	nl LIKE 'a_b'
+TRUE	nl LIKE '%b'
+TRUE	color LIKE '%%'
+TRUE	color LIKE '%_%_%_%'
+FALSE	color LIKE '%_%_%_%_%'
+TRUE	color LIKE 'r%%d'
+TRUE	color LIKE '%r%e%d%'
+FALSE	color LIKE 'e%'
+FALSE	color LIKE '\%' ESCAPE '\'
+FALSE	color LIKE 'r\%' ESCAPE '\'
+TRUE	lit LIKE 'r\%' ESCAPE '\'
+TRUE	lit LIKE 'r!%' ESCAPE '!'
+TRUE	uc LIKE 'É%'
+FALSE	uc LIKE 'é%'
+TRUE	JMSXUserID = 'u1'
+EXC	bytes > 1
+FALSE	bytes = bytes2
+FALSE	bytes <> bytes
+EXC	bytes + 1 IS NULL
+TRUE	color + bytes = color + bytes
+TRUE	c = c
+FALSE	c > c
+EXC	c + 1 IS NULL
+TRUE	color + 0.001 = 'red0.001'
+TRUE	color + 0.0001 = 'red1.0E-4'
+TRUE	color + 1234567.0 = 'red1234567.0'
+TRUE	color + 12345678.0 = 'red1.2345678E7'
+TRUE	color + 100.0 = 'red100.0'
+TRUE	color + (1.0/3) = 'red0.3333333333333333'
+TRUE	color + f = 'red1.5'
+FALSE	color + (f * 1.1) IS NULL
+TRUE	color + (weight/0) = 'redInfinity'
+TRUE	color + (dzero/0) = 'redNaN'
+TRUE	color + (-dzero) = 'red-0.0'
+TRUE	color + 2e-3 = 'red0.002'
+TRUE	color + 1e7 = 'red1.0E7'
+TRUE	color + 9999999.0 = 'red9999999.0'
+TRUE	color + b = 'red7'
+TRUE	color + s = 'red300'
+TRUE	color + 'x' + 1 = 'redx1'
+TRUE	color + (1 + 1) = 'red2'
+TRUE	color + 1 + 1 = 'red11'
+FALSE	-dzero = dzero
+TRUE	-dzero < dzero
+TRUE	dzero / 0 > 1e308
+TRUE	dzero / 0 > weight / 0
+TRUE	f = 1.5 AND f > 1 AND f < 2
+TRUE	1 < f
+FALSE	f > l
+TRUE	l > f
+TRUE	ff = 16777216
+TRUE	ff = 16777217
+TRUE	16777217 = ff
+FALSE	big = 16777216.0
+NULL	size IN ('3', '4')
+TRUE	size BETWEEN 1 AND 5 OR flag
+TRUE	not color is null or flag
+FALSE	NOT NOT NOT flag
+TRUE	NOT (NOT flag)
+FALSE	NOT flag IS NULL
+TRUE	NOT missing IS NULL
+NULL	NOT missing = TRUE
+FALSE	size = 3 AND color
+FALSE	color AND size = 3
+FALSE	TRUE AND color
+TRUE	NOT TRUE = FALSE
+TRUE	TRUE = NOT FALSE
+TRUE	TRUE = (NOT FALSE)
+ERR	(TRUE) = 1
+TRUE	NULL IS NULL
+FALSE	NULL IS NOT NULL
+FALSE	5 IS NULL
+TRUE	'a' IS NOT NULL
+TRUE	size IS NULL = FALSE
+TRUE	(size IS NULL) = FALSE
+TRUE	size > 1 = TRUE
+TRUE	size = 3 = TRUE
+TRUE	size = 3 <> FALSE
+TRUE	flag = flag = TRUE
+TRUE	1 < 2
+ERR	1 < 2 < 3
+TRUE	size + 1 > 2 = TRUE
+TRUE	color LIKE 'r%' = TRUE
+TRUE	'red' LIKE 'r%'
+FALSE	3 LIKE '3'
+ERR	'x' IN ('x')
+TRUE	1 BETWEEN 0 AND 2
+TRUE	size BETWEEN 1 AND 5 = TRUE
+ERR	TRUE BETWEEN 0 AND 1
+FALSE	size BETWEEN flag AND 5
+TRUE	size BETWEEN -1 AND 5
+FALSE	size BETWEEN 5 AND 10 OR size BETWEEN 1 AND 2
+FALSE	color = 'red' AND NOT (size = 3)
+FALSE	NOT color = 'red'
+ERR	NOT -size = 3
+TRUE	s BETWEEN 100 AND 400
+TRUE	s BETWEEN 100.0 AND 400
+TRUE	b BETWEEN 1 AND 10
+TRUE	JMSPriority BETWEEN 4 AND 4
+NULL	JMSPriority IN ('4')
+TRUE	JMSTimestamp > 999
+TRUE	JMSTimestamp = 1000.0
+TRUE	JMSPriority = 4.0
+TRUE	JMSXGroupSeq = 2.0
+TRUE	JMSExpiration < 1
+TRUE		size	=	3
+TRUE	size=3
+TRUE	size<>4
+TRUE	size>=3
+TRUE	size<=3
+TRUE	size<4
+TRUE	color='red'
+TRUE	color  IN  (  'red'  )
+TRUE	color in('red')
+TRUE	size BETWEEN(1)AND(5)
+TRUE	size not between 4 and 5
+NULL	size Not In ('a')
+TRUE	color not like 'x%'
+TRUE	flag is not null
+TRUE	flag IS  NOT  NULL

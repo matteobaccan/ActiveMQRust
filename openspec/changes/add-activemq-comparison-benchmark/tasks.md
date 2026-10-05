@@ -43,3 +43,8 @@
 - [ ] 6.2 The report contains every measurement (a)–(e) for both ActiveMQ versions, the compression labels and ratio, and a met / not met verdict for every criterion and target, stated as measured
 - [ ] 6.3 Every target not met has a follow-up task
 - [x] 6.4 `openspec validate add-activemq-comparison-benchmark` passes
+
+## 7. Resource usage under load
+
+- [ ] 7.1 Record per phase the broker and client CPU time, average and peak Working Set and Private Bytes, and the machine CPU average; derive CPU % of one core and of the machine, CPU ms per 1,000 messages and per MB, and memory per held message
+- [ ] 7.2 Add the resource figures to the report tables (mean/median/min/max) and every individual value to the CSV

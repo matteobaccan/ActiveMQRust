@@ -33,9 +33,11 @@ rpassword = "7"
 parking_lot = "0.12"
 mimalloc = { version = "0.1", default-features = false }
 windows-service = "0.7"
-axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "query", "json"] }
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "query", "json", "form"] }
 serde_json = "1"
 base64 = "0.22"
+sha2 = "0.10"
+quick-xml = "0.41"
 flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
 toml_edit = "0.22"
 windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_ProcessStatus", "Win32_System_Threading"] }
@@ -44,7 +46,23 @@ windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_
 criterion = { version = "0.5", default-features = false }
 
 [[bench]]
-name = "broker"
+name = "codec"
+harness = false
+
+[[bench]]
+name = "dispatch"
+harness = false
+
+[[bench]]
+name = "compression"
+harness = false
+
+[[bench]]
+name = "selectors"
+harness = false
+
+[[bench]]
+name = "expiry"
 harness = false
 
 [build-dependencies]

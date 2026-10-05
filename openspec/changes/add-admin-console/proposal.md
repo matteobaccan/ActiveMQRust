@@ -24,8 +24,8 @@ None.
 
 ## Impact
 
-- New module `src/admin/` (`mod.rs` for the server and authentication, `pages.rs` for HTML, `api.rs` for JSON, `render.rs` for body rendering) and a read-only snapshot API in `src/broker/` (overview, destination list, destination detail, message page, single message, connection list).
-- New body decoder `src/openwire/message_body.rs` (map, stream and primitive values), used only by the console, never on the message hot path.
+- New module `src/admin/` (`mod.rs` for the server and authentication, `pages.rs` for HTML, `api.rs` for JSON, `body.rs` for body decoding and rendering) and a read-only snapshot API on `Dest` in `src/broker/destination.rs` (`snapshot`, `page`, `find`), with a per-destination usage counter (bytes and compressed messages held) charged once per stored message in `src/broker/entry.rs`.
+- Body decoding reuses the OpenWire primitive decoder of `src/openwire/props.rs` (map, stream and primitive values), called only by the console, never on the message hot path.
 - New dependencies compiled into the executable: `axum` (with minimal features), `serde_json`, `base64`, and `windows-sys` (process memory counters). `flate2` is used to inflate compressed bodies; it is shared with `add-message-compression` if that change is already applied.
 - The `[admin]` configuration keys and the `--admin-bind` / `--admin-port` options already exist from `bootstrap-broker-foundation`; this change makes them take effect.
 - Depends on `add-queue-messaging` (queues, consumers, producers, counters, stored messages). Works with or without `add-topic-messaging`, `add-message-selectors`, `add-message-expiration` and `add-message-compression`.

@@ -27,7 +27,7 @@ Each queue and each topic subscription pending list keeps `BTreeSet<(expiration,
 - *Alternatives:* scanning `pending` periodically (O(n) per round, as ActiveMQ's `expireMessagesPeriod`); a binary heap (no O(log n) removal of arbitrary entries when messages are dispatched); a timer wheel (efficient but more code, and the BTreeSet already gives ordering and removal).
 
 ### D3. One sweeper task for the whole broker
-A single `tokio` interval task with period `check_interval_ms`. The broker keeps a set of destinations with a non-empty expiry index; the task visits only those. For each, it locks the destination, deletes up to 10,000 expired entries, records how many remain, unlocks, and continues. Missed ticks are skipped rather than bursting.
+A single `tokio` task wakes every `min(check_interval_ms, 1000)` ms (the same task checks idle destinations once per second) and sweeps every `check_interval_ms`. The broker keeps a set of destinations that may hold messages with an expiration: a destination enters the set when a message with `expiration > 0` is stored in it, and leaves it when a sweep finds no message with an expiration left in it (pending, subscription pending lists, inflight or reserved by a transaction), checked under the destination lock so that a concurrent store re-registers it. The task visits only the destinations in the set. For each, it locks the destination, deletes up to 10,000 expired entries, unlocks, and continues. When the set is empty a round locks nothing. Missed ticks are skipped rather than bursting.
 - *Alternatives:* a timer per destination or per message (many tasks and wake-ups, more RAM); lazy expiry only at dispatch (expired messages stay in RAM forever on queues without consumers).
 
 ### D4. Delivery-time checks in a single helper
@@ -39,7 +39,7 @@ On receipt of a producer message, in this order: (1) `use_broker_clock` rebases 
 - *Alternatives:* computing an internal broker-only deadline while delivering the client's original `JMSExpiration` (consumers and broker would disagree about expiry); copying ActiveMQ's plugin literally (it always rebases on the broker clock and also has `futureOnly`, more options than needed).
 
 ### D6. Counting and logging
-Every deletion path calls one function that removes the message, releases accounted memory, increments the destination's `expired` counter and an "expired this minute" counter. A once-per-minute pass logs the summary line for destinations with a non-zero minute counter.
+Each path first takes the message out of the structure that holds it (`pending` and the expiry index, a subscription's pending list, `inflight` for an `EXPIRED` ack, a reinsertion batch, a browser snapshot, or the arrival and commit checks before the message is stored), because the structures differ. Every path then hands the message to one function, `Dest::expire`, which increments the destination's `expired` counter and its "expired this minute" counter (an atomic, read without the destination lock), logs the message at debug level, and drops it; dropping the last copy releases the accounted memory. A once-per-minute pass reads and resets the minute counters of all destinations and logs the summary line for those with a non-zero value, so the summary covers every kind of expiry, not only the sweeper.
 - *Alternatives:* per-message info logs (floods the console under load).
 
 ## Risks / Trade-offs
@@ -58,5 +58,5 @@ No data migration: the broker keeps no state across restarts. Applications using
 
 - Verify in the ActiveMQ client sources (`ActiveMQMessageConsumer`) when the client sends the `EXPIRED` ack (ack type 6) and whether it carries a single message or a range, for 5.18.x and 6.x.
 - Verify that ActiveMQ's `SharedDeadLetterStrategy` clears the expiration of messages moved to `ActiveMQ.DLQ` (its `expiration` attribute), to document the difference precisely.
-- Verify `TimeStampingBrokerPlugin` behaviour for messages with timestamp 0 (`disableMessageTimestamp`) and align the `default_ttl_ms` base with it.
-- Transacted sends: the options are applied on arrival; decide whether a transacted message that expires before COMMIT is counted as expired at commit time (proposed: yes, deleted and counted instead of being queued). To be confirmed when `add-local-transactions` is implemented.
+- Verify `TimeStampingBrokerPlugin` behaviour for messages with timestamp 0 (`disableMessageTimestamp`) and align the `default_ttl_ms` base with it. *Resolved:* the plugin only rebases messages with a timestamp, so with `use_broker_clock` a message with `timestamp = 0` and an expiration is left unchanged; `default_ttl_ms` measures from the arrival time when the timestamp is 0 or the broker clock is in use, and in the latter case also sets `timestamp` to the arrival time.
+- Transacted sends: the options are applied on arrival; decide whether a transacted message that expires before COMMIT is counted as expired at commit time. *Resolved:* yes, it is deleted and counted as expired at commit instead of being queued.

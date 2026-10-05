@@ -70,6 +70,10 @@ pub struct AdminSection {
     pub username: String,
     pub password: Option<String>,
     pub password_hash: Option<String>,
+    pub session_idle_minutes: i64,
+    pub session_max_hours: i64,
+    pub login_max_failures: i64,
+    pub login_lockout_seconds: i64,
 }
 
 impl Default for AdminSection {
@@ -80,6 +84,10 @@ impl Default for AdminSection {
             username: DEFAULT_USER.into(),
             password: None,
             password_hash: None,
+            session_idle_minutes: 30,
+            session_max_hours: 8,
+            login_max_failures: 5,
+            login_lockout_seconds: 60,
         }
     }
 }
@@ -152,6 +160,13 @@ pub struct Config {
     pub admin_bind: IpAddr,
     pub admin_port: u16,
     pub admin_user: User,
+    /// Console session idle timeout, in minutes.
+    pub admin_session_idle_minutes: u64,
+    /// Console session absolute lifetime, in hours.
+    pub admin_session_max_hours: u64,
+    /// Failed console logins from one IP before a lockout; 0 = no throttling.
+    pub admin_login_max_failures: u32,
+    pub admin_login_lockout_seconds: u64,
     pub users: Vec<User>,
     pub log_level: String,
     /// True when built-in default credentials are in use.
@@ -212,34 +227,58 @@ pub fn load(explicit: Option<&Path>, overrides: &Overrides) -> Result<Config, Co
 }
 
 pub fn from_toml(text: &str, source: ConfigSource, overrides: &Overrides) -> Result<Config, ConfigError> {
-    let file: FileConfig = toml::from_str(text).map_err(|e| ConfigError(describe_toml_error(&e)))?;
+    let file: FileConfig = toml::from_str(text).map_err(|e| ConfigError(describe_toml_error(text, &e)))?;
     build(file, source, overrides)
 }
 
-fn describe_toml_error(e: &toml::de::Error) -> String {
-    let msg = e.message().to_string();
+fn describe_toml_error(text: &str, e: &toml::de::Error) -> String {
+    let msg = e.message().trim().to_string();
+    let offset = e.span().map(|s| s.start.min(text.len()));
+    let section = offset.and_then(|o| section_at(text, o));
+    let qualify = |key: &str| match &section {
+        Some(s) => format!("{s}.{key}"),
+        None => key.to_string(),
+    };
     // Unknown keys: make the full key path explicit, e.g. "unknown key broker.prot".
     if let Some(rest) = msg.strip_prefix("unknown field `") {
         let field = rest.split('`').next().unwrap_or(rest);
-        let section = section_of_error(e);
-        return match section {
-            Some(s) => format!("configuration error: unknown key {s}.{field}"),
-            None => format!("configuration error: unknown key {field}"),
-        };
+        return format!("configuration error: unknown key {}", qualify(field));
     }
-    format!("configuration error: {}", msg.trim())
+    // Other errors (wrong type, bad syntax): name the key on the offending line.
+    match offset.and_then(|o| key_at(text, o)) {
+        Some(key) => format!("configuration error: {}: {msg}", qualify(&key)),
+        None => format!("configuration error: {msg}"),
+    }
 }
 
-fn section_of_error(e: &toml::de::Error) -> Option<String> {
-    // The span points into the source; the toml crate does not expose the table path,
-    // so derive it from the message context when available.
-    let text = e.to_string();
-    for s in ["broker", "expiry", "admin", "log", "users"] {
-        if text.contains(&format!("[{s}]")) {
-            return Some(s.to_string());
+/// The table that contains byte `offset` of the source: `broker`, `users[1]`, or `None` at top level.
+fn section_at(text: &str, offset: usize) -> Option<String> {
+    let mut section = None;
+    let mut users = 0usize;
+    for line in text[..offset].lines() {
+        let l = line.trim();
+        if let Some(name) = l.strip_prefix("[[").and_then(|r| r.split("]]").next()) {
+            let name = name.trim();
+            if name == "users" {
+                users += 1;
+                section = Some(format!("users[{}]", users - 1));
+            } else {
+                section = Some(name.to_string());
+            }
+        } else if let Some(name) = l.strip_prefix('[').and_then(|r| r.split(']').next()) {
+            section = Some(name.trim().to_string());
         }
     }
-    None
+    section
+}
+
+/// The key assigned on the line that contains byte `offset` of the source.
+fn key_at(text: &str, offset: usize) -> Option<String> {
+    let start = text[..offset].rfind('\n').map_or(0, |i| i + 1);
+    let line = text[start..].lines().next()?;
+    let (key, _) = line.split_once('=')?;
+    let key = key.trim().trim_matches('"');
+    (!key.is_empty() && !key.starts_with('[') && !key.starts_with('#')).then(|| key.to_string())
 }
 
 fn secret(field: &str, password: &Option<String>, hash: &Option<String>) -> Result<Option<Secret>, ConfigError> {
@@ -271,6 +310,15 @@ fn parse_port(field: &str, value: i64) -> Result<u16, ConfigError> {
         Ok(value as u16)
     } else {
         Err(ConfigError(format!("configuration error: {field} = {value} is not a valid port (1-65535)")))
+    }
+}
+
+/// An integer that must lie in `min..=max`; the error names the key.
+fn in_range(field: &str, value: i64, min: i64, max: i64) -> Result<u64, ConfigError> {
+    if (min..=max).contains(&value) {
+        Ok(value as u64)
+    } else {
+        Err(ConfigError(format!("configuration error: {field} = {value} must be between {min} and {max}")))
     }
 }
 
@@ -333,6 +381,10 @@ pub fn build(file: FileConfig, source: ConfigSource, overrides: &Overrides) -> R
         Some(p) => p,
         None => parse_port("admin.port", a.port)?,
     };
+    let session_idle = in_range("admin.session_idle_minutes", a.session_idle_minutes, 1, 1440)?;
+    let session_max = in_range("admin.session_max_hours", a.session_max_hours, 1, 168)?;
+    let max_failures = in_range("admin.login_max_failures", a.login_max_failures, 0, 100)?;
+    let lockout = in_range("admin.login_lockout_seconds", a.login_lockout_seconds, 1, 86_400)?;
 
     let level = file.log.level.to_ascii_lowercase();
     if !["error", "warn", "info", "debug", "trace"].contains(&level.as_str()) {
@@ -407,6 +459,10 @@ pub fn build(file: FileConfig, source: ConfigSource, overrides: &Overrides) -> R
         admin_bind,
         admin_port,
         admin_user,
+        admin_session_idle_minutes: session_idle,
+        admin_session_max_hours: session_max,
+        admin_login_max_failures: max_failures as u32,
+        admin_login_lockout_seconds: lockout,
         users,
         log_level: level,
         default_credentials,
@@ -457,6 +513,10 @@ pub const TEMPLATE: &str = r#"# ActiveMQRust by Matteo Baccan
 # port = 8161
 username = "admin"
 password = "admin"                     # replace with password_hash = "..." (mqrust.exe hash-password)
+# session_idle_minutes = 30            # console session ends after this idle time (1-1440)
+# session_max_hours = 8                # and in any case this long after login (1-168)
+# login_max_failures = 5               # failed logins per IP in 15 minutes before a lockout; 0 = off
+# login_lockout_seconds = 60           # lockout length (1-86400)
 
 [log]
 # level = "info"                       # error | warn | info | debug | trace
@@ -488,6 +548,36 @@ mod tests {
         assert_eq!(c.users[0].username, "admin");
         assert!(c.default_credentials);
         assert_eq!(c.broker_name, "ActiveMQRust");
+        assert_eq!(c.admin_user.username, "admin");
+        assert_eq!(c.admin_user.secret, Secret::Plain("admin".into()));
+        assert_eq!(c.admin_session_idle_minutes, 30);
+        assert_eq!(c.admin_session_max_hours, 8);
+        assert_eq!(c.admin_login_max_failures, 5);
+        assert_eq!(c.admin_login_lockout_seconds, 60);
+    }
+
+    #[test]
+    fn admin_session_keys() {
+        let keys = "session_idle_minutes = 5\nsession_max_hours = 1\nlogin_max_failures = 0\nlogin_lockout_seconds = 86400\n";
+        let c = cfg(&MIN.replace("password = \"a\"\n", &format!("password = \"a\"\n{keys}"))).unwrap();
+        assert_eq!(c.admin_session_idle_minutes, 5);
+        assert_eq!(c.admin_session_max_hours, 1);
+        assert_eq!(c.admin_login_max_failures, 0);
+        assert_eq!(c.admin_login_lockout_seconds, 86_400);
+        for (key, bad) in [
+            ("session_idle_minutes", "0"),
+            ("session_idle_minutes", "1441"),
+            ("session_max_hours", "0"),
+            ("session_max_hours", "169"),
+            ("login_max_failures", "-1"),
+            ("login_max_failures", "101"),
+            ("login_lockout_seconds", "0"),
+            ("login_lockout_seconds", "86401"),
+        ] {
+            let text = MIN.replace("password = \"a\"\n", &format!("password = \"a\"\n{key} = {bad}\n"));
+            let e = cfg(&text).unwrap_err();
+            assert!(e.0.contains(&format!("admin.{key}")), "{}", e.0);
+        }
     }
 
     #[test]
@@ -512,7 +602,109 @@ mod tests {
     #[test]
     fn unknown_key_is_named() {
         let e = cfg(&format!("[broker]\nprot = 1\n{MIN}")).unwrap_err();
-        assert!(e.0.contains("prot"), "{}", e.0);
+        assert!(e.0.contains("unknown key broker.prot"), "{}", e.0);
+        let e = cfg(&format!("{MIN}[expiry]\nttl = 5\n")).unwrap_err();
+        assert!(e.0.contains("unknown key expiry.ttl"), "{}", e.0);
+        let e = cfg(&format!("{MIN}[[users]]\nusername = \"v\"\npasswd = \"x\"\n")).unwrap_err();
+        assert!(e.0.contains("unknown key users[1].passwd"), "{}", e.0);
+        let e = cfg(&format!("colour = 1\n{MIN}")).unwrap_err();
+        assert!(e.0.contains("unknown key colour"), "{}", e.0);
+    }
+
+    #[test]
+    fn non_integer_value_names_the_key() {
+        let e = cfg(&format!("[broker]\nmax_memory_mb = \"big\"\n{MIN}")).unwrap_err();
+        assert!(e.0.contains("broker.max_memory_mb"), "{}", e.0);
+        let e = cfg(&format!("[broker]\nport = 1\n{MIN}[expiry]\ncheck_interval_ms = 1.5\n")).unwrap_err();
+        assert!(e.0.contains("expiry.check_interval_ms"), "{}", e.0);
+    }
+
+    /// Asserts that `text` is refused with an error mentioning `needle`.
+    fn refused(text: &str, needle: &str) {
+        let e = cfg(text).unwrap_err();
+        assert!(e.0.starts_with("configuration error"), "{}", e.0);
+        assert!(e.0.contains(needle), "expected '{needle}' in: {}", e.0);
+    }
+
+    #[test]
+    fn every_validation_error_names_the_field() {
+        refused(&format!("[broker]\nbind = \"1.2.3\"\n{MIN}"), "broker.bind");
+        refused("[admin]\nbind = \"localhost\"\npassword = \"a\"\n[[users]]\nusername = \"u\"\npassword = \"p\"\n", "admin.bind");
+        refused(&format!("[broker]\nport = 0\n{MIN}"), "broker.port");
+        refused("[admin]\nport = 70000\npassword = \"a\"\n[[users]]\nusername = \"u\"\npassword = \"p\"\n", "admin.port");
+        refused(&format!("[log]\nlevel = \"verbose\"\n{MIN}"), "log.level");
+        refused("[admin]\npassword = \"a\"\n", "[[users]]");
+        refused("[admin]\npassword = \"a\"\n[[users]]\nusername = \"\"\npassword = \"p\"\n", "users[0].username");
+        refused("[admin]\npassword = \"a\"\n[[users]]\nusername = \"u\"\n", "needs password or password_hash");
+        refused(
+            "[admin]\npassword = \"a\"\n[[users]]\nusername = \"u\"\npassword_hash = \"plain\"\n",
+            "password_hash is not an Argon2 hash",
+        );
+        refused("[admin]\npassword_hash = \"md5\"\n[[users]]\nusername = \"u\"\npassword = \"p\"\n", "admin.password_hash");
+        refused("[[users]]\nusername = \"u\"\npassword = \"p\"\n", "admin.password");
+        refused(&format!("[broker]\nmax_frame_size_mb = 0\n{MIN}"), "broker.max_frame_size_mb");
+        refused(&format!("[broker]\nauto_delete_empty_after_secs = -1\n{MIN}"), "broker.auto_delete_empty_after_secs");
+        refused(&format!("[broker]\nmax_memory_mb = -1\n{MIN}"), "broker.max_memory_mb");
+        refused(&format!("[broker]\ntopic_max_pending_per_consumer = -5\n{MIN}"), "broker.topic_max_pending_per_consumer");
+        refused(&format!("[broker]\ncompress_threshold_kb = -1\n{MIN}"), "broker.compress_threshold_kb");
+        refused(&format!("[broker]\ncompress_min_saving_pct = 150\n{MIN}"), "broker.compress_min_saving_pct");
+    }
+
+    #[test]
+    fn anonymous_without_users_is_allowed() {
+        let c = cfg("[broker]\nallow_anonymous = true\n[admin]\npassword = \"a\"\n").unwrap();
+        assert!(c.users.is_empty());
+        assert!(c.allow_anonymous);
+    }
+
+    #[test]
+    fn memory_and_auto_delete_keys() {
+        let c = cfg(MIN).unwrap();
+        assert_eq!(c.max_memory_bytes, 0, "no memory limit by default");
+        assert_eq!(c.auto_delete_empty_after_secs, 0);
+        let c = cfg(&format!("[broker]\nmax_memory_mb = 64\nauto_delete_empty_after_secs = 30\n{MIN}")).unwrap();
+        assert_eq!(c.max_memory_bytes, 64 * 1024 * 1024);
+        assert_eq!(c.auto_delete_empty_after_secs, 30);
+    }
+
+    #[test]
+    fn expiry_defaults_partial_section_and_invalid_values() {
+        let c = cfg(MIN).unwrap();
+        assert_eq!(c.expiry_check_interval_ms, 1000);
+        assert!(!c.use_broker_clock);
+        assert_eq!(c.ttl_ceiling_ms, 0);
+        assert_eq!(c.default_ttl_ms, 0);
+        let c = cfg(&format!("[expiry]\nttl_ceiling_ms = 60000\n{MIN}")).unwrap();
+        assert_eq!(c.ttl_ceiling_ms, 60_000);
+        assert_eq!(c.expiry_check_interval_ms, 1000, "missing keys of the section take their default");
+        assert_eq!(c.default_ttl_ms, 0);
+        let c = cfg(&format!("[expiry]\ncheck_interval_ms = 1\nuse_broker_clock = true\ndefault_ttl_ms = 5000\n{MIN}")).unwrap();
+        assert_eq!(c.expiry_check_interval_ms, 1);
+        assert!(c.use_broker_clock);
+        assert_eq!(c.default_ttl_ms, 5000);
+        refused(&format!("[expiry]\ncheck_interval_ms = 0\n{MIN}"), "expiry.check_interval_ms");
+        refused(&format!("[expiry]\nttl_ceiling_ms = -1\n{MIN}"), "expiry.ttl_ceiling_ms");
+        refused(&format!("[expiry]\ndefault_ttl_ms = -1\n{MIN}"), "expiry.default_ttl_ms");
+        refused(&format!("[expiry]\nuse_broker_clock = \"yes\"\n{MIN}"), "expiry.use_broker_clock");
+    }
+
+    #[test]
+    fn file_wins_over_defaults_and_command_line_over_file() {
+        let text = "[broker]\nbind = \"127.0.0.1\"\nport = 61617\n[admin]\nport = 8200\npassword = \"a\"\n[[users]]\nusername = \"u\"\npassword = \"p\"\n";
+        let c = cfg(text).unwrap();
+        assert_eq!((c.bind.to_string().as_str(), c.port, c.admin_port), ("127.0.0.1", 61617, 8200));
+        let o = Overrides {
+            bind: Some("0.0.0.0".into()),
+            admin_port: Some(8300),
+            admin_bind: Some("127.0.0.2".into()),
+            ..Default::default()
+        };
+        let c = from_toml(text, ConfigSource::File("t".into()), &o).unwrap();
+        assert_eq!((c.bind.to_string().as_str(), c.port, c.admin_port), ("0.0.0.0", 61617, 8300));
+        assert_eq!(c.admin_bind.to_string(), "127.0.0.2");
+        // A bad command-line value is reported like a file value.
+        let o = Overrides { bind: Some("nowhere".into()), ..Default::default() };
+        assert!(from_toml(MIN, ConfigSource::File("t".into()), &o).unwrap_err().0.contains("broker.bind"));
     }
 
     #[test]
@@ -545,5 +737,9 @@ mod tests {
     fn template_is_valid() {
         let c = cfg(TEMPLATE).unwrap();
         assert_eq!(c.port, 61616);
+        let commented = TEMPLATE.replace("# session_", "session_").replace("# login_", "login_");
+        let c = cfg(&commented).unwrap();
+        assert_eq!((c.admin_session_idle_minutes, c.admin_session_max_hours), (30, 8));
+        assert_eq!((c.admin_login_max_failures, c.admin_login_lockout_seconds), (5, 60));
     }
 }

@@ -6,9 +6,9 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 
-use crate::openwire::model::Message;
+use crate::openwire::model::{DataStructure, Message, TransactionId};
 use crate::openwire::props::{PrimitiveMap, Value};
-use crate::selector::{MessageView, SVal};
+use crate::selector::{EvalError, Header, MessageView, SVal};
 
 /// Fixed per-message bookkeeping overhead added to the accounted size.
 pub const ENTRY_OVERHEAD: u64 = 256;
@@ -49,18 +49,69 @@ impl Drop for MemTicket {
     }
 }
 
+/// Running usage of one destination: bytes and compressed messages it holds, each stored
+/// message counted once however many subscriptions hold a copy (read by the admin console).
+#[derive(Default)]
+pub struct DestUsage {
+    pub bytes: AtomicU64,
+    pub compressed: AtomicU64,
+}
+
+/// Charges a message to its destination's usage for as long as any copy of it is held.
+struct UsageTicket {
+    usage: Arc<DestUsage>,
+    size: u64,
+    compressed: bool,
+}
+
+impl Drop for UsageTicket {
+    fn drop(&mut self) {
+        self.usage.bytes.fetch_sub(self.size, Ordering::Relaxed);
+        if self.compressed {
+            self.usage.compressed.fetch_sub(1, Ordering::Relaxed);
+        }
+    }
+}
+
+/// Decoded application properties of a message.
+enum Props {
+    /// No `marshalledProperties` (or a null map).
+    Absent,
+    Map(Arc<PrimitiveMap>),
+    /// `marshalledProperties` that cannot be decoded: property lookups fail.
+    Undecodable,
+}
+
 /// Data shared by every copy of one stored message.
 pub struct Meta {
     pub size: u64,
     _ticket: MemTicket,
-    props: OnceLock<Option<Arc<PrimitiveMap>>>,
+    usage: OnceLock<UsageTicket>,
+    props: OnceLock<Props>,
 }
 
 impl Meta {
     pub fn new(memory: Arc<Memory>, msg: &Message) -> Arc<Meta> {
         let size = msg.content_len() as u64 + msg.properties_len() as u64 + ENTRY_OVERHEAD;
-        Arc::new(Meta { size, _ticket: MemTicket::new(memory, size), props: OnceLock::new() })
+        Arc::new(Meta { size, _ticket: MemTicket::new(memory, size), usage: OnceLock::new(), props: OnceLock::new() })
     }
+
+    /// Charges the message to a destination's usage (once; later calls do nothing).
+    pub fn charge(&self, usage: &Arc<DestUsage>, compressed: bool) {
+        self.usage.get_or_init(|| {
+            usage.bytes.fetch_add(self.size, Ordering::Relaxed);
+            if compressed {
+                usage.compressed.fetch_add(1, Ordering::Relaxed);
+            }
+            UsageTicket { usage: usage.clone(), size: self.size, compressed }
+        });
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Number of property decodings performed by the current thread (tests only).
+    static DECODES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// One message held by a destination or a subscription.
@@ -78,21 +129,38 @@ impl Entry {
         self.msg.expiration > 0 && self.msg.expiration <= now_ms
     }
 
-    /// Decoded application properties, computed once per message.
-    pub fn properties(&self) -> Option<&Arc<PrimitiveMap>> {
-        self.meta
-            .props
-            .get_or_init(|| {
-                let raw = self.msg.marshalled_properties.as_ref()?;
-                match PrimitiveMap::decode(raw) {
-                    Ok(m) => m.map(Arc::new),
-                    Err(e) => {
-                        tracing::warn!("cannot decode properties of message {}: {}", self.msg.message_id_text(), e);
-                        None
-                    }
+    /// Decodes the properties on first use; every copy of the message shares the result.
+    /// A decoding failure is logged once per message.
+    fn props(&self) -> &Props {
+        self.meta.props.get_or_init(|| {
+            #[cfg(test)]
+            DECODES.with(|d| d.set(d.get() + 1));
+            let Some(raw) = self.msg.marshalled_properties.as_ref() else {
+                return Props::Absent;
+            };
+            match PrimitiveMap::decode(raw) {
+                Ok(Some(m)) => Props::Map(Arc::new(m)),
+                Ok(None) => Props::Absent,
+                Err(e) => {
+                    tracing::warn!("cannot decode properties of message {}: {}", self.msg.message_id_text(), e);
+                    Props::Undecodable
                 }
-            })
-            .as_ref()
+            }
+        })
+    }
+
+    /// Decoded application properties, computed once per message; `None` when the message
+    /// has none or they cannot be decoded.
+    pub fn properties(&self) -> Option<&Arc<PrimitiveMap>> {
+        match self.props() {
+            Props::Map(m) => Some(m),
+            _ => None,
+        }
+    }
+
+    /// True once the properties have been decoded (or found absent or undecodable).
+    pub fn properties_decoded(&self) -> bool {
+        self.meta.props.get().is_some()
     }
 
     /// The message as it must be dispatched, with the current redelivery counter.
@@ -107,19 +175,22 @@ impl Entry {
     }
 }
 
-fn prop_to_sval(v: &Value) -> SVal {
+/// Selector value of a property, with the Java class ActiveMQ unmarshals it to.
+fn prop_to_sval(name: &str, v: &Value) -> SVal {
     match v {
         Value::Null => SVal::Null,
         Value::Bool(b) => SVal::Bool(*b),
-        Value::Byte(b) => SVal::Int(*b as i64),
-        Value::Short(s) => SVal::Int(*s as i64),
-        Value::Int(i) => SVal::Int(*i as i64),
-        Value::Long(l) => SVal::Int(*l),
-        Value::Float(f) => SVal::Float(*f as f64),
-        Value::Double(d) => SVal::Float(*d),
+        Value::Byte(b) => SVal::Byte(*b),
+        Value::Short(s) => SVal::Short(*s),
+        Value::Int(i) => SVal::Int(*i),
+        Value::Long(l) => SVal::Long(*l),
+        Value::Float(f) => SVal::Float(*f),
+        Value::Double(d) => SVal::Double(*d),
         Value::String(s) => SVal::Str(s.clone()),
-        Value::Char(c) => SVal::Str(char::from_u32(*c as u32).map(|c| c.to_string()).unwrap_or_default()),
-        Value::Bytes(_) | Value::Map(_) | Value::List(_) => SVal::Opaque,
+        Value::Char(c) => SVal::Char(*c),
+        // A byte array is equal only to itself (Java identity); maps and lists by content.
+        Value::Bytes(_) => SVal::Opaque(format!("[B@{name}").into()),
+        Value::Map(_) | Value::List(_) => SVal::Opaque(format!("{v:?}").into()),
     }
 }
 
@@ -127,49 +198,186 @@ fn opt_str(s: &Option<String>) -> SVal {
     s.as_ref().map(|v| SVal::Str(v.clone())).unwrap_or(SVal::Null)
 }
 
+/// `TransactionId.toString()`: `TX:<connectionId>:<value>` for local transactions,
+/// `XID:[<formatId>,globalId=<hex>,branchId=<hex>]` for XA ones.
+fn transaction_text(t: &TransactionId) -> String {
+    match t {
+        TransactionId::Local { value, connection_id } => match connection_id {
+            Some(c) => format!("TX:{c}:{value}"),
+            None => format!("TX:null:{value}"),
+        },
+        TransactionId::Xa { format_id, global_transaction_id, branch_qualifier } => {
+            let hex = |b: &Option<bytes::Bytes>| {
+                b.as_ref().map(|b| b.iter().map(|x| format!("{x:x}")).collect::<String>()).unwrap_or_default()
+            };
+            format!("XID:[{format_id},globalId={},branchId={}]", hex(global_transaction_id), hex(branch_qualifier))
+        }
+    }
+}
+
+/// `Arrays.toString(brokerPath)`.
+fn broker_path_text(path: &Option<Vec<DataStructure>>) -> String {
+    match path {
+        None => "null".to_string(),
+        Some(ids) => {
+            let items: Vec<String> = ids
+                .iter()
+                .map(|d| match d {
+                    DataStructure::BrokerId(b) => b.value.to_string(),
+                    other => format!("{other:?}"),
+                })
+                .collect();
+            format!("[{}]", items.join(", "))
+        }
+    }
+}
+
 impl MessageView for Entry {
-    fn header(&self, name: &str) -> Option<SVal> {
+    fn header(&self, h: Header) -> Result<SVal, EvalError> {
         let m = &self.msg;
-        Some(match name {
-            "JMSDeliveryMode" => SVal::Str(if m.persistent { "PERSISTENT" } else { "NON_PERSISTENT" }.into()),
-            "JMSPriority" => SVal::Int(m.priority as i64),
-            "JMSMessageID" => match &m.message_id {
-                Some(id) => SVal::Str(id.to_string()),
+        Ok(match h {
+            Header::Destination => match m.original_destination.as_ref().or(m.destination.as_ref()) {
+                Some(d) => SVal::Str(d.to_string()),
                 None => SVal::Null,
             },
-            "JMSTimestamp" => SVal::Int(m.timestamp),
-            "JMSCorrelationID" => opt_str(&m.correlation_id),
-            "JMSType" => opt_str(&m.jms_type),
-            "JMSExpiration" => SVal::Int(m.expiration),
-            "JMSRedelivered" => SVal::Bool(self.redelivery > 0),
-            "JMSXDeliveryCount" => SVal::Int(self.redelivery as i64 + 1),
-            "JMSXGroupID" => opt_str(&m.group_id),
-            "JMSXGroupSeq" => SVal::Int(m.group_sequence as i64),
-            "JMSXUserID" => opt_str(&m.user_id),
-            "JMSXGroupFirstForConsumer" => SVal::Bool(m.jmsx_group_first_for_consumer),
-            "JMSActiveMQBrokerInTime" => SVal::Int(m.broker_in_time),
-            "JMSActiveMQBrokerOutTime" => SVal::Int(m.broker_out_time),
-            "JMSDestination" | "JMSReplyTo" | "JMSXProducerTXID" | "JMSActiveMQBrokerPath" => {
-                let present = match name {
-                    "JMSDestination" => m.destination.is_some(),
-                    "JMSReplyTo" => m.reply_to.is_some(),
-                    "JMSXProducerTXID" => m.transaction_id.is_some(),
-                    _ => m.broker_path.is_some(),
-                };
-                if present {
-                    SVal::Opaque
-                } else {
-                    SVal::Null
-                }
-            }
-            _ => return None,
+            Header::ReplyTo => m.reply_to.as_ref().map(|d| SVal::Str(d.to_string())).unwrap_or(SVal::Null),
+            Header::Type => opt_str(&m.jms_type),
+            Header::DeliveryMode => SVal::Str(if m.persistent { "PERSISTENT" } else { "NON_PERSISTENT" }.into()),
+            Header::Priority => SVal::Int(m.priority as i32),
+            Header::MessageId => m.message_id.as_ref().map(|id| SVal::Str(id.to_string())).unwrap_or(SVal::Null),
+            Header::Timestamp => SVal::Long(m.timestamp),
+            Header::CorrelationId => opt_str(&m.correlation_id),
+            Header::Expiration => SVal::Long(m.expiration),
+            Header::Redelivered => SVal::Bool(self.redelivery > 0),
+            Header::DeliveryCount => SVal::Int(self.redelivery.wrapping_add(1)),
+            Header::GroupId => opt_str(&m.group_id),
+            Header::UserId => match &m.user_id {
+                Some(u) => SVal::Str(u.clone()),
+                None => return self.property("JMSXUserID"),
+            },
+            Header::GroupSeq => SVal::Int(m.group_sequence),
+            Header::ProducerTxId => match m.original_transaction_id.as_ref().or(m.transaction_id.as_ref()) {
+                Some(t) => SVal::Str(transaction_text(t)),
+                None => SVal::Null,
+            },
+            Header::BrokerInTime => SVal::Long(m.broker_in_time),
+            Header::BrokerOutTime => SVal::Long(m.broker_out_time),
+            Header::BrokerPath => SVal::Str(broker_path_text(&m.broker_path)),
+            Header::GroupFirstForConsumer => SVal::Bool(m.jmsx_group_first_for_consumer),
         })
     }
 
-    fn property(&self, name: &str) -> SVal {
-        match self.properties() {
-            Some(p) => p.get(name).map(prop_to_sval).unwrap_or(SVal::Null),
-            None => SVal::Null,
+    fn property(&self, name: &str) -> Result<SVal, EvalError> {
+        match self.props() {
+            Props::Map(p) => Ok(p.get(name).map(|v| prop_to_sval(name, v)).unwrap_or(SVal::Null)),
+            Props::Absent => Ok(SVal::Null),
+            Props::Undecodable => Err(EvalError),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::openwire::types as t;
+    use crate::selector::Selector;
+    use bytes::Bytes;
+
+    fn entry(props: Option<Bytes>) -> Entry {
+        let mut m = Message::new(t::ACTIVEMQ_TEXT_MESSAGE);
+        m.correlation_id = Some("ORD-A".into());
+        m.priority = 7;
+        m.marshalled_properties = props;
+        let meta = Meta::new(Arc::new(Memory::new(0)), &m);
+        Entry { seq: 1, msg: Arc::new(m), meta, redelivery: 0 }
+    }
+
+    fn props(entries: &[(&str, Value)]) -> Bytes {
+        let mut map = PrimitiveMap::new();
+        for (k, v) in entries {
+            map.set(k, v.clone());
+        }
+        map.encode()
+    }
+
+    fn decodes() -> usize {
+        DECODES.with(|d| d.get())
+    }
+
+    #[test]
+    fn header_only_selector_does_not_decode_properties() {
+        let e = entry(Some(props(&[("color", Value::String("red".into()))])));
+        let s = Selector::compile("JMSCorrelationID = 'ORD-A' AND JMSPriority > 3").unwrap().unwrap();
+        let before = decodes();
+        assert!(s.matches(&e));
+        assert_eq!(decodes(), before);
+        assert!(!e.properties_decoded());
+        let p = Selector::compile("color = 'red'").unwrap().unwrap();
+        assert!(p.matches(&e));
+        assert!(e.properties_decoded());
+    }
+
+    #[test]
+    fn properties_are_decoded_once_for_many_consumers() {
+        let e = entry(Some(props(&[("color", Value::String("red".into())), ("n", Value::Int(5))])));
+        let copies: Vec<Entry> = (0..5).map(|_| e.clone()).collect();
+        let selectors: Vec<Selector> = ["color = 'red'", "n = 5", "n > 1 AND color LIKE 'r%'", "missing IS NULL", "n BETWEEN 1 AND 9"]
+            .iter()
+            .map(|s| Selector::compile(s).unwrap().unwrap())
+            .collect();
+        let before = decodes();
+        for (s, c) in selectors.iter().zip(&copies) {
+            assert!(s.matches(c), "{}", s.text());
+        }
+        assert_eq!(decodes() - before, 1);
+    }
+
+    #[test]
+    fn undecodable_properties_make_the_selector_unknown() {
+        // A truncated map: one entry announced, nothing follows.
+        let e = entry(Some(Bytes::from_static(&[0, 0, 0, 1])));
+        let before = decodes();
+        for s in ["color = 'red'", "color IS NULL", "NOT (color = 'red')", "color IS NOT NULL"] {
+            assert!(!Selector::compile(s).unwrap().unwrap().matches(&e), "{s}");
+        }
+        assert_eq!(decodes() - before, 1, "decoded (and logged) once");
+        assert!(e.properties().is_none());
+        // Header-only selectors keep working.
+        assert!(Selector::compile("JMSPriority = 7").unwrap().unwrap().matches(&e));
+    }
+
+    #[test]
+    fn property_types_keep_their_java_class() {
+        let e = entry(Some(props(&[
+            ("b", Value::Byte(7)),
+            ("s", Value::Short(300)),
+            ("i", Value::Int(5)),
+            ("l", Value::Long(10_000_000_000)),
+            ("f", Value::Float(1.5)),
+            ("d", Value::Double(2.5)),
+            ("c", Value::Char('x' as u16)),
+            ("t", Value::Bool(true)),
+            ("str", Value::String("v".into())),
+            ("bytes", Value::Bytes(Bytes::from_static(b"zz"))),
+        ])));
+        let cases = [
+            ("b = 7", true),
+            ("7 = b", false),
+            ("s = 300", true),
+            ("300 = s", false),
+            ("i = 5", true),
+            ("l = 10000000000", true),
+            ("f = 1.5", true),
+            ("d = 2.5", true),
+            ("c = 'x'", false),
+            ("c = c", true),
+            ("t", true),
+            ("str = 'v'", true),
+            ("bytes = bytes", true),
+            ("bytes IS NOT NULL", true),
+        ];
+        for (s, expected) in cases {
+            assert_eq!(Selector::compile(s).unwrap().unwrap().matches(&e), expected, "{s}");
         }
     }
 }

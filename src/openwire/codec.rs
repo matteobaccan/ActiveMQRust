@@ -108,9 +108,19 @@ impl Reader {
         }
     }
 
-    /// Loose string stored as a shared `Arc<str>`.
+    /// Loose string stored as a shared `Arc<str>` (one allocation for ASCII text).
     pub fn opt_arc_str(&mut self) -> CodecResult<Option<Arc<str>>> {
-        Ok(self.opt_string()?.map(Arc::from))
+        if !self.bool()? {
+            return Ok(None);
+        }
+        let len = self.u16()? as usize;
+        let raw = self.take(len)?;
+        if is_plain_ascii(&raw) {
+            // Plain ASCII is valid UTF-8 and identical in modified UTF-8.
+            Ok(Some(Arc::from(std::str::from_utf8(&raw).expect("ASCII"))))
+        } else {
+            Ok(Some(Arc::from(decode_modified_utf8(&raw)?)))
+        }
     }
 
     /// Loose byte sequence / byte array: presence flag, i32 length, bytes.
@@ -197,6 +207,12 @@ impl<'a> Writer<'a> {
     /// `DataOutput.writeUTF`. Strings longer than 65535 encoded bytes are an error in Java;
     /// here they are truncated at a character boundary to keep the stream valid.
     pub fn utf(&mut self, s: &str) {
+        if s.len() <= u16::MAX as usize && is_plain_ascii(s.as_bytes()) {
+            // Plain ASCII is written as is, without an intermediate buffer.
+            self.u16(s.len() as u16);
+            self.raw(s.as_bytes());
+            return;
+        }
         let encoded = encode_modified_utf8(s);
         let len = encoded.len().min(u16::MAX as usize);
         let len = utf_safe_len(&encoded, len);
@@ -224,6 +240,11 @@ impl<'a> Writer<'a> {
             None => self.bool(false),
         }
     }
+}
+
+/// True for ASCII without NUL: the same bytes in UTF-8 and in Java modified UTF-8.
+fn is_plain_ascii(raw: &[u8]) -> bool {
+    raw.iter().all(|&b| b != 0 && b < 0x80)
 }
 
 /// Finds the largest length <= `max` that does not split a multi-byte sequence.
