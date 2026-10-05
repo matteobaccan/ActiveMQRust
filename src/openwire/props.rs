@@ -154,7 +154,9 @@ fn decode_map(r: &mut Reader, depth: usize) -> CodecResult<Option<PrimitiveMap>>
     if size < 0 {
         return Ok(None);
     }
-    let mut map = PrimitiveMap { entries: Vec::with_capacity((size as usize).min(1024)) };
+    let mut map = PrimitiveMap {
+        entries: Vec::with_capacity((size as usize).min(1024)),
+    };
     for _ in 0..size {
         let name = r.utf()?;
         let value = decode_value(r, depth)?;
@@ -319,22 +321,46 @@ mod tests {
             ("char", with(&[0x03, 0x00, 0xe9]), Value::Char(0xe9)),
             ("short", with(&[0x04, 0xfe, 0xd4]), Value::Short(-300)),
             ("int", with(&[0x05, 0x00, 0x01, 0xe2, 0x40]), Value::Int(123456)),
-            ("long", with(&[0x06, 0xff, 0xff, 0xfe, 0xe0, 0x8e, 0x04, 0xfb, 0x35]), Value::Long(-1234567890123)),
+            (
+                "long",
+                with(&[0x06, 0xff, 0xff, 0xfe, 0xe0, 0x8e, 0x04, 0xfb, 0x35]),
+                Value::Long(-1234567890123),
+            ),
             ("float", with(&[0x08, 0x3f, 0xc0, 0x00, 0x00]), Value::Float(1.5)),
-            ("double", with(&[0x07, 0xc0, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]), Value::Double(-2.25)),
+            (
+                "double",
+                with(&[0x07, 0xc0, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]),
+                Value::Double(-2.25),
+            ),
             (
                 "string",
                 with(&[0x09, 0x00, 0x08, 0x68, 0xc3, 0xa9, 0x6c, 0x6c, 0x6f, 0xc0, 0x80]),
                 Value::String("h\u{e9}llo\u{0}".into()),
             ),
-            ("byte[]", with(&[0x0a, 0x00, 0x00, 0x00, 0x03, 0x01, 0x02, 0x03]), Value::Bytes(Bytes::from_static(&[1, 2, 3]))),
-            ("map", with(&[0x0b, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01, b'n', 0x05, 0x00, 0x00, 0x00, 0x01]), Value::Map(inner)),
+            (
+                "byte[]",
+                with(&[0x0a, 0x00, 0x00, 0x00, 0x03, 0x01, 0x02, 0x03]),
+                Value::Bytes(Bytes::from_static(&[1, 2, 3])),
+            ),
+            (
+                "map",
+                with(&[
+                    0x0b, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01, b'n', 0x05, 0x00, 0x00, 0x00, 0x01,
+                ]),
+                Value::Map(inner),
+            ),
             (
                 "list",
-                with(&[0x0c, 0x00, 0x00, 0x00, 0x02, 0x05, 0x00, 0x00, 0x00, 0x01, 0x09, 0x00, 0x01, b'a']),
+                with(&[
+                    0x0c, 0x00, 0x00, 0x00, 0x02, 0x05, 0x00, 0x00, 0x00, 0x01, 0x09, 0x00, 0x01, b'a',
+                ]),
                 Value::List(vec![Value::Int(1), Value::String("a".into())]),
             ),
-            ("big string", with(&[[0x0d, 0x00, 0x00, 0x23, 0x28].as_slice(), &[b'x'; 9000]].concat()), Value::String("x".repeat(9000))),
+            (
+                "big string",
+                with(&[[0x0d, 0x00, 0x00, 0x23, 0x28].as_slice(), &[b'x'; 9000]].concat()),
+                Value::String("x".repeat(9000)),
+            ),
         ]
     }
 

@@ -37,7 +37,10 @@ pub fn platform_details() -> String {
 
 /// Builds the broker's `WireFormatInfo`, echoing the client's inactivity settings.
 pub fn broker_wire_format(client: &WireFormatInfo, max_frame_size: i64) -> WireFormatInfo {
-    let inactivity = client.properties.get_long("MaxInactivityDuration").unwrap_or(DEFAULT_INACTIVITY_MS);
+    let inactivity = client
+        .properties
+        .get_long("MaxInactivityDuration")
+        .unwrap_or(DEFAULT_INACTIVITY_MS);
     let initial = client
         .properties
         .get_long("MaxInactivityDurationInitalDelay")
@@ -56,7 +59,11 @@ pub fn broker_wire_format(client: &WireFormatInfo, max_frame_size: i64) -> WireF
     p.set("ProviderName", Value::String(PROVIDER_NAME.into()));
     p.set("ProviderVersion", Value::String(PROVIDER_VERSION.into()));
     p.set("PlatformDetails", Value::String(platform_details()));
-    WireFormatInfo { magic: MAGIC, version: MAX_VERSION, properties: p }
+    WireFormatInfo {
+        magic: MAGIC,
+        version: MAX_VERSION,
+        properties: p,
+    }
 }
 
 /// Computes the settings both sides will use after the exchange.
@@ -90,7 +97,11 @@ mod tests {
         p.set("CacheEnabled", Value::Bool(true));
         p.set("MaxInactivityDuration", Value::Long(30000));
         p.set("MaxInactivityDurationInitalDelay", Value::Long(10000));
-        WireFormatInfo { magic: MAGIC, version, properties: p }
+        WireFormatInfo {
+            magic: MAGIC,
+            version,
+            properties: p,
+        }
     }
 
     #[test]

@@ -63,12 +63,20 @@ async fn start_with(f: impl FnOnce(&mut FileConfig)) -> Console {
     });
     let mut fc = FileConfig::default();
     f(&mut fc);
-    let o = Overrides { admin_port: Some(0), ..Default::default() };
+    let o = Overrides {
+        admin_port: Some(0),
+        ..Default::default()
+    };
     let broker = Broker::new(Arc::new(build(fc, ConfigSource::Defaults, &o).unwrap()));
     let (tx, rx) = tokio::sync::watch::channel(false);
     std::mem::forget(tx);
-    let addr = mqrust::admin::start(broker.clone(), rx).await.expect("admin console started");
-    Console { broker, port: addr.port() }
+    let addr = mqrust::admin::start(broker.clone(), rx)
+        .await
+        .expect("admin console started");
+    Console {
+        broker,
+        port: addr.port(),
+    }
 }
 
 async fn start() -> Console {
@@ -112,7 +120,13 @@ struct Req<'a> {
 }
 
 fn req<'a>(method: &'a str, path: &'a str) -> Req<'a> {
-    Req { method, path, headers: Vec::new(), body: None, from: None }
+    Req {
+        method,
+        path,
+        headers: Vec::new(),
+        body: None,
+        from: None,
+    }
 }
 
 impl<'a> Req<'a> {
@@ -142,7 +156,10 @@ impl<'a> Req<'a> {
             socket.bind(SocketAddr::new(ip, 0)).unwrap();
         }
         let mut s = socket.connect(SocketAddr::from(([127, 0, 0, 1], port))).await.unwrap();
-        let mut text = format!("{} {} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n", self.method, self.path);
+        let mut text = format!(
+            "{} {} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n",
+            self.method, self.path
+        );
         for (k, v) in &self.headers {
             text.push_str(&format!("{k}: {v}\r\n"));
         }
@@ -154,7 +171,11 @@ impl<'a> Req<'a> {
         let text = String::from_utf8_lossy(&buf).into_owned();
         let (head, body) = text.split_once("\r\n\r\n").unwrap_or((&text, ""));
         let status: u16 = head.split_whitespace().nth(1).unwrap().parse().unwrap();
-        Resp { status, head: head.to_string(), body: body.to_string() }
+        Resp {
+            status,
+            head: head.to_string(),
+            body: body.to_string(),
+        }
     }
 }
 
@@ -179,7 +200,10 @@ async fn api(c: &Console, path: &str) -> Resp {
 }
 
 async fn login_as(c: &Console, user: &str, pass: &str) -> Resp {
-    req("POST", "/login").form(&[("username", user), ("password", pass), ("next", "/")]).send(c.port).await
+    req("POST", "/login")
+        .form(&[("username", user), ("password", pass), ("next", "/")])
+        .send(c.port)
+        .await
 }
 
 async fn login(c: &Console) -> String {
@@ -200,7 +224,11 @@ async fn alias_works(port: u16, ip: &str) -> bool {
 static NEXT: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(1);
 
 fn producer() -> ProducerId {
-    ProducerId { connection_id: Arc::from("ID:test-1-1-1:1"), session_id: 1, value: 1 }
+    ProducerId {
+        connection_id: Arc::from("ID:test-1-1-1:1"),
+        session_id: 1,
+        value: 1,
+    }
 }
 
 fn text_content(body: &str) -> Bytes {
@@ -250,11 +278,18 @@ struct Client {
 impl Client {
     fn new(b: &Broker) -> Client {
         let (tx, rx) = mpsc::unbounded_channel();
-        Client { handle: Arc::new(ConnHandle::new(b.new_conn_id(), "127.0.0.1:50000".parse().unwrap(), tx)), rx }
+        Client {
+            handle: Arc::new(ConnHandle::new(b.new_conn_id(), "127.0.0.1:50000".parse().unwrap(), tx)),
+            rx,
+        }
     }
 
     fn subscribe(&self, b: &Broker, n: i64, dest: &Destination, prefetch: i32, selector: Option<&str>) -> ConsumerId {
-        let id = ConsumerId { connection_id: Arc::from("ID:client-7-1-1:1"), session_id: 1, value: n };
+        let id = ConsumerId {
+            connection_id: Arc::from("ID:client-7-1-1:1"),
+            session_id: 1,
+            value: n,
+        };
         b.get_or_create(dest, None).add_sub(
             SubSpec {
                 id: id.clone(),
@@ -284,7 +319,12 @@ impl Client {
 }
 
 fn ack(b: &Broker, dest: &Destination, consumer: &ConsumerId, last: i64) {
-    let mid = MessageId { text_view: None, producer_id: Some(producer()), producer_sequence_id: 0, broker_sequence_id: last };
+    let mid = MessageId {
+        text_view: None,
+        producer_id: Some(producer()),
+        producer_sequence_id: 0,
+        broker_sequence_id: last,
+    };
     let a = MessageAck {
         header: Header::default(),
         destination: Some(dest.clone()),
@@ -301,11 +341,20 @@ fn ack(b: &Broker, dest: &Destination, consumer: &ConsumerId, last: i64) {
 }
 
 fn ids(page: &J) -> Vec<String> {
-    page["messages"].as_array().unwrap().iter().map(|m| m["correlationId"].as_str().unwrap_or("").to_string()).collect()
+    page["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["correlationId"].as_str().unwrap_or("").to_string())
+        .collect()
 }
 
 fn names(list: &J) -> Vec<String> {
-    list.as_array().unwrap().iter().map(|q| q["name"].as_str().unwrap().to_string()).collect()
+    list.as_array()
+        .unwrap()
+        .iter()
+        .map(|q| q["name"].as_str().unwrap().to_string())
+        .collect()
 }
 
 // -- login and sessions --------------------------------------------------------------
@@ -321,7 +370,10 @@ async fn login_flow_sessions_and_headers() {
     assert!(r.header("www-authenticate").is_none());
     assert!(!r.body.contains("SECRETQ"));
     let r = req("GET", "/queues?refresh=5").send(c.port).await;
-    assert_eq!(r.header("location").as_deref(), Some("/login?next=%2Fqueues%3Frefresh%3D5"));
+    assert_eq!(
+        r.header("location").as_deref(),
+        Some("/login?next=%2Fqueues%3Frefresh%3D5")
+    );
 
     let r = req("GET", "/login?next=%2Fqueues%3Frefresh%3D5").send(c.port).await;
     assert_eq!(r.status, 200);
@@ -343,7 +395,11 @@ async fn login_flow_sessions_and_headers() {
 
     // Successful login back to the requested page.
     let r = req("POST", "/login")
-        .form(&[("username", "admin"), ("password", "admin"), ("next", "/queues?refresh=5")])
+        .form(&[
+            ("username", "admin"),
+            ("password", "admin"),
+            ("next", "/queues?refresh=5"),
+        ])
         .send(c.port)
         .await;
     assert_eq!(r.status, 303);
@@ -352,14 +408,22 @@ async fn login_flow_sessions_and_headers() {
     assert!(cookie.ends_with("; HttpOnly; SameSite=Strict; Path=/"), "{cookie}");
     assert!(!cookie.contains("Expires") && !cookie.contains("Max-Age"));
     let token = r.token().unwrap();
-    assert_eq!(base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(&token).unwrap().len(), 32);
+    assert_eq!(
+        base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(&token)
+            .unwrap()
+            .len(),
+        32
+    );
 
     let r = get(&c, "/queues?refresh=5", &token).await;
     assert_eq!(r.status, 200);
     assert!(r.body.contains("SECRETQ"));
     assert!(r.body.contains("<meta http-equiv=\"refresh\" content=\"5\">"));
     assert!(r.body.contains("href=\"/topics?refresh=5\""));
-    assert!(r.body.contains("<span class=\"user\" title=\"Logged in user\">admin</span>"));
+    assert!(r
+        .body
+        .contains("<span class=\"user\" title=\"Logged in user\">admin</span>"));
     assert!(r.body.contains("action=\"/logout\""));
     assert!(r.body.contains("<meta name=\"color-scheme\" content=\"light dark\">"));
     assert!(r.body.contains("<html lang=\"en\">"));
@@ -379,15 +443,35 @@ async fn login_flow_sessions_and_headers() {
     assert_eq!(r.status, 401);
     assert_eq!(r.json(), serde_json::json!({ "error": "unauthorized" }));
     assert!(r.header("www-authenticate").is_none());
-    assert_eq!(req("GET", "/api/queues").basic("admin:nope").send(c.port).await.status, 401);
+    assert_eq!(
+        req("GET", "/api/queues").basic("admin:nope").send(c.port).await.status,
+        401
+    );
 
     // Only GET and HEAD, plus POST on /login and /logout.
-    assert_eq!(req("POST", "/queues/SECRETQ").cookie(&token).send(c.port).await.status, 405);
-    assert_eq!(req("DELETE", "/api/queues/SECRETQ").basic("admin:admin").send(c.port).await.status, 405);
+    assert_eq!(
+        req("POST", "/queues/SECRETQ").cookie(&token).send(c.port).await.status,
+        405
+    );
+    assert_eq!(
+        req("DELETE", "/api/queues/SECRETQ")
+            .basic("admin:admin")
+            .send(c.port)
+            .await
+            .status,
+        405
+    );
     assert_eq!(req("PUT", "/login").send(c.port).await.status, 405);
     assert_eq!(req("POST", "/").cookie(&token).send(c.port).await.status, 405);
     assert_eq!(req("HEAD", "/queues").cookie(&token).send(c.port).await.status, 200);
-    assert_eq!(c.broker.get_dest(&Destination::queue("SECRETQ")).unwrap().snapshot().pending, 1);
+    assert_eq!(
+        c.broker
+            .get_dest(&Destination::queue("SECRETQ"))
+            .unwrap()
+            .snapshot()
+            .pending,
+        1
+    );
 
     // Stylesheet: public, embedded, small.
     let r = req("GET", "/style.css").send(c.port).await;
@@ -397,7 +481,11 @@ async fn login_flow_sessions_and_headers() {
     assert!(!r.body.contains("url(") && !r.body.contains("@import"));
 
     // Logout from a foreign origin is refused.
-    let r = req("POST", "/logout").cookie(&token).header("Origin", "https://evil.example").send(c.port).await;
+    let r = req("POST", "/logout")
+        .cookie(&token)
+        .header("Origin", "https://evil.example")
+        .send(c.port)
+        .await;
     assert_eq!(r.status, 403);
     assert_eq!(get(&c, "/queues", &token).await.status, 200);
     let r = req("POST", "/login")
@@ -409,7 +497,11 @@ async fn login_flow_sessions_and_headers() {
     assert!(r.token().is_none());
 
     // Logout ends the session.
-    let r = req("POST", "/logout").cookie(&token).header("Origin", &format!("http://127.0.0.1:{}", c.port)).send(c.port).await;
+    let r = req("POST", "/logout")
+        .cookie(&token)
+        .header("Origin", &format!("http://127.0.0.1:{}", c.port))
+        .send(c.port)
+        .await;
     assert_eq!(r.status, 303);
     assert_eq!(r.header("location").as_deref(), Some("/login"));
     assert!(r.header("set-cookie").unwrap().contains("Max-Age=0"));
@@ -422,18 +514,24 @@ async fn session_fixation_and_open_redirect() {
     let c = start().await;
     let first = login(&c).await;
     // A cookie sent with the login is discarded and a new token issued.
-    let r = req("POST", "/login").cookie(&first).form(&[("username", "admin"), ("password", "admin")]).send(c.port).await;
+    let r = req("POST", "/login")
+        .cookie(&first)
+        .form(&[("username", "admin"), ("password", "admin")])
+        .send(c.port)
+        .await;
     let second = r.token().unwrap();
     assert_ne!(first, second);
     assert_eq!(get(&c, "/", &first).await.status, 303);
     assert_eq!(get(&c, "/", &second).await.status, 200);
 
     for bad in ["//evil.example/", "https://evil.example/", "/\\evil.example"] {
-        let r = req("POST", "/login").form(&[("username", "admin"), ("password", "admin"), ("next", bad)]).send(c.port).await;
+        let r = req("POST", "/login")
+            .form(&[("username", "admin"), ("password", "admin"), ("next", bad)])
+            .send(c.port)
+            .await;
         assert_eq!(r.status, 303);
         assert_eq!(r.header("location").as_deref(), Some("/"), "{bad}");
     }
-
 }
 
 #[tokio::test]
@@ -441,19 +539,42 @@ async fn theme_follows_the_system_only() {
     let c = start().await;
     let token = login(&c).await;
     let mut pages: Vec<Resp> = Vec::new();
-    for page in ["/", "/queues", "/topics", "/connections", "/queues?sort=pending&order=desc&refresh=5"] {
+    for page in [
+        "/",
+        "/queues",
+        "/topics",
+        "/connections",
+        "/queues?sort=pending&order=desc&refresh=5",
+    ] {
         // An old theme cookie is ignored.
-        pages.push(req("GET", page).header("Cookie", &format!("mqrust_session={token}; mqrust_theme=dark")).send(c.port).await);
+        pages.push(
+            req("GET", page)
+                .header("Cookie", &format!("mqrust_session={token}; mqrust_theme=dark"))
+                .send(c.port)
+                .await,
+        );
     }
-    pages.push(req("GET", "/login").header("Cookie", "mqrust_theme=dark").send(c.port).await);
+    pages.push(
+        req("GET", "/login")
+            .header("Cookie", "mqrust_theme=dark")
+            .send(c.port)
+            .await,
+    );
     for r in &pages {
         assert_eq!(r.status, 200, "{r:?}");
         assert!(r.body.contains("<html lang=\"en\"><head>"), "{}", r.body);
         assert!(r.body.contains("<meta name=\"color-scheme\" content=\"light dark\">"));
         assert!(!r.body.contains("data-theme"), "{}", r.body);
-        assert!(!r.body.contains("/theme/") && !r.body.contains("class=\"theme\""), "{}", r.body);
+        assert!(
+            !r.body.contains("/theme/") && !r.body.contains("class=\"theme\""),
+            "{}",
+            r.body
+        );
         assert!(!r.body.contains("aria-label=\"Theme\""));
-        assert!(r.header("set-cookie").is_none_or(|v| !v.contains("mqrust_theme")), "{r:?}");
+        assert!(
+            r.header("set-cookie").is_none_or(|v| !v.contains("mqrust_theme")),
+            "{r:?}"
+        );
     }
     for mode in ["dark", "light", "auto"] {
         let r = get(&c, &format!("/theme/{mode}?next=%2F"), &token).await;
@@ -462,8 +583,10 @@ async fn theme_follows_the_system_only() {
     }
     let css = req("GET", "/style.css").send(c.port).await.body;
     assert!(!css.contains("data-theme"));
-    assert!(css.contains("@media (prefers-color-scheme: dark) {
-  :root {"));
+    assert!(css.contains(
+        "@media (prefers-color-scheme: dark) {
+  :root {"
+    ));
 }
 
 #[tokio::test]
@@ -496,7 +619,11 @@ async fn failed_logins_are_logged_and_throttled() {
     // The API is refused too while the address is locked out.
     assert_eq!(api(&c, "/api/overview").await.status, 429);
     if alias_works(c.port, "127.0.0.2").await {
-        let r = req("POST", "/login").from("127.0.0.2").form(&[("username", "admin"), ("password", "admin")]).send(c.port).await;
+        let r = req("POST", "/login")
+            .from("127.0.0.2")
+            .form(&[("username", "admin"), ("password", "admin")])
+            .send(c.port)
+            .await;
         assert_eq!(r.status, 303, "another client is not locked out");
     }
     tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
@@ -506,7 +633,14 @@ async fn failed_logins_are_logged_and_throttled() {
 
     // Failed Basic attempts on the API count too.
     for _ in 0..5 {
-        assert_eq!(req("GET", "/api/overview").basic("admin:wrong").send(c.port).await.status, 401);
+        assert_eq!(
+            req("GET", "/api/overview")
+                .basic("admin:wrong")
+                .send(c.port)
+                .await
+                .status,
+            401
+        );
     }
     assert_eq!(api(&c, "/api/overview").await.status, 429);
     // A logged-in browser keeps working.
@@ -517,7 +651,10 @@ async fn failed_logins_are_logged_and_throttled() {
     // Requests without credentials are not failed logins; tokens are never logged.
     if alias_works(c.port, "127.0.0.9").await {
         assert_eq!(req("GET", "/").from("127.0.0.9").send(c.port).await.status, 303);
-        assert_eq!(req("GET", "/api/overview").from("127.0.0.9").send(c.port).await.status, 401);
+        assert_eq!(
+            req("GET", "/api/overview").from("127.0.0.9").send(c.port).await.status,
+            401
+        );
         assert!(!logs().contains("127.0.0.9"));
     }
     assert!(!logs().contains(&token));
@@ -529,7 +666,11 @@ async fn argon2_admin_and_openwire_users_are_separate() {
     let c = start_with(|fc| {
         fc.admin.username = "boss".into();
         fc.admin.password_hash = Some(hash.clone());
-        fc.users = vec![UserEntry { username: "app1".into(), password: Some("secret".into()), password_hash: None }];
+        fc.users = vec![UserEntry {
+            username: "app1".into(),
+            password: Some("secret".into()),
+            password_hash: None,
+        }];
     })
     .await;
     let r = req("GET", "/login").send(c.port).await;
@@ -542,10 +683,24 @@ async fn argon2_admin_and_openwire_users_are_separate() {
     let r = login_as(&c, "app1", "secret").await;
     assert!(r.body.contains("Invalid username or password"));
     assert!(r.token().is_none());
-    assert_eq!(req("GET", "/api/overview").basic("app1:secret").send(c.port).await.status, 401);
+    assert_eq!(
+        req("GET", "/api/overview")
+            .basic("app1:secret")
+            .send(c.port)
+            .await
+            .status,
+        401
+    );
     // The second call is served from the verified-credential cache.
     for _ in 0..2 {
-        assert_eq!(req("GET", "/api/overview").basic("boss:s3cret").send(c.port).await.status, 200);
+        assert_eq!(
+            req("GET", "/api/overview")
+                .basic("boss:s3cret")
+                .send(c.port)
+                .await
+                .status,
+            200
+        );
     }
 }
 
@@ -596,18 +751,35 @@ async fn browsing_does_not_consume() {
         for view in ["", "&view=xml"] {
             let p = format!("/queues/BROWSE/messages/{id}?seq={}{view}", m["position"]);
             assert_eq!(get(&c, &p, &token).await.status, 200);
-            assert_eq!(api(&c, &format!("/api/queues/BROWSE/messages/{id}?seq={}{view}", m["position"])).await.status, 200);
+            assert_eq!(
+                api(
+                    &c,
+                    &format!("/api/queues/BROWSE/messages/{id}?seq={}{view}", m["position"])
+                )
+                .await
+                .status,
+                200
+            );
         }
         // Without the sequence hint the lookup scans the queue.
-        assert_eq!(get(&c, &format!("/queues/BROWSE/messages/{id}"), &token).await.status, 200);
+        assert_eq!(
+            get(&c, &format!("/queues/BROWSE/messages/{id}"), &token).await.status,
+            200
+        );
     }
     let after = c.broker.get_dest(&q).unwrap().snapshot();
     assert_eq!(after.pending, 10);
-    assert_eq!((after.stats.enqueued, after.stats.dequeued, after.stats.dispatched), (before.stats.enqueued, 0, 0));
+    assert_eq!(
+        (after.stats.enqueued, after.stats.dequeued, after.stats.dispatched),
+        (before.stats.enqueued, 0, 0)
+    );
     let mut client = Client::new(&c.broker);
     client.subscribe(&c.broker, 1, &q, 100, None);
     let got = client.drain();
-    assert_eq!(got.iter().map(|g| g.0.clone()).collect::<Vec<_>>(), (1..=10).map(|i| format!("m-{i}")).collect::<Vec<_>>());
+    assert_eq!(
+        got.iter().map(|g| g.0.clone()).collect::<Vec<_>>(),
+        (1..=10).map(|i| format!("m-{i}")).collect::<Vec<_>>()
+    );
     assert!(got.iter().all(|g| g.1 == 0), "not redelivered");
 }
 
@@ -616,9 +788,7 @@ async fn contents_pagination_and_api_limit() {
     let c = start().await;
     let token = login(&c).await;
     put_numbered(&c.broker, "PAGED", 120);
-    let ids_on = |body: &str| -> Vec<usize> {
-        (1..=120).filter(|i| body.contains(&format!(">m-{i}<"))).collect()
-    };
+    let ids_on = |body: &str| -> Vec<usize> { (1..=120).filter(|i| body.contains(&format!(">m-{i}<"))).collect() };
     let p1 = get(&c, "/queues/PAGED", &token).await.body;
     assert_eq!(ids_on(&p1), (1..=50).collect::<Vec<_>>());
     let first = p1.find(">m-1<").unwrap();
@@ -666,7 +836,11 @@ async fn json_api_contents_consumers_producers() {
     let d = c.broker.get_dest(&q2).unwrap();
     d.add_producer(
         producer(),
-        ProducerMeta { conn_id: 9, remote: "127.0.0.1:50001".into(), connection_id: "ID:test-1-1-1:1".into() },
+        ProducerMeta {
+            conn_id: 9,
+            remote: "127.0.0.1:50001".into(),
+            connection_id: "ID:test-1-1-1:1".into(),
+        },
     );
     let mut client = Client::new(&c.broker);
     client.subscribe(&c.broker, 1, &q2, 2, Some("JMSCorrelationID IN ('m-1','m-2','m-3')"));
@@ -689,7 +863,16 @@ async fn json_api_contents_consumers_producers() {
     assert_eq!(ov["product"], "ActiveMQRust");
     assert_eq!(ov["version"], VERSION);
     assert_eq!(ov["queues"], 2);
-    for k in ["uptimeSeconds", "connections", "topics", "messageMemory", "workingSet", "privateBytes", "compressed", "compressDiscarded"] {
+    for k in [
+        "uptimeSeconds",
+        "connections",
+        "topics",
+        "messageMemory",
+        "workingSet",
+        "privateBytes",
+        "compressed",
+        "compressDiscarded",
+    ] {
         assert!(ov[k].is_number(), "{k}");
     }
     assert!(ov["memoryLimit"].is_null());
@@ -715,7 +898,12 @@ async fn inflight_and_consumed_message_pages() {
     let j = api(&c, &format!("/api/queues/INF/messages/{id}")).await.json();
     assert_eq!(j["inflight"], true);
     ack(&c.broker, &q, &cid, seq);
-    assert_eq!(get(&c, &format!("/queues/INF/messages/{id}?seq={seq}"), &token).await.status, 404);
+    assert_eq!(
+        get(&c, &format!("/queues/INF/messages/{id}?seq={seq}"), &token)
+            .await
+            .status,
+        404
+    );
     assert_eq!(api(&c, &format!("/api/queues/INF/messages/{id}")).await.status, 404);
 }
 
@@ -727,23 +915,49 @@ async fn queues_table_sorting() {
         put_numbered(&c.broker, name, n);
     }
     let order = |body: &str| -> Vec<&'static str> {
-        let mut v: Vec<(usize, &'static str)> =
-            ["A", "b", "C"].iter().map(|n| (body.find(&format!("href=\"/queues/{n}\"")).unwrap(), *n)).collect();
+        let mut v: Vec<(usize, &'static str)> = ["A", "b", "C"]
+            .iter()
+            .map(|n| (body.find(&format!("href=\"/queues/{n}\"")).unwrap(), *n))
+            .collect();
         v.sort();
         v.into_iter().map(|x| x.1).collect()
     };
     let r = get(&c, "/queues", &token).await.body;
     assert_eq!(order(&r), ["A", "b", "C"]);
-    for col in ["name", "pending", "inflight", "consumers", "producers", "enqueued", "consumed", "expired"] {
+    for col in [
+        "name",
+        "pending",
+        "inflight",
+        "consumers",
+        "producers",
+        "enqueued",
+        "consumed",
+        "expired",
+    ] {
         assert!(r.contains(&format!("<a href=\"/queues?sort={col}&amp;order=")), "{col}");
     }
     assert!(r.contains("aria-sort=\"ascending\""));
-    assert_eq!(order(&get(&c, "/queues?sort=pending&order=asc", &token).await.body), ["A", "C", "b"]);
-    assert_eq!(order(&get(&c, "/queues?sort=pending&order=desc", &token).await.body), ["b", "C", "A"]);
-    assert_eq!(order(&get(&c, "/queues?sort=name&order=desc", &token).await.body), ["C", "b", "A"]);
+    assert_eq!(
+        order(&get(&c, "/queues?sort=pending&order=asc", &token).await.body),
+        ["A", "C", "b"]
+    );
+    assert_eq!(
+        order(&get(&c, "/queues?sort=pending&order=desc", &token).await.body),
+        ["b", "C", "A"]
+    );
+    assert_eq!(
+        order(&get(&c, "/queues?sort=name&order=desc", &token).await.body),
+        ["C", "b", "A"]
+    );
     // Ties by name ascending, whatever the direction.
-    assert_eq!(order(&get(&c, "/queues?sort=consumers&order=desc", &token).await.body), ["A", "b", "C"]);
-    assert_eq!(order(&get(&c, "/queues?sort=bogus", &token).await.body), ["A", "b", "C"]);
+    assert_eq!(
+        order(&get(&c, "/queues?sort=consumers&order=desc", &token).await.body),
+        ["A", "b", "C"]
+    );
+    assert_eq!(
+        order(&get(&c, "/queues?sort=bogus", &token).await.body),
+        ["A", "b", "C"]
+    );
     // Toggle and arrows; the sort survives auto-refresh.
     let r = get(&c, "/queues?sort=enqueued&order=asc", &token).await.body;
     assert!(r.contains("href=\"/queues?sort=enqueued&amp;order=desc\""));
@@ -751,7 +965,10 @@ async fn queues_table_sorting() {
     assert!(r.contains("aria-sort=\"descending\""));
     assert!(r.contains("&#9660;"));
     assert!(r.contains("href=\"/queues?sort=enqueued&amp;order=asc&amp;refresh=5\""));
-    assert!(r.contains("href=\"/queues?sort=enqueued&amp;order=desc\""), "refresh toggle keeps the sort");
+    assert!(
+        r.contains("href=\"/queues?sort=enqueued&amp;order=desc\""),
+        "refresh toggle keeps the sort"
+    );
     let j = api(&c, "/api/queues?sort=pending&order=desc").await.json();
     assert_eq!(names(&j), ["b", "C", "A"]);
     let j = api(&c, "/api/queues?sort=consumed&order=desc").await.json();
@@ -775,7 +992,11 @@ async fn xml_view_raw_and_formatted() {
     let page = api(&c, "/api/queues/XML/messages").await.json();
     let path = |i: usize| {
         let m = &page["messages"][i];
-        format!("/queues/XML/messages/{}?seq={}", form_enc(m["messageId"].as_str().unwrap()), m["position"])
+        format!(
+            "/queues/XML/messages/{}?seq={}",
+            form_enc(m["messageId"].as_str().unwrap()),
+            m["position"]
+        )
     };
 
     let raw = get(&c, &path(0), &token).await.body;
@@ -785,7 +1006,10 @@ async fn xml_view_raw_and_formatted() {
     assert!(fmt.contains("<span class=\"x-tag\">&lt;order</span>"));
     assert!(fmt.contains("<span class=\"x-attr\">qty</span>"));
     assert!(fmt.contains("\n  <span class=\"x-tag\">&lt;item</span>"));
-    assert!(fmt.contains("&amp;refresh=5\" aria-current=\"true\">Formatted</a>"), "links keep the view and refresh");
+    assert!(
+        fmt.contains("&amp;refresh=5\" aria-current=\"true\">Formatted</a>"),
+        "links keep the view and refresh"
+    );
     assert!(fmt.contains("?view=xml&amp;seq="));
     assert!(fmt.contains("<meta http-equiv=\"refresh\" content=\"5\">"));
 
@@ -830,7 +1054,10 @@ async fn optional_feature_fields() {
     assert!((next - (now + 60_000)).abs() < 1000);
     let html = get(&c, "/queues/EXP", &token).await.body;
     assert!(html.contains("Pending with expiration"));
-    assert!(html.contains("(in 59s)") || html.contains("(in 1m 0s)"), "next expiration shown");
+    assert!(
+        html.contains("(in 59s)") || html.contains("(in 1m 0s)"),
+        "next expiration shown"
+    );
     assert!(html.contains("never"));
     let page = api(&c, "/api/queues/EXP/messages").await.json();
     assert_eq!(page["messages"][0]["expired"], false);
@@ -850,18 +1077,37 @@ async fn optional_feature_fields() {
     let html = get(&c, "/queues/SHORT", &token).await.body;
     assert!(html.contains("<span class=\"badge warn\">expired</span>"));
     let m0 = &page["messages"][0];
-    let msg = get(&c, &format!("/queues/SHORT/messages/{}?seq={}", form_enc(m0["messageId"].as_str().unwrap()), m0["position"]), &token).await.body;
+    let msg = get(
+        &c,
+        &format!(
+            "/queues/SHORT/messages/{}?seq={}",
+            form_enc(m0["messageId"].as_str().unwrap()),
+            m0["position"]
+        ),
+        &token,
+    )
+    .await
+    .body;
     assert!(msg.contains("(expired)"));
-    c.broker.get_dest(&Destination::queue("SHORT")).unwrap().sweep_expired(now_ms(), 100);
+    c.broker
+        .get_dest(&Destination::queue("SHORT"))
+        .unwrap()
+        .sweep_expired(now_ms(), 100);
     let list = api(&c, "/api/queues").await.json();
     let short = list.as_array().unwrap().iter().find(|q| q["name"] == "SHORT").unwrap();
     assert_eq!(short["expired"], 3);
-    assert!(get(&c, "/queues", &token).await.body.contains("<td class=\"num\">3</td></tr>"));
+    assert!(get(&c, "/queues", &token)
+        .await
+        .body
+        .contains("<td class=\"num\">3</td></tr>"));
 
     // Compression: a client-compressed text message.
     let text = "compressible text ".repeat(6000);
     let mut m = text_msg(&Destination::queue("ZIP"), "");
-    m.content = Some(Bytes::from(mqrust::broker::compress::compress_content(t::ACTIVEMQ_TEXT_MESSAGE, &text_content(&text))));
+    m.content = Some(Bytes::from(mqrust::broker::compress::compress_content(
+        t::ACTIVEMQ_TEXT_MESSAGE,
+        &text_content(&text),
+    )));
     m.compressed = true;
     let stored = m.content.as_ref().unwrap().len();
     put_msg(&c.broker, m);
@@ -876,7 +1122,17 @@ async fn optional_feature_fields() {
     let html = get(&c, "/queues/ZIP", &token).await.body;
     assert!(html.contains("<span class=\"badge info\">compressed</span>"));
     let m0 = &page["messages"][0];
-    let msg = get(&c, &format!("/queues/ZIP/messages/{}?seq={}", form_enc(m0["messageId"].as_str().unwrap()), m0["position"]), &token).await.body;
+    let msg = get(
+        &c,
+        &format!(
+            "/queues/ZIP/messages/{}?seq={}",
+            form_enc(m0["messageId"].as_str().unwrap()),
+            m0["position"]
+        ),
+        &token,
+    )
+    .await
+    .body;
     assert!(msg.contains(&format!("{stored} bytes stored")));
     assert!(msg.contains("compressible text compressible text"));
 
@@ -889,7 +1145,11 @@ async fn optional_feature_fields() {
     }
     c2.broker.get_dest(&topic).unwrap().add_producer(
         producer(),
-        ProducerMeta { conn_id: 1, remote: "127.0.0.1:1".into(), connection_id: "ID:test-1-1-1:1".into() },
+        ProducerMeta {
+            conn_id: 1,
+            remote: "127.0.0.1:1".into(),
+            connection_id: "ID:test-1-1-1:1".into(),
+        },
     );
     for i in 0..10 {
         put_msg(&c2.broker, text_msg(&topic, &format!("t{i}")));
@@ -897,7 +1157,10 @@ async fn optional_feature_fields() {
     let topics = api(&c2, "/api/topics").await.json();
     let t1 = &topics[0];
     assert_eq!((t1["name"].as_str(), t1["consumers"].as_u64()), (Some("T1"), Some(3)));
-    assert_eq!((t1["producers"].as_u64(), t1["published"].as_u64()), (Some(1), Some(10)));
+    assert_eq!(
+        (t1["producers"].as_u64(), t1["published"].as_u64()),
+        (Some(1), Some(10))
+    );
     assert_eq!(t1["memory"].as_u64(), Some(c2.broker.memory.used()));
     let html = get(&c2, "/topics", &login(&c2).await).await.body;
     assert!(html.contains(">T1<"));
@@ -909,7 +1172,15 @@ async fn overview_footer_and_version() {
     let token = login(&c).await;
     let r = get(&c, "/", &token).await.body;
     assert!(r.contains(&format!("<h1>ActiveMQRust {VERSION}</h1>")));
-    for s in ["Uptime", "Active connections", "Working Set", "Private Bytes", "no limit", "Compressed by the broker", "Compressions discarded"] {
+    for s in [
+        "Uptime",
+        "Active connections",
+        "Working Set",
+        "Private Bytes",
+        "no limit",
+        "Compressed by the broker",
+        "Compressions discarded",
+    ] {
         assert!(r.contains(s), "{s}");
     }
     // Listen addresses: two labelled lines right below the title, outside the cards.
@@ -918,8 +1189,16 @@ async fn overview_footer_and_version() {
     let cards = r.find("<div class=\"cards\">").expect("cards");
     let between = &r[h1_end..cards];
     assert!(between.starts_with("<p class=\"addresses\">"), "{between}");
-    assert!(between.contains("<span class=\"label\">OpenWire</span> <code>tcp://0.0.0.0:61616</code>"), "{between}");
-    assert!(between.contains(&format!("<span class=\"label\">Admin console</span> <code>{admin}</code>")), "{between}");
+    assert!(
+        between.contains("<span class=\"label\">OpenWire</span> <code>tcp://0.0.0.0:61616</code>"),
+        "{between}"
+    );
+    assert!(
+        between.contains(&format!(
+            "<span class=\"label\">Admin console</span> <code>{admin}</code>"
+        )),
+        "{between}"
+    );
     let cards_html = &r[cards..r.find("</main>").expect("main")];
     for addr in ["tcp://", "http://"] {
         assert!(!cards_html.contains(addr), "{addr} in a card");
@@ -932,12 +1211,17 @@ async fn overview_footer_and_version() {
         let body = get(&c, page, &token).await.body;
         let footer = &body[body.find("<footer").expect("footer")..];
         assert!(footer.contains(&format!("ActiveMQRust {VERSION}")));
-        assert!(footer.contains("<a href=\"https://github.com/matteobaccan/ActiveMQRust\" rel=\"noopener noreferrer\">"));
+        assert!(
+            footer.contains("<a href=\"https://github.com/matteobaccan/ActiveMQRust\" rel=\"noopener noreferrer\">")
+        );
         assert!(footer.contains("by Matteo Baccan"));
     }
     let login_page = req("GET", "/login").send(c.port).await.body;
     assert!(login_page.contains(&format!("ActiveMQRust {VERSION}")) && login_page.contains("by Matteo Baccan"));
-    assert_eq!(env!("CARGO_PKG_REPOSITORY"), "https://github.com/matteobaccan/ActiveMQRust");
+    assert_eq!(
+        env!("CARGO_PKG_REPOSITORY"),
+        "https://github.com/matteobaccan/ActiveMQRust"
+    );
 }
 
 /// The version lives only in Cargo.toml: no literal in the sources, and every place that
@@ -953,21 +1237,42 @@ fn single_version_source() {
         } else {
             let text = std::fs::read_to_string(&p).unwrap_or_default();
             assert!(!text.contains(&quoted), "version literal in {}", p.display());
-            assert!(!text.contains(&format!("ActiveMQRust {VERSION}")), "version literal in {}", p.display());
+            assert!(
+                !text.contains(&format!("ActiveMQRust {VERSION}")),
+                "version literal in {}",
+                p.display()
+            );
         }
     }
     assert_eq!(mqrust::openwire::wireformat::PROVIDER_VERSION, VERSION);
     let wf = mqrust::openwire::wireformat::broker_wire_format(
-        &WireFormatInfo { magic: *b"ActiveMQ", version: 12, properties: PrimitiveMap::new() },
+        &WireFormatInfo {
+            magic: *b"ActiveMQ",
+            version: 12,
+            properties: PrimitiveMap::new(),
+        },
         1024,
     );
     assert_eq!(wf.properties.get_string("ProviderVersion"), Some(VERSION));
     assert_eq!(wf.properties.get_string("ProviderName"), Some("ActiveMQRust"));
-    let out = std::process::Command::new(env!("CARGO_BIN_EXE_mqrust")).arg("--version").output().unwrap();
-    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), format!("ActiveMQRust {VERSION}"));
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_mqrust"))
+        .arg("--version")
+        .output()
+        .unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).trim(),
+        format!("ActiveMQRust {VERSION}")
+    );
     // Windows file version resource.
     let ps = std::process::Command::new("powershell")
-        .args(["-NoProfile", "-Command", &format!("(Get-Item '{}').VersionInfo.ProductVersion", env!("CARGO_BIN_EXE_mqrust"))])
+        .args([
+            "-NoProfile",
+            "-Command",
+            &format!(
+                "(Get-Item '{}').VersionInfo.ProductVersion",
+                env!("CARGO_BIN_EXE_mqrust")
+            ),
+        ])
         .output();
     if let Ok(o) = ps {
         if o.status.success() {
@@ -994,7 +1299,9 @@ async fn defaults_serve_console_with_admin_admin() {
 
 #[test]
 fn page_and_find_on_a_large_queue() {
-    let b = Broker::new(Arc::new(build(FileConfig::default(), ConfigSource::Defaults, &Overrides::default()).unwrap()));
+    let b = Broker::new(Arc::new(
+        build(FileConfig::default(), ConfigSource::Defaults, &Overrides::default()).unwrap(),
+    ));
     let n = WALK_CHUNK * 2 + 500;
     put_numbered(&b, "LARGE", n);
     let d = b.get_dest(&Destination::queue("LARGE")).unwrap();
@@ -1013,7 +1320,10 @@ fn page_and_find_on_a_large_queue() {
     let (_, late) = d.page(n - 3000, 50);
     assert_eq!(corr(&late)[0], format!("m-{}", n - 2999));
     let (_, last) = d.page(n - 20, 50);
-    assert_eq!(corr(&last), ((n - 19)..=n).map(|i| format!("m-{i}")).collect::<Vec<_>>());
+    assert_eq!(
+        corr(&last),
+        ((n - 19)..=n).map(|i| format!("m-{i}")).collect::<Vec<_>>()
+    );
     assert!(d.page(n, 50).1.is_empty());
     assert!(d.page(n + 1000, 50).1.is_empty());
 
@@ -1031,7 +1341,9 @@ fn page_and_find_on_a_large_queue() {
 
 #[test]
 fn memory_and_compressed_counters_track_held_messages() {
-    let b = Broker::new(Arc::new(build(FileConfig::default(), ConfigSource::Defaults, &Overrides::default()).unwrap()));
+    let b = Broker::new(Arc::new(
+        build(FileConfig::default(), ConfigSource::Defaults, &Overrides::default()).unwrap(),
+    ));
     let q = Destination::queue("COUNT");
     for i in 0..4 {
         let mut m = text_msg(&q, &format!("{i}"));
@@ -1069,7 +1381,11 @@ async fn polling_while_producing_keeps_counts_right() {
         let (stop, polls, port) = (stop.clone(), polls.clone(), c.port);
         tokio::spawn(async move {
             loop {
-                for p in ["/api/queues/LOAD", "/api/queues/LOAD/messages?offset=15000", "/api/queues"] {
+                for p in [
+                    "/api/queues/LOAD",
+                    "/api/queues/LOAD/messages?offset=15000",
+                    "/api/queues",
+                ] {
                     let r = req("GET", p).basic("admin:admin").send(port).await;
                     assert!(r.status == 200 || r.status == 404, "{p}: {}", r.status);
                     polls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -1091,15 +1407,27 @@ async fn polling_while_producing_keeps_counts_right() {
     producer.await.unwrap();
     stop.store(true, std::sync::atomic::Ordering::Relaxed);
     poller.await.unwrap();
-    assert!(polls.load(std::sync::atomic::Ordering::Relaxed) >= 3, "the API was polled");
+    assert!(
+        polls.load(std::sync::atomic::Ordering::Relaxed) >= 3,
+        "the API was polled"
+    );
     let v = api(&c, "/api/queues/LOAD").await.json();
-    assert_eq!((v["pending"].as_u64(), v["enqueued"].as_u64(), v["consumed"].as_u64()), (Some(N as u64), Some(N as u64), Some(0)));
+    assert_eq!(
+        (v["pending"].as_u64(), v["enqueued"].as_u64(), v["consumed"].as_u64()),
+        (Some(N as u64), Some(N as u64), Some(0))
+    );
     let d = c.broker.get_dest(&Destination::queue("LOAD")).unwrap();
     assert_eq!(d.snapshot().memory, c.broker.memory.used());
     // Every page holds at most 50 messages, in FIFO order, wherever it starts.
     for offset in [0, 9_999, 10_000, N - 50] {
-        let r = api(&c, &format!("/api/queues/LOAD/messages?offset={offset}&limit=50")).await.json();
-        assert_eq!(ids(&r), ((offset + 1)..=(offset + 50)).map(|i| format!("m-{i}")).collect::<Vec<_>>());
+        let r = api(&c, &format!("/api/queues/LOAD/messages?offset={offset}&limit=50"))
+            .await
+            .json();
+        assert_eq!(
+            ids(&r),
+            ((offset + 1)..=(offset + 50))
+                .map(|i| format!("m-{i}"))
+                .collect::<Vec<_>>()
+        );
     }
 }
-

@@ -38,7 +38,13 @@ impl SVal {
     fn is_number(&self) -> bool {
         matches!(
             self,
-            SVal::Byte(_) | SVal::Short(_) | SVal::Int(_) | SVal::Long(_) | SVal::BigInt(_) | SVal::Float(_) | SVal::Double(_)
+            SVal::Byte(_)
+                | SVal::Short(_)
+                | SVal::Int(_)
+                | SVal::Long(_)
+                | SVal::BigInt(_)
+                | SVal::Float(_)
+                | SVal::Double(_)
         )
     }
 
@@ -211,7 +217,10 @@ impl fmt::Display for SelectorError {
 }
 
 fn error(column: usize, message: impl Into<String>) -> SelectorError {
-    SelectorError { column, message: message.into() }
+    SelectorError {
+        column,
+        message: message.into(),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -368,9 +377,17 @@ fn lex(input: &str) -> Result<Vec<Lexed>, SelectorError> {
                 _ => return Err(error(start, format!("Unexpected character '{c}'"))),
             }
         };
-        out.push(Lexed { tok, col: start, text: chars[start..i].iter().collect() });
+        out.push(Lexed {
+            tok,
+            col: start,
+            text: chars[start..i].iter().collect(),
+        });
     }
-    out.push(Lexed { tok: Tok::End, col: chars.len(), text: String::new() });
+    out.push(Lexed {
+        tok: Tok::End,
+        col: chars.len(),
+        text: String::new(),
+    });
     Ok(out)
 }
 
@@ -428,18 +445,26 @@ fn lex_number(chars: &[char], i: &mut usize, start: usize) -> Result<Tok, Select
     }
     if is_float {
         let text: String = chars[s..*i].iter().collect();
-        return text.parse::<f64>().map(|v| Tok::Num(SVal::Double(v))).map_err(|_| error(start, "Invalid decimal literal"));
+        return text
+            .parse::<f64>()
+            .map(|v| Tok::Num(SVal::Double(v)))
+            .map_err(|_| error(start, "Invalid decimal literal"));
     }
     let text: String = chars[s..int_end].iter().collect();
     if text.len() > 1 && text.starts_with('0') {
-        return i64::from_str_radix(&text, 8).map(integer_literal).map_err(|_| error(start, "Invalid octal literal"));
+        return i64::from_str_radix(&text, 8)
+            .map(integer_literal)
+            .map_err(|_| error(start, "Invalid octal literal"));
     }
     if matches!(chars.get(*i), Some('l' | 'L')) {
         *i += 1;
     }
     match text.parse::<i64>() {
         Ok(v) => Ok(integer_literal(v)),
-        Err(_) => text.parse::<i128>().map(|v| Tok::Num(SVal::BigInt(v))).map_err(|_| error(start, "Integer literal out of range")),
+        Err(_) => text
+            .parse::<i128>()
+            .map(|v| Tok::Num(SVal::BigInt(v)))
+            .map_err(|_| error(start, "Integer literal out of range")),
     }
 }
 
@@ -463,7 +488,11 @@ enum Expr {
     Cmp(Box<Expr>, Box<Expr>, CmpOp),
     Arith(Box<Expr>, Box<Expr>, ArithOp),
     Like(Box<Expr>, LikeMatcher),
-    In { expr: Box<Expr>, list: InList, negated: bool },
+    In {
+        expr: Box<Expr>,
+        list: InList,
+        negated: bool,
+    },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -804,7 +833,10 @@ impl<'a> Parser<'a> {
                 continue;
             }
             let negated = self.peek() == &Tok::Not
-                && matches!(self.toks.get(self.pos + 1).map(|t| &t.tok), Some(Tok::Like | Tok::Between | Tok::In));
+                && matches!(
+                    self.toks.get(self.pos + 1).map(|t| &t.tok),
+                    Some(Tok::Like | Tok::Between | Tok::In)
+                );
             if negated {
                 self.advance();
             }
@@ -834,9 +866,15 @@ impl<'a> Parser<'a> {
                     // ActiveMQ: `x BETWEEN a AND b` is `x >= a AND x <= b`, and
                     // `x NOT BETWEEN a AND b` is `x < a OR x > b`.
                     left = if negated {
-                        Expr::Or(vec![ordering(left.clone(), low, CmpOp::Lt, col)?, ordering(left, high, CmpOp::Gt, col)?])
+                        Expr::Or(vec![
+                            ordering(left.clone(), low, CmpOp::Lt, col)?,
+                            ordering(left, high, CmpOp::Gt, col)?,
+                        ])
                     } else {
-                        Expr::And(vec![ordering(left.clone(), low, CmpOp::Ge, col)?, ordering(left, high, CmpOp::Le, col)?])
+                        Expr::And(vec![
+                            ordering(left.clone(), low, CmpOp::Ge, col)?,
+                            ordering(left, high, CmpOp::Le, col)?,
+                        ])
                     };
                 }
                 Tok::In => {
@@ -850,7 +888,11 @@ impl<'a> Parser<'a> {
                         items.push(self.string_literal("a string literal in the IN list")?);
                     }
                     self.expect(&Tok::RParen, ")")?;
-                    left = Expr::In { expr: Box::new(left), list: InList::new(items), negated };
+                    left = Expr::In {
+                        expr: Box::new(left),
+                        list: InList::new(items),
+                        negated,
+                    };
                 }
                 _ => return Ok(left),
             }
@@ -1026,7 +1068,11 @@ impl Selector {
                 uses_properties = true;
             }
         });
-        Ok(Some(Selector { text: text.to_string(), expr, uses_properties }))
+        Ok(Some(Selector {
+            text: text.to_string(),
+            expr,
+            uses_properties,
+        }))
     }
 
     pub fn text(&self) -> &str {
@@ -1236,7 +1282,13 @@ fn java_cmp_f64(a: f64, b: f64) -> Ordering {
     } else if a > b {
         Ordering::Greater
     } else {
-        let bits = |x: f64| if x.is_nan() { 0x7ff8_0000_0000_0000_i64 } else { x.to_bits() as i64 };
+        let bits = |x: f64| {
+            if x.is_nan() {
+                0x7ff8_0000_0000_0000_i64
+            } else {
+                x.to_bits() as i64
+            }
+        };
         bits(a).cmp(&bits(b))
     }
 }
@@ -1248,7 +1300,13 @@ fn java_cmp_f32(a: f32, b: f32) -> Ordering {
     } else if a > b {
         Ordering::Greater
     } else {
-        let bits = |x: f32| if x.is_nan() { 0x7fc0_0000_i32 } else { x.to_bits() as i32 };
+        let bits = |x: f32| {
+            if x.is_nan() {
+                0x7fc0_0000_i32
+            } else {
+                x.to_bits() as i32
+            }
+        };
         bits(a).cmp(&bits(b))
     }
 }
@@ -1322,8 +1380,20 @@ fn java_string(v: &SVal) -> String {
         SVal::Int(x) => x.to_string(),
         SVal::Long(x) => x.to_string(),
         SVal::BigInt(x) => x.to_string(),
-        SVal::Float(x) => java_float_text(format!("{x:e}"), x.is_nan(), x.is_infinite(), *x == 0.0, x.is_sign_negative()),
-        SVal::Double(x) => java_float_text(format!("{x:e}"), x.is_nan(), x.is_infinite(), *x == 0.0, x.is_sign_negative()),
+        SVal::Float(x) => java_float_text(
+            format!("{x:e}"),
+            x.is_nan(),
+            x.is_infinite(),
+            *x == 0.0,
+            x.is_sign_negative(),
+        ),
+        SVal::Double(x) => java_float_text(
+            format!("{x:e}"),
+            x.is_nan(),
+            x.is_infinite(),
+            *x == 0.0,
+            x.is_sign_negative(),
+        ),
         SVal::Char(c) => String::from_utf16_lossy(&[*c]),
         SVal::Str(s) => s.clone(),
         SVal::Opaque(t) => t.to_string(),
@@ -1411,7 +1481,12 @@ mod tests {
         props.insert("zero", SVal::Int(0));
         props.insert("str5", SVal::Str("5".into()));
         props.insert("bytes", SVal::Opaque("[B@bytes".into()));
-        M { headers, props, broken: false, lookups: Cell::new(0) }
+        M {
+            headers,
+            props,
+            broken: false,
+            lookups: Cell::new(0),
+        }
     }
 
     fn compile(s: &str) -> Selector {
@@ -1483,8 +1558,20 @@ mod tests {
                     (Some(false), Some(false)) => Some(false),
                     _ => None,
                 };
-                assert_eq!(tri(&format!("{} AND {}", lit(a), lit(b))), and, "{} AND {}", lit(a), lit(b));
-                assert_eq!(tri(&format!("{} OR {}", lit(a), lit(b))), or, "{} OR {}", lit(a), lit(b));
+                assert_eq!(
+                    tri(&format!("{} AND {}", lit(a), lit(b))),
+                    and,
+                    "{} AND {}",
+                    lit(a),
+                    lit(b)
+                );
+                assert_eq!(
+                    tri(&format!("{} OR {}", lit(a), lit(b))),
+                    or,
+                    "{} OR {}",
+                    lit(a),
+                    lit(b)
+                );
             }
         }
         // Properties stand for UNKNOWN when absent.
@@ -1662,7 +1749,13 @@ mod tests {
         assert_eq!(tri("color NOT IN ('red','blue')"), Some(false));
         let big: Vec<String> = (0..1000).map(|i| format!("'v{i}'")).collect();
         let s = compile(&format!("color IN ({}, 'red')", big.join(",")));
-        assert!(matches!(&s.expr, Expr::In { list: InList::Set(_), .. }));
+        assert!(matches!(
+            &s.expr,
+            Expr::In {
+                list: InList::Set(_),
+                ..
+            }
+        ));
         assert!(s.matches(&msg()));
         let s = compile(&format!("color IN ({})", big.join(",")));
         assert!(!s.matches(&msg()));
@@ -1738,17 +1831,29 @@ mod tests {
         let alphabet = ['a', 'b', '%', '_', '!', 'é'];
         for _ in 0..20_000 {
             let plen = next(7) as usize;
-            let pattern: String = (0..plen).map(|_| alphabet[next(alphabet.len() as u64) as usize]).collect();
+            let pattern: String = (0..plen)
+                .map(|_| alphabet[next(alphabet.len() as u64) as usize])
+                .collect();
             let escape = if next(3) == 0 { Some('!') } else { None };
             let generic = LikePattern::compile(&pattern, escape);
             let compiled = LikeMatcher::compile(&pattern, escape);
             for _ in 0..8 {
                 let tlen = next(7) as usize;
-                let text: String = (0..tlen).map(|_| alphabet[next(alphabet.len() as u64) as usize]).collect();
+                let text: String = (0..tlen)
+                    .map(|_| alphabet[next(alphabet.len() as u64) as usize])
+                    .collect();
                 let chars: Vec<char> = text.chars().collect();
                 let expected = reference_like(&generic.parts, &chars);
-                assert_eq!(generic.matches(&text), expected, "generic {pattern:?} {escape:?} on {text:?}");
-                assert_eq!(compiled.matches(&text), expected, "compiled {pattern:?} {escape:?} on {text:?}");
+                assert_eq!(
+                    generic.matches(&text),
+                    expected,
+                    "generic {pattern:?} {escape:?} on {text:?}"
+                );
+                assert_eq!(
+                    compiled.matches(&text),
+                    expected,
+                    "compiled {pattern:?} {escape:?} on {text:?}"
+                );
             }
         }
     }
@@ -1783,7 +1888,18 @@ mod tests {
         assert_eq!(lit("1e309"), SVal::Double(f64::INFINITY));
         assert_eq!(tri("-9223372036854775808 < 0"), Some(true));
         assert_eq!(tri("9223372036854775808 > 9223372036854775807"), Some(false));
-        for bad in ["size = 3.0f", "size = 3D", "size = 0x3L", "size = 08", "size = 03L", "size = 0xFFFFFFFFFFFFFFFF", "size = 1e", "size = 1.5.5", "size = 1_000", "name = \"x\""] {
+        for bad in [
+            "size = 3.0f",
+            "size = 3D",
+            "size = 0x3L",
+            "size = 08",
+            "size = 03L",
+            "size = 0xFFFFFFFFFFFFFFFF",
+            "size = 1e",
+            "size = 1.5.5",
+            "size = 1_000",
+            "name = \"x\"",
+        ] {
             assert!(Selector::compile(bad).is_err(), "{bad}");
         }
     }
@@ -1832,7 +1948,15 @@ mod tests {
         ] {
             assert!(Selector::compile(bad).is_err(), "{bad} should be rejected");
         }
-        for good in ["1 = TRUE", "'a' = 1", "TRUE = TRUE", "5 IS NULL", "(size) IN ('3')", "size BETWEEN flag AND 5", "NOT NULL"] {
+        for good in [
+            "1 = TRUE",
+            "'a' = 1",
+            "TRUE = TRUE",
+            "5 IS NULL",
+            "(size) IN ('3')",
+            "size BETWEEN flag AND 5",
+            "NOT NULL",
+        ] {
             assert!(Selector::compile(good).is_ok(), "{good} should be accepted");
         }
         assert_eq!(tri("1 = TRUE"), Some(false));
@@ -1864,7 +1988,12 @@ mod tests {
 
     #[test]
     fn xpath_is_rejected_with_a_fixed_message() {
-        for s in ["XPATH '//a'", "xpath '//a'", "XQUERY '//a'", "color = 'x' OR XPATH '//a'"] {
+        for s in [
+            "XPATH '//a'",
+            "xpath '//a'",
+            "XQUERY '//a'",
+            "color = 'x' OR XPATH '//a'",
+        ] {
             let e = Selector::compile(s).unwrap_err();
             assert_eq!(e.exception_message(s), "XPath selectors are not supported", "{s}");
         }
@@ -1887,7 +2016,13 @@ mod tests {
     fn undecodable_properties_make_the_selector_unknown() {
         let mut m = msg();
         m.broken = true;
-        for s in ["color = 'red'", "color IS NULL", "NOT (color = 'red')", "color IS NOT NULL", "missing IS NULL"] {
+        for s in [
+            "color = 'red'",
+            "color IS NULL",
+            "NOT (color = 'red')",
+            "color IS NOT NULL",
+            "missing IS NULL",
+        ] {
             assert_eq!(eval_on(&m, s), Err(EvalError), "{s}");
             assert!(!compile(s).matches(&m), "{s}");
         }
@@ -1903,7 +2038,10 @@ mod tests {
         assert!(s.matches(&m));
         assert_eq!(m.lookups.get(), 0);
         assert!(compile("color = 'x'").uses_properties());
-        assert!(compile("JMSXUserID = 'x'").uses_properties(), "JMSXUserID falls back to a property");
+        assert!(
+            compile("JMSXUserID = 'x'").uses_properties(),
+            "JMSXUserID falls back to a property"
+        );
     }
 
     #[test]

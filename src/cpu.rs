@@ -64,8 +64,14 @@ pub fn runtime(configured: usize) -> std::io::Result<tokio::runtime::Runtime> {
         .thread_name("mqrust-worker")
         .enable_all()
         .build()?;
-    let source = if configured > 0 { "configured" } else { "available to the process" };
-    tracing::info!("using {processors} processors ({source}): {processors} I/O workers, up to {heavy} compression threads");
+    let source = if configured > 0 {
+        "configured"
+    } else {
+        "available to the process"
+    };
+    tracing::info!(
+        "using {processors} processors ({source}): {processors} I/O workers, up to {heavy} compression threads"
+    );
     Ok(rt)
 }
 

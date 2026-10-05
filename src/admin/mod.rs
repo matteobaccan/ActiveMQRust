@@ -178,7 +178,8 @@ fn redirect(location: &str) -> Response<Body> {
 fn json_error(status: StatusCode, error: &str) -> Response<Body> {
     let mut r = Response::new(Body::from(serde_json::json!({ "error": error }).to_string()));
     *r.status_mut() = status;
-    r.headers_mut().insert(header::CONTENT_TYPE, HeaderValue::from_static("application/json"));
+    r.headers_mut()
+        .insert(header::CONTENT_TYPE, HeaderValue::from_static("application/json"));
     r
 }
 
@@ -196,7 +197,9 @@ fn secure(mut resp: Response<Body>, no_store: bool) -> Response<Body> {
 
 /// `Origin` (or else `Referer`) must name the host the request was sent to.
 fn same_origin(headers: &HeaderMap) -> bool {
-    let Some(host) = headers.get(header::HOST).and_then(|h| h.to_str().ok()) else { return false };
+    let Some(host) = headers.get(header::HOST).and_then(|h| h.to_str().ok()) else {
+        return false;
+    };
     let expected = format!("http://{host}");
     if let Some(origin) = headers.get(header::ORIGIN) {
         return origin.to_str().is_ok_and(|o| o.eq_ignore_ascii_case(&expected));
@@ -263,7 +266,10 @@ async fn api_basic(state: &AdminState, headers: &HeaderMap, ip: IpAddr) -> Resul
         None => (String::new(), String::new()),
     };
     let digest = sha256(value.as_bytes());
-    let cached = state.basic_cache.lock().is_some_and(|d| auth::constant_time_eq(&d, &digest));
+    let cached = state
+        .basic_cache
+        .lock()
+        .is_some_and(|d| auth::constant_time_eq(&d, &digest));
     if cached || verify_admin(state, user.clone(), password).await {
         *state.basic_cache.lock() = Some(digest);
         state.throttle.success(ip);
@@ -284,7 +290,8 @@ async fn guard(State(state): State<AdminState>, mut req: Request, next: Next) ->
     if !(method == Method::GET || method == Method::HEAD || login_post) {
         let mut r = Response::new(Body::from("Method Not Allowed"));
         *r.status_mut() = StatusCode::METHOD_NOT_ALLOWED;
-        r.headers_mut().insert(header::ALLOW, HeaderValue::from_static("GET, HEAD"));
+        r.headers_mut()
+            .insert(header::ALLOW, HeaderValue::from_static("GET, HEAD"));
         return secure(r, true);
     }
     if path == "/style.css" {
@@ -299,9 +306,14 @@ async fn guard(State(state): State<AdminState>, mut req: Request, next: Next) ->
             Some(u) => u,
             None => match api_basic(&state, req.headers(), remote_ip(&req)).await {
                 Ok(u) => u,
-                Err(ApiDenied::Unauthorized) => return secure(json_error(StatusCode::UNAUTHORIZED, "unauthorized"), true),
+                Err(ApiDenied::Unauthorized) => {
+                    return secure(json_error(StatusCode::UNAUTHORIZED, "unauthorized"), true)
+                }
                 Err(ApiDenied::Locked) => {
-                    return secure(json_error(StatusCode::TOO_MANY_REQUESTS, "too many failed logins"), true)
+                    return secure(
+                        json_error(StatusCode::TOO_MANY_REQUESTS, "too many failed logins"),
+                        true,
+                    )
                 }
             },
         }
@@ -334,7 +346,10 @@ async fn login_submit(
     let next = form.get("next").map(String::as_str);
     if let Gate::Locked { remaining, log } = state.throttle.check(ip) {
         log_locked(ip, log);
-        let msg = format!("Too many failed logins. Try again in {} seconds.", remaining.as_secs().max(1));
+        let msg = format!(
+            "Too many failed logins. Try again in {} seconds.",
+            remaining.as_secs().max(1)
+        );
         let mut r = pages::login_page(&state, &user, Some(&msg), next).into_response();
         *r.status_mut() = StatusCode::TOO_MANY_REQUESTS;
         return r;
@@ -414,7 +429,10 @@ pub fn fmt_time_ms(ms: i64) -> String {
         return "-".into();
     }
     match chrono::DateTime::from_timestamp_millis(ms) {
-        Some(t) => t.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M:%S%.3f").to_string(),
+        Some(t) => t
+            .with_timezone(&chrono::Local)
+            .format("%Y-%m-%d %H:%M:%S%.3f")
+            .to_string(),
         None => ms.to_string(),
     }
 }
@@ -456,7 +474,14 @@ mod tests {
     fn redirect_targets_stay_local() {
         assert_eq!(safe_next(Some("/queues?refresh=5")), "/queues?refresh=5");
         assert_eq!(safe_next(Some("/queues/a b")), "/queues/a%20b");
-        for bad in ["//evil.example/", "https://evil.example/", "/\\evil.example", "", "queues", "/a\r\nSet-Cookie: x"] {
+        for bad in [
+            "//evil.example/",
+            "https://evil.example/",
+            "/\\evil.example",
+            "",
+            "queues",
+            "/a\r\nSet-Cookie: x",
+        ] {
             assert_eq!(safe_next(Some(bad)), "/", "{bad:?}");
         }
         assert_eq!(safe_next(None), "/");
@@ -467,7 +492,10 @@ mod tests {
         let mut h = HeaderMap::new();
         h.insert(header::HOST, HeaderValue::from_static("127.0.0.1:8161"));
         assert!(same_origin(&h));
-        h.insert(header::REFERER, HeaderValue::from_static("http://127.0.0.1:8161/login?next=%2F"));
+        h.insert(
+            header::REFERER,
+            HeaderValue::from_static("http://127.0.0.1:8161/login?next=%2F"),
+        );
         assert!(same_origin(&h));
         h.insert(header::ORIGIN, HeaderValue::from_static("http://127.0.0.1:8161"));
         assert!(same_origin(&h));
@@ -483,7 +511,10 @@ mod tests {
     #[test]
     fn cookies_are_parsed() {
         let mut h = HeaderMap::new();
-        h.insert(header::COOKIE, HeaderValue::from_static("a=1; mqrust_session=tok; other=dark"));
+        h.insert(
+            header::COOKIE,
+            HeaderValue::from_static("a=1; mqrust_session=tok; other=dark"),
+        );
         assert_eq!(cookie(&h, SESSION_COOKIE).as_deref(), Some("tok"));
         assert_eq!(cookie(&h, "other").as_deref(), Some("dark"));
         assert_eq!(cookie(&h, "missing"), None);

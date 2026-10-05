@@ -41,13 +41,17 @@ fn dispatch_loop(c: &mut Criterion, broker: &Arc<Broker>, name: &str) {
     let d = broker.get_or_create(&q, None);
     let mut sub = common::consumer(broker, &d, 1, 1000, None);
     let mut seq = 0i64;
-    c.benchmark_group("expiry").throughput(Throughput::Elements(1)).bench_function(name, |b| {
-        b.iter(|| {
-            seq += 1;
-            broker.deliver(common::text_message(&q, seq, 1024), false, now_ms()).unwrap();
-            common::drain_and_ack(&d, &mut sub);
-        })
-    });
+    c.benchmark_group("expiry")
+        .throughput(Throughput::Elements(1))
+        .bench_function(name, |b| {
+            b.iter(|| {
+                seq += 1;
+                broker
+                    .deliver(common::text_message(&q, seq, 1024), false, now_ms())
+                    .unwrap();
+                common::drain_and_ack(&d, &mut sub);
+            })
+        });
 }
 
 fn expiry(c: &mut Criterion) {
@@ -56,7 +60,9 @@ fn expiry(c: &mut Criterion) {
     {
         let mut g = c.benchmark_group("expiry");
         g.sample_size(10);
-        g.bench_function("sweep_pass_1m_messages", |b| b.iter(|| broker.sweep_expired(now_ms(), 10_000)));
+        g.bench_function("sweep_pass_1m_messages", |b| {
+            b.iter(|| broker.sweep_expired(now_ms(), 10_000))
+        });
         g.finish();
     }
     dispatch_loop(c, &broker, "dispatch_1k_without_sweeper");

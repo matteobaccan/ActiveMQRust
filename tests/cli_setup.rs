@@ -48,7 +48,11 @@ fn run(args: &[&str], stdin: Option<&str>) -> Output {
 }
 
 fn text(o: &Output) -> String {
-    format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr))
+    format!(
+        "{}{}",
+        String::from_utf8_lossy(&o.stdout),
+        String::from_utf8_lossy(&o.stderr)
+    )
 }
 
 fn code(o: &Output) -> i32 {
@@ -60,11 +64,24 @@ fn cfg_arg(p: &Path) -> String {
 }
 
 fn set_admin(path: &Path, user: &str) -> Output {
-    run(&["set-admin", "--config", &cfg_arg(path), "--username", user, "--password-stdin"], Some(&format!("{PASSWORD}\r\n")))
+    run(
+        &[
+            "set-admin",
+            "--config",
+            &cfg_arg(path),
+            "--username",
+            user,
+            "--password-stdin",
+        ],
+        Some(&format!("{PASSWORD}\r\n")),
+    )
 }
 
 fn user_add(path: &Path, user: &str, password: &str) -> Output {
-    run(&["user", "add", user, "--config", &cfg_arg(path), "--password-stdin"], Some(&format!("{password}\n")))
+    run(
+        &["user", "add", user, "--config", &cfg_arg(path), "--password-stdin"],
+        Some(&format!("{password}\n")),
+    )
 }
 
 fn check_config(path: &Path) -> Output {
@@ -89,8 +106,18 @@ fn short_help_has_getting_started() {
     ] {
         assert!(out.contains(step), "missing {step}:\n{out}");
     }
-    let order = ["Getting started:", "Setup:", "Windows service:", "Configuration:", "Network:", "Performance:"];
-    let positions: Vec<usize> = order.iter().map(|h| out.find(h).unwrap_or_else(|| panic!("{h}:\n{out}"))).collect();
+    let order = [
+        "Getting started:",
+        "Setup:",
+        "Windows service:",
+        "Configuration:",
+        "Network:",
+        "Performance:",
+    ];
+    let positions: Vec<usize> = order
+        .iter()
+        .map(|h| out.find(h).unwrap_or_else(|| panic!("{h}:\n{out}")))
+        .collect();
     assert!(positions.windows(2).all(|w| w[0] < w[1]), "{out}");
     assert!(lines.last().unwrap().contains("--help"), "{out}");
 }
@@ -99,8 +126,20 @@ fn short_help_has_getting_started() {
 fn long_help_snapshot() {
     let o = run(&["--help"], None);
     assert_eq!(code(&o), 0);
-    let out = String::from_utf8_lossy(&o.stdout).replace("\r\n", "\n").replace(env!("CARGO_PKG_VERSION"), "<version>");
-    for needle in ["[admin]", "[[users]]", "admin/admin", "mqrust.exe set-admin", "mqrust.exe user add", "Exit codes:", "--config <FILE>", "mqrust.toml next to mqrust.exe", "built-in defaults"] {
+    let out = String::from_utf8_lossy(&o.stdout)
+        .replace("\r\n", "\n")
+        .replace(env!("CARGO_PKG_VERSION"), "<version>");
+    for needle in [
+        "[admin]",
+        "[[users]]",
+        "admin/admin",
+        "mqrust.exe set-admin",
+        "mqrust.exe user add",
+        "Exit codes:",
+        "--config <FILE>",
+        "mqrust.toml next to mqrust.exe",
+        "built-in defaults",
+    ] {
         assert!(out.contains(needle), "missing {needle}:\n{out}");
     }
     let snapshot = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/help-long.txt");
@@ -108,7 +147,12 @@ fn long_help_snapshot() {
         std::fs::write(&snapshot, &out).unwrap();
     }
     let expected = std::fs::read_to_string(&snapshot).unwrap().replace("\r\n", "\n");
-    assert_eq!(out, expected, "--help changed: run with MQRUST_UPDATE_SNAPSHOTS=1 to update {}", snapshot.display());
+    assert_eq!(
+        out,
+        expected,
+        "--help changed: run with MQRUST_UPDATE_SNAPSHOTS=1 to update {}",
+        snapshot.display()
+    );
 }
 
 #[test]
@@ -136,7 +180,10 @@ fn every_command_help_has_an_example() {
         let o = run(&args, None);
         assert_eq!(code(&o), 0, "{cmd:?}");
         let out = text(&o);
-        assert!(out.contains("Example") && out.contains("mqrust.exe "), "{cmd:?}:\n{out}");
+        assert!(
+            out.contains("Example") && out.contains("mqrust.exe "),
+            "{cmd:?}:\n{out}"
+        );
     }
 }
 
@@ -160,12 +207,23 @@ fn first_setup_creates_the_file_from_the_template() {
     assert!(out.contains("Created"), "{out}");
     assert!(out.contains(&path.display().to_string()), "{out}");
     assert!(out.contains("http://127.0.0.1:8161"), "{out}");
-    assert!(out.contains("Restart the broker (or `mqrust.exe service stop` and `service start`) to apply."), "{out}");
+    assert!(
+        out.contains("Restart the broker (or `mqrust.exe service stop` and `service start`) to apply."),
+        "{out}"
+    );
     assert!(!out.contains(PASSWORD), "{out}");
 
     let file = std::fs::read_to_string(&path).unwrap();
-    let admin = file.split("
-[admin]").nth(1).unwrap().split("\n[").next().unwrap();
+    let admin = file
+        .split(
+            "
+[admin]",
+        )
+        .nth(1)
+        .unwrap()
+        .split("\n[")
+        .next()
+        .unwrap();
     assert!(admin.contains("username = \"ops\""), "{admin}");
     assert!(admin.contains("password_hash = \"$argon2id$"), "{admin}");
     assert!(!admin.contains("password = "), "{admin}");
@@ -185,7 +243,17 @@ fn scripted_setup_users_and_list() {
     assert!(text(&o).contains("user remove admin"), "{}", text(&o));
     let o = run(&["user", "remove", "admin", "--config", &cfg_arg(&path)], None);
     assert_eq!(code(&o), 0, "{}", text(&o));
-    let o = run(&["user", "passwd", "app1", "--config", &cfg_arg(&path), "--password-stdin"], Some("app1-Other\n"));
+    let o = run(
+        &[
+            "user",
+            "passwd",
+            "app1",
+            "--config",
+            &cfg_arg(&path),
+            "--password-stdin",
+        ],
+        Some("app1-Other\n"),
+    );
     assert_eq!(code(&o), 0, "{}", text(&o));
     assert!(text(&o).contains("Restart the broker"));
 
@@ -205,7 +273,11 @@ fn duplicate_user_refused() {
     let before = std::fs::read(&path).unwrap();
     let o = user_add(&path, "app1", "Another-pass");
     assert_eq!(code(&o), 2);
-    assert!(text(&o).contains("already exists") && text(&o).contains("user passwd app1"), "{}", text(&o));
+    assert!(
+        text(&o).contains("already exists") && text(&o).contains("user passwd app1"),
+        "{}",
+        text(&o)
+    );
     assert_eq!(std::fs::read(&path).unwrap(), before);
 }
 
@@ -214,7 +286,10 @@ fn last_user_cannot_be_removed() {
     let dir = temp_dir("last");
     let path = dir.join("mqrust.toml");
     assert_eq!(code(&user_add(&path, "app1", PASSWORD)), 0);
-    assert_eq!(code(&run(&["user", "remove", "admin", "--config", &cfg_arg(&path)], None)), 0);
+    assert_eq!(
+        code(&run(&["user", "remove", "admin", "--config", &cfg_arg(&path)], None)),
+        0
+    );
     let before = std::fs::read(&path).unwrap();
     let o = run(&["user", "remove", "app1", "--config", &cfg_arg(&path)], None);
     assert_eq!(code(&o), 2);
@@ -227,14 +302,28 @@ fn weak_password_and_bad_username_refused() {
     let dir = temp_dir("weak");
     let path = dir.join("mqrust.toml");
     for weak in ["admin", "short", "password", "ops"] {
-        let o = run(&["set-admin", "--config", &cfg_arg(&path), "--username", "ops", "--password-stdin"], Some(&format!("{weak}\n")));
+        let o = run(
+            &[
+                "set-admin",
+                "--config",
+                &cfg_arg(&path),
+                "--username",
+                "ops",
+                "--password-stdin",
+            ],
+            Some(&format!("{weak}\n")),
+        );
         assert_eq!(code(&o), 2, "{weak}");
         assert!(text(&o).contains("password refused"), "{}", text(&o));
     }
     assert!(!path.exists(), "nothing written for a refused password");
     let o = user_add(&path, "bad name", PASSWORD);
     assert_eq!(code(&o), 2);
-    assert!(text(&o).contains("letters, digits, '.', '_', '-' and '@'"), "{}", text(&o));
+    assert!(
+        text(&o).contains("letters, digits, '.', '_', '-' and '@'"),
+        "{}",
+        text(&o)
+    );
 }
 
 #[test]
@@ -278,7 +367,11 @@ fn comments_and_other_settings_kept() {
     let path = dir.join("mqrust.toml");
     let head = "# Production broker\r\n\r\n[broker]\r\nport = 61700   # agreed with the network team\r\nmax_memory_mb = 2048\r\n\r\n";
     let tail = "\r\n[[users]]\r\nusername = \"app1\"\r\npassword = \"app1-secret\"\r\n";
-    std::fs::write(&path, format!("{head}[admin]\r\nusername = \"admin\"\r\npassword = \"admin\"\r\n{tail}")).unwrap();
+    std::fs::write(
+        &path,
+        format!("{head}[admin]\r\nusername = \"admin\"\r\npassword = \"admin\"\r\n{tail}"),
+    )
+    .unwrap();
     assert_eq!(code(&set_admin(&path, "ops")), 0);
     let file = std::fs::read_to_string(&path).unwrap();
     assert!(file.starts_with(head), "{file}");
@@ -300,7 +393,12 @@ fn example_file_matches_the_template() {
     let o = check_config(&example);
     assert_eq!(code(&o), 0, "{}", text(&o));
     let cfg = mqrust::config::load(Some(&example), &Default::default()).unwrap();
-    let defaults = mqrust::config::build(Default::default(), mqrust::config::ConfigSource::Defaults, &Default::default()).unwrap();
+    let defaults = mqrust::config::build(
+        Default::default(),
+        mqrust::config::ConfigSource::Defaults,
+        &Default::default(),
+    )
+    .unwrap();
     assert_eq!(cfg.port, defaults.port);
     assert_eq!(cfg.admin_port, defaults.admin_port);
     assert_eq!(cfg.compress_threshold_bytes, defaults.compress_threshold_bytes);
@@ -323,7 +421,12 @@ impl Broker {
         if let Some(c) = config {
             cmd.args(["--config", c.to_str().unwrap()]);
         }
-        let mut child = cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().unwrap();
+        let mut child = cmd
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
         let (tx, rx) = mpsc::channel();
         let out = child.stdout.take().unwrap();
         std::thread::spawn(move || {
@@ -333,7 +436,11 @@ impl Broker {
                 }
             }
         });
-        let mut b = Broker { child, log: rx, lines: Vec::new() };
+        let mut b = Broker {
+            child,
+            log: rx,
+            lines: Vec::new(),
+        };
         let deadline = std::time::Instant::now() + Duration::from_secs(15);
         while !b.lines.iter().any(|l| l.ends_with(" ready")) {
             let left = deadline.saturating_duration_since(std::time::Instant::now());
@@ -361,19 +468,39 @@ impl Drop for Broker {
 fn startup_log_with_defaults() {
     let next_to_exe = Path::new(EXE).with_file_name("mqrust.toml");
     if next_to_exe.exists() {
-        eprintln!("skipped: {} exists, the broker would not use the built-in defaults", next_to_exe.display());
+        eprintln!(
+            "skipped: {} exists, the broker would not use the built-in defaults",
+            next_to_exe.display()
+        );
         return;
     }
     let _guard = BROKER.lock().unwrap_or_else(|e| e.into_inner());
     let b = Broker::start(None);
     let log = b.log();
     assert!(log.contains("configuration: built-in defaults"), "{log}");
-    assert!(log.contains(&format!("OpenWire listening on 0.0.0.0:{}", port())), "{log}");
-    assert!(log.contains(&format!("admin console on http://127.0.0.1:{ADMIN_PORT} (login with the [admin] user admin)")), "{log}");
+    assert!(
+        log.contains(&format!("OpenWire listening on 0.0.0.0:{}", port())),
+        "{log}"
+    );
+    assert!(
+        log.contains(&format!(
+            "admin console on http://127.0.0.1:{ADMIN_PORT} (login with the [admin] user admin)"
+        )),
+        "{log}"
+    );
     assert!(log.contains("1 messaging user"), "{log}");
-    let warn = log.lines().find(|l| l.contains("WARN") && l.contains("admin/admin")).unwrap_or_else(|| panic!("{log}"));
-    assert!(warn.contains("mqrust.exe set-admin") && warn.contains("mqrust.exe user add <name>"), "{warn}");
-    assert!(!log.contains("hint: run `mqrust.exe init-config`"), "no hint without a console:\n{log}");
+    let warn = log
+        .lines()
+        .find(|l| l.contains("WARN") && l.contains("admin/admin"))
+        .unwrap_or_else(|| panic!("{log}"));
+    assert!(
+        warn.contains("mqrust.exe set-admin") && warn.contains("mqrust.exe user add <name>"),
+        "{warn}"
+    );
+    assert!(
+        !log.contains("hint: run `mqrust.exe init-config`"),
+        "no hint without a console:\n{log}"
+    );
 }
 
 fn configured(dir: &Path) -> PathBuf {
@@ -381,7 +508,10 @@ fn configured(dir: &Path) -> PathBuf {
     assert_eq!(code(&set_admin(&path, "ops")), 0);
     assert_eq!(code(&user_add(&path, "app1", "app1-Secret")), 0);
     assert_eq!(code(&user_add(&path, "app2", "app2-Secret")), 0);
-    assert_eq!(code(&run(&["user", "remove", "admin", "--config", &cfg_arg(&path)], None)), 0);
+    assert_eq!(
+        code(&run(&["user", "remove", "admin", "--config", &cfg_arg(&path)], None)),
+        0
+    );
     path
 }
 
@@ -393,8 +523,16 @@ fn startup_log_with_configured_file() {
     let b = Broker::start(Some(&path));
     let log = b.log();
     assert!(log.contains(&format!("configuration: {}", path.display())), "{log}");
-    assert!(log.contains(&format!("OpenWire listening on 0.0.0.0:{}", port())), "{log}");
-    assert!(log.contains(&format!("admin console on http://127.0.0.1:{ADMIN_PORT} (login with the [admin] user ops)")), "{log}");
+    assert!(
+        log.contains(&format!("OpenWire listening on 0.0.0.0:{}", port())),
+        "{log}"
+    );
+    assert!(
+        log.contains(&format!(
+            "admin console on http://127.0.0.1:{ADMIN_PORT} (login with the [admin] user ops)"
+        )),
+        "{log}"
+    );
     assert!(log.contains("2 messaging users"), "{log}");
     assert!(!log.contains("WARN"), "{log}");
 }
@@ -404,10 +542,18 @@ fn http_status(path: &str, user: &str, password: &str) -> u16 {
     let mut s = std::net::TcpStream::connect(("127.0.0.1", ADMIN_PORT)).unwrap();
     s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
     let auth = base64::engine::general_purpose::STANDARD.encode(format!("{user}:{password}"));
-    write!(s, "GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Basic {auth}\r\nConnection: close\r\n\r\n").unwrap();
+    write!(
+        s,
+        "GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Basic {auth}\r\nConnection: close\r\n\r\n"
+    )
+    .unwrap();
     let mut response = String::new();
     let _ = s.read_to_string(&mut response);
-    response.split_whitespace().nth(1).and_then(|c| c.parse().ok()).unwrap_or(0)
+    response
+        .split_whitespace()
+        .nth(1)
+        .and_then(|c| c.parse().ok())
+        .unwrap_or(0)
 }
 
 /// End to end: users set with the commands, broker started with that file, console login with the
@@ -423,12 +569,25 @@ fn end_to_end_with_configured_users() {
 
     let url = format!("tcp://127.0.0.1:{}", port());
     for profile in ["amq5", "amq6"] {
-        let jar = Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("tests/java-it/target/{profile}/mqrust-acceptance.jar"));
+        let jar =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("tests/java-it/target/{profile}/mqrust-acceptance.jar"));
         if !jar.exists() {
             eprintln!("Java client part skipped: build {} first", jar.display());
             continue;
         }
-        let args = ["-jar", jar.to_str().unwrap(), "accept", "--url", &url, "--user", "app1", "--password", "app1-Secret", "--only", "1"];
+        let args = [
+            "-jar",
+            jar.to_str().unwrap(),
+            "accept",
+            "--url",
+            &url,
+            "--user",
+            "app1",
+            "--password",
+            "app1-Secret",
+            "--only",
+            "1",
+        ];
         match Command::new("java").args(args).output() {
             Ok(o) => assert!(o.status.success(), "{profile}: {}", text(&o)),
             Err(e) => eprintln!("Java client part skipped: {e}"),

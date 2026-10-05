@@ -29,7 +29,10 @@ pub struct LooseCodec {
 
 impl LooseCodec {
     pub fn new(version: i32) -> Self {
-        LooseCodec { decoder: Decoder::new(version), encoder: Encoder::new(version) }
+        LooseCodec {
+            decoder: Decoder::new(version),
+            encoder: Encoder::new(version),
+        }
     }
 }
 
@@ -51,7 +54,10 @@ pub struct Decoder {
 
 impl Decoder {
     pub fn new(version: i32) -> Self {
-        Decoder { version, stack_trace: false }
+        Decoder {
+            version,
+            stack_trace: false,
+        }
     }
 
     /// Decodes a frame body (data type byte followed by the command).
@@ -65,7 +71,10 @@ impl Decoder {
     }
 
     fn header(&self, r: &mut Reader) -> CodecResult<Header> {
-        Ok(Header { command_id: r.i32()?, response_required: r.bool()? })
+        Ok(Header {
+            command_id: r.i32()?,
+            response_required: r.bool()?,
+        })
     }
 
     fn command(&self, type_code: u8, r: &mut Reader) -> CodecResult<Command> {
@@ -79,7 +88,11 @@ impl Decoder {
                     Some(b) => PrimitiveMap::decode(&b)?.unwrap_or_default(),
                     None => PrimitiveMap::new(),
                 };
-                Command::WireFormatInfo(WireFormatInfo { magic, version, properties })
+                Command::WireFormatInfo(WireFormatInfo {
+                    magic,
+                    version,
+                    properties,
+                })
             }
             t::BROKER_INFO => Command::BrokerInfo(self.broker_info(r)?),
             t::CONNECTION_INFO => {
@@ -101,7 +114,10 @@ impl Decoder {
             }
             t::SESSION_INFO => {
                 let header = self.header(r)?;
-                Command::SessionInfo(SessionInfo { header, session_id: self.opt_session_id(r)? })
+                Command::SessionInfo(SessionInfo {
+                    header,
+                    session_id: self.opt_session_id(r)?,
+                })
             }
             t::CONSUMER_INFO => {
                 let header = self.header(r)?;
@@ -189,7 +205,10 @@ impl Decoder {
             }
             t::CONTROL_COMMAND => {
                 let header = self.header(r)?;
-                Command::ControlCommand(ControlCommand { header, command: r.opt_string()? })
+                Command::ControlCommand(ControlCommand {
+                    header,
+                    command: r.opt_string()?,
+                })
             }
             t::CONNECTION_ERROR => {
                 let header = self.header(r)?;
@@ -229,7 +248,11 @@ impl Decoder {
             }
             t::PRODUCER_ACK => {
                 let header = self.header(r)?;
-                Command::ProducerAck(ProducerAck { header, producer_id: self.opt_producer_id(r)?, size: r.i32()? })
+                Command::ProducerAck(ProducerAck {
+                    header,
+                    producer_id: self.opt_producer_id(r)?,
+                    size: r.i32()?,
+                })
             }
             t::MESSAGE_PULL => {
                 let header = self.header(r)?;
@@ -280,22 +303,40 @@ impl Decoder {
             mt if t::is_message_type(mt) => Command::Message(Box::new(self.message(mt, r)?)),
             t::RESPONSE => {
                 let header = self.header(r)?;
-                Command::Response { header, correlation_id: r.i32()? }
+                Command::Response {
+                    header,
+                    correlation_id: r.i32()?,
+                }
             }
             t::EXCEPTION_RESPONSE => {
                 let header = self.header(r)?;
                 let correlation_id = r.i32()?;
-                Command::ExceptionResponse { header, correlation_id, exception: self.throwable(r)? }
+                Command::ExceptionResponse {
+                    header,
+                    correlation_id,
+                    exception: self.throwable(r)?,
+                }
             }
             t::INTEGER_RESPONSE => {
                 let header = self.header(r)?;
                 let correlation_id = r.i32()?;
-                Command::IntegerResponse { header, correlation_id, result: r.i32()? }
+                Command::IntegerResponse {
+                    header,
+                    correlation_id,
+                    result: r.i32()?,
+                }
             }
             other => {
                 // Unknown or unsupported command: only the BaseCommand header can be trusted.
-                let header = if r.remaining() >= 5 { self.header(r)? } else { Header::default() };
-                Command::Unsupported { type_code: other, header }
+                let header = if r.remaining() >= 5 {
+                    self.header(r)?
+                } else {
+                    Header::default()
+                };
+                Command::Unsupported {
+                    type_code: other,
+                    header,
+                }
             }
         })
     }
@@ -334,7 +375,13 @@ impl Decoder {
         m.original_destination = self.opt_destination(r)?;
         m.message_id = self.opt_message_id(r)?;
         // The message id normally repeats the producer's connection id: share one string.
-        if let (Some(p), Some(MessageId { producer_id: Some(mp), .. })) = (&m.producer_id, &mut m.message_id) {
+        if let (
+            Some(p),
+            Some(MessageId {
+                producer_id: Some(mp), ..
+            }),
+        ) = (&m.producer_id, &mut m.message_id)
+        {
             if mp.connection_id == p.connection_id {
                 mp.connection_id = p.connection_id.clone();
             }
@@ -419,7 +466,10 @@ impl Decoder {
                 DataStructure::Destination(Destination { kind, name })
             }
             t::CONNECTION_ID => DataStructure::ConnectionId(ConnectionId { value: self.arc(r)? }),
-            t::SESSION_ID => DataStructure::SessionId(SessionId { connection_id: self.arc(r)?, value: r.i64()? }),
+            t::SESSION_ID => DataStructure::SessionId(SessionId {
+                connection_id: self.arc(r)?,
+                value: r.i64()?,
+            }),
             t::CONSUMER_ID => DataStructure::ConsumerId(ConsumerId {
                 connection_id: self.arc(r)?,
                 session_id: r.i64()?,
@@ -430,7 +480,11 @@ impl Decoder {
                 let connection_id = self.arc(r)?;
                 let value = r.i64()?;
                 let session_id = r.i64()?;
-                DataStructure::ProducerId(ProducerId { connection_id, session_id, value })
+                DataStructure::ProducerId(ProducerId {
+                    connection_id,
+                    session_id,
+                    value,
+                })
             }
             t::BROKER_ID => DataStructure::BrokerId(BrokerId { value: self.arc(r)? }),
             t::MESSAGE_ID => {
@@ -758,12 +812,20 @@ impl Encoder {
                 self.header(header, w);
                 w.i32(*correlation_id);
             }
-            Command::ExceptionResponse { header, correlation_id, exception } => {
+            Command::ExceptionResponse {
+                header,
+                correlation_id,
+                exception,
+            } => {
                 self.header(header, w);
                 w.i32(*correlation_id);
                 self.throwable(exception.as_ref(), w);
             }
-            Command::IntegerResponse { header, correlation_id, result } => {
+            Command::IntegerResponse {
+                header,
+                correlation_id,
+                result,
+            } => {
                 self.header(header, w);
                 w.i32(*correlation_id);
                 w.i32(*result);
@@ -907,7 +969,11 @@ impl Encoder {
                 w.i64(*value);
                 self.opt(connection_id.as_ref().map(DsRef::ConnectionId), w);
             }
-            DsRef::TransactionId(TransactionId::Xa { format_id, global_transaction_id, branch_qualifier }) => {
+            DsRef::TransactionId(TransactionId::Xa {
+                format_id,
+                global_transaction_id,
+                branch_qualifier,
+            }) => {
                 w.u8(t::ACTIVEMQ_XA_TRANSACTION_ID);
                 w.i32(*format_id);
                 w.opt_bytes(global_transaction_id.as_deref());
@@ -1006,9 +1072,16 @@ mod tests {
     }
 
     fn sample_message() -> Message {
-        let pid = ProducerId { connection_id: Arc::from("ID:host-1-2-1:1"), session_id: 1, value: 3 };
+        let pid = ProducerId {
+            connection_id: Arc::from("ID:host-1-2-1:1"),
+            session_id: 1,
+            value: 3,
+        };
         let mut m = Message::new(t::ACTIVEMQ_TEXT_MESSAGE);
-        m.header = Header { command_id: 7, response_required: true };
+        m.header = Header {
+            command_id: 7,
+            response_required: true,
+        };
         m.producer_id = Some(pid.clone());
         m.destination = Some(Destination::queue("TEST.Q"));
         m.message_id = Some(MessageId {
@@ -1068,8 +1141,15 @@ mod tests {
     #[test]
     fn consumer_info_round_trip() {
         let ci = ConsumerInfo {
-            header: Header { command_id: 3, response_required: true },
-            consumer_id: Some(ConsumerId { connection_id: Arc::from("c"), session_id: 1, value: 2 }),
+            header: Header {
+                command_id: 3,
+                response_required: true,
+            },
+            consumer_id: Some(ConsumerId {
+                connection_id: Arc::from("c"),
+                session_id: 1,
+                value: 2,
+            }),
             browser: false,
             destination: Some(Destination::queue("Q")),
             prefetch_size: 1000,
@@ -1099,7 +1179,11 @@ mod tests {
     fn exception_response_round_trip() {
         let cmd = Command::exception(5, "java.lang.SecurityException", "bad");
         match round_trip(&cmd, 12) {
-            Command::ExceptionResponse { correlation_id, exception, .. } => {
+            Command::ExceptionResponse {
+                correlation_id,
+                exception,
+                ..
+            } => {
                 assert_eq!(correlation_id, 5);
                 assert_eq!(exception.unwrap().class_name, "java.lang.SecurityException");
             }

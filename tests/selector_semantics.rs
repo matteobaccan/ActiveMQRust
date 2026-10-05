@@ -41,7 +41,12 @@ fn conformance_message() -> Entry {
     m.expiration = 0;
     m.group_id = Some("G1".into());
     m.group_sequence = 2;
-    m.transaction_id = Some(TransactionId::Local { value: 5, connection_id: Some(ConnectionId { value: Arc::from("ID:c") }) });
+    m.transaction_id = Some(TransactionId::Local {
+        value: 5,
+        connection_id: Some(ConnectionId {
+            value: Arc::from("ID:c"),
+        }),
+    });
     m.broker_path = Some(vec![
         DataStructure::BrokerId(BrokerId { value: Arc::from("B1") }),
         DataStructure::BrokerId(BrokerId { value: Arc::from("B2") }),
@@ -84,7 +89,12 @@ fn conformance_message() -> Entry {
     }
     m.marshalled_properties = Some(p.encode());
     let meta = Meta::new(Arc::new(Memory::new(0)), &m);
-    Entry { seq: 1, msg: Arc::new(m), meta, redelivery: 1 }
+    Entry {
+        seq: 1,
+        msg: Arc::new(m),
+        meta,
+        redelivery: 1,
+    }
 }
 
 #[test]
@@ -115,7 +125,12 @@ fn selectors_evaluate_like_activemq() {
         }
     }
     assert!(count > 500, "table loaded");
-    assert!(failures.is_empty(), "{} of {count} differ from ActiveMQ:\n{}", failures.len(), failures.join("\n"));
+    assert!(
+        failures.is_empty(),
+        "{} of {count} differ from ActiveMQ:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -123,7 +138,9 @@ fn selectors_evaluate_like_activemq() {
 // ---------------------------------------------------------------------------
 
 fn broker() -> Arc<Broker> {
-    Broker::new(Arc::new(build(FileConfig::default(), ConfigSource::Defaults, &Overrides::default()).unwrap()))
+    Broker::new(Arc::new(
+        build(FileConfig::default(), ConfigSource::Defaults, &Overrides::default()).unwrap(),
+    ))
 }
 
 struct Client {
@@ -140,7 +157,11 @@ impl Client {
     }
 
     fn consumer_id(&self, n: i64) -> ConsumerId {
-        ConsumerId { connection_id: Arc::from(self.conn), session_id: 1, value: n }
+        ConsumerId {
+            connection_id: Arc::from(self.conn),
+            session_id: 1,
+            value: n,
+        }
     }
 
     /// Received dispatches: (body, redelivery counter); `None` body for the end-of-browse marker.
@@ -149,7 +170,10 @@ impl Client {
         while let Ok(o) = self.rx.try_recv() {
             if let Out::Cmd(Command::MessageDispatch(md)) = o {
                 v.push(match md.message {
-                    Some(m) => (Some(String::from_utf8_lossy(m.content.as_deref().unwrap_or(b"")).into_owned()), m.redelivery_counter),
+                    Some(m) => (
+                        Some(String::from_utf8_lossy(m.content.as_deref().unwrap_or(b"")).into_owned()),
+                        m.redelivery_counter,
+                    ),
                     None => (None, 0),
                 });
             }
@@ -163,7 +187,11 @@ impl Client {
 }
 
 fn producer() -> ProducerId {
-    ProducerId { connection_id: Arc::from("ID:prod-1-1-1:1"), session_id: 1, value: 1 }
+    ProducerId {
+        connection_id: Arc::from("ID:prod-1-1-1:1"),
+        session_id: 1,
+        value: 1,
+    }
 }
 
 static SEQ: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(1);
@@ -195,7 +223,15 @@ fn send(b: &Broker, dest: &Destination, body: &str, props: &[(&str, &str)]) {
     b.deliver(msg(dest, body, props), true, now_ms()).unwrap();
 }
 
-fn subscribe(b: &Broker, c: &Client, n: i64, dest: &Destination, prefetch: i32, selector: Option<&str>, browser: bool) -> ConsumerId {
+fn subscribe(
+    b: &Broker,
+    c: &Client,
+    n: i64,
+    dest: &Destination,
+    prefetch: i32,
+    selector: Option<&str>,
+    browser: bool,
+) -> ConsumerId {
     let id = c.consumer_id(n);
     b.get_or_create(dest, None).add_sub(
         SubSpec {
@@ -223,8 +259,20 @@ fn disjoint_selectors_each_get_their_fifo_subsequence() {
         let kind = if i % 2 == 0 { "A" } else { "B" };
         send(&b, &q, &format!("{kind}{i}"), &[("type", kind)]);
     }
-    assert_eq!(a.texts(), (1..=20).filter(|i| i % 2 == 0).map(|i| format!("A{i}")).collect::<Vec<_>>());
-    assert_eq!(bb.texts(), (1..=20).filter(|i| i % 2 == 1).map(|i| format!("B{i}")).collect::<Vec<_>>());
+    assert_eq!(
+        a.texts(),
+        (1..=20)
+            .filter(|i| i % 2 == 0)
+            .map(|i| format!("A{i}"))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        bb.texts(),
+        (1..=20)
+            .filter(|i| i % 2 == 1)
+            .map(|i| format!("B{i}"))
+            .collect::<Vec<_>>()
+    );
 }
 
 #[test]
@@ -282,7 +330,10 @@ fn redelivered_message_is_re_examined_by_the_cursor() {
     b.get_dest(&q).unwrap().remove_sub(&holder_id, -1, now_ms());
     send(&b, &q, "m101", &[("type", "A")]);
     let got = sel.drain();
-    assert_eq!(got.iter().filter_map(|x| x.0.clone()).collect::<Vec<_>>(), vec!["m10", "m101"]);
+    assert_eq!(
+        got.iter().filter_map(|x| x.0.clone()).collect::<Vec<_>>(),
+        vec!["m10", "m101"]
+    );
     assert_eq!(got[0].1, 1, "m10 is a redelivery");
 }
 
@@ -316,9 +367,16 @@ fn filtered_browse_returns_matching_messages_in_fifo_order() {
     let mut c = Client::new(&b, "c1");
     subscribe(&b, &c, 9, &q, 100, Some("JMSCorrelationID LIKE 'ORD-A%'"), true);
     let got = c.drain();
-    assert_eq!(got.iter().filter_map(|x| x.0.clone()).collect::<Vec<_>>(), vec!["ORD-A-1", "ORD-A-2"]);
+    assert_eq!(
+        got.iter().filter_map(|x| x.0.clone()).collect::<Vec<_>>(),
+        vec!["ORD-A-1", "ORD-A-2"]
+    );
     assert!(got.last().unwrap().0.is_none(), "end-of-browse marker");
-    assert_eq!(b.get_dest(&q).unwrap().snapshot().pending, 3, "browsing does not consume");
+    assert_eq!(
+        b.get_dest(&q).unwrap().snapshot().pending,
+        3,
+        "browsing does not consume"
+    );
 }
 
 #[test]
@@ -331,11 +389,22 @@ fn header_only_selector_never_decodes_properties() {
         b.deliver(m, true, now_ms()).unwrap();
     }
     let mut c = Client::new(&b, "c1");
-    subscribe(&b, &c, 1, &q, 100, Some("JMSCorrelationID = 'match' AND JMSPriority >= 0"), false);
+    subscribe(
+        &b,
+        &c,
+        1,
+        &q,
+        100,
+        Some("JMSCorrelationID = 'match' AND JMSPriority >= 0"),
+        false,
+    );
     assert_eq!(c.texts(), vec!["m9"]);
     let (_, entries) = b.get_dest(&q).unwrap().page(0, 100);
     assert_eq!(entries.len(), 9);
-    assert!(entries.iter().all(|e| !e.properties_decoded()), "examined messages kept their properties encoded");
+    assert!(
+        entries.iter().all(|e| !e.properties_decoded()),
+        "examined messages kept their properties encoded"
+    );
 }
 
 #[test]
@@ -349,5 +418,9 @@ fn undecodable_properties_do_not_match_and_do_not_block() {
     let mut c = Client::new(&b, "c1");
     subscribe(&b, &c, 1, &q, 100, Some("color = 'red' OR color IS NULL"), false);
     assert_eq!(c.texts(), vec!["good"]);
-    assert_eq!(b.get_dest(&q).unwrap().snapshot().pending, 1, "the undecodable message stays queued");
+    assert_eq!(
+        b.get_dest(&q).unwrap().snapshot().pending,
+        1,
+        "the undecodable message stays queued"
+    );
 }

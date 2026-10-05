@@ -116,7 +116,10 @@ struct Cli {
 #[derive(Subcommand)]
 enum Cmd {
     /// Write a commented mqrust.toml next to the executable, or to --config (never overwrites)
-    #[command(hide = true, after_help = "Examples:\n  mqrust.exe init-config\n  mqrust.exe init-config --config D:\\mq\\mqrust.toml")]
+    #[command(
+        hide = true,
+        after_help = "Examples:\n  mqrust.exe init-config\n  mqrust.exe init-config --config D:\\mq\\mqrust.toml"
+    )]
     InitConfig,
     /// Set the admin console user and password (hidden input, asked twice)
     #[command(
@@ -303,9 +306,10 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     match &cli.command {
         Some(Cmd::HashPassword { password_stdin }) => setup_command(&cli, |_| setup::hash_password(*password_stdin)),
-        Some(Cmd::SetAdmin { username, password_stdin }) => {
-            setup_command(&cli, |p| setup::set_admin(p, username.clone(), *password_stdin))
-        }
+        Some(Cmd::SetAdmin {
+            username,
+            password_stdin,
+        }) => setup_command(&cli, |p| setup::set_admin(p, username.clone(), *password_stdin)),
         Some(Cmd::User { action }) => setup_command(&cli, |p| match action {
             UserCmd::Add { name, password_stdin } => setup::user_add(p, name, *password_stdin),
             UserCmd::Passwd { name, password_stdin } => setup::user_passwd(p, name, *password_stdin),
@@ -317,7 +321,9 @@ fn main() -> ExitCode {
             Ok(c) => {
                 match c.source {
                     config::ConfigSource::File(p) => println!("configuration OK: {}", p.display()),
-                    config::ConfigSource::Defaults => println!("configuration OK: no file, built-in defaults"),
+                    config::ConfigSource::Defaults => {
+                        println!("configuration OK: no file, built-in defaults")
+                    }
                 }
                 ExitCode::SUCCESS
             }

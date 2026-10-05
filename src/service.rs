@@ -25,7 +25,9 @@ const ERROR_FAILED_SERVICE_CONTROLLER_CONNECT: i32 = 1063;
 fn describe(e: &windows_service::Error, name: &str) -> String {
     if let windows_service::Error::Winapi(io) = e {
         match io.raw_os_error() {
-            Some(ERROR_ACCESS_DENIED) => return "administrator rights are required (run the console as administrator)".into(),
+            Some(ERROR_ACCESS_DENIED) => {
+                return "administrator rights are required (run the console as administrator)".into()
+            }
             Some(ERROR_SERVICE_DOES_NOT_EXIST) => return format!("service {name} is not installed"),
             Some(ERROR_SERVICE_EXISTS) => return format!("service {name} already exists"),
             _ => {}
@@ -48,7 +50,11 @@ pub fn install(name: &str, config: Option<PathBuf>) -> Result<(), String> {
         args.push("--config".into());
         args.push(text.into());
     }
-    let display = if name == DEFAULT_NAME { DEFAULT_NAME.to_string() } else { format!("{DEFAULT_NAME} {name}") };
+    let display = if name == DEFAULT_NAME {
+        DEFAULT_NAME.to_string()
+    } else {
+        format!("{DEFAULT_NAME} {name}")
+    };
     let info = ServiceInfo {
         name: OsString::from(name),
         display_name: OsString::from(display),
@@ -61,7 +67,10 @@ pub fn install(name: &str, config: Option<PathBuf>) -> Result<(), String> {
         account_name: None,
         account_password: None,
     };
-    let m = manager(ServiceManagerAccess::CONNECT | ServiceManagerAccess::CREATE_SERVICE, name)?;
+    let m = manager(
+        ServiceManagerAccess::CONNECT | ServiceManagerAccess::CREATE_SERVICE,
+        name,
+    )?;
     let s = m
         .create_service(&info, ServiceAccess::CHANGE_CONFIG)
         .map_err(|e| describe(&e, name))?;
@@ -72,7 +81,10 @@ pub fn install(name: &str, config: Option<PathBuf>) -> Result<(), String> {
 pub fn uninstall(name: &str) -> Result<(), String> {
     let m = manager(ServiceManagerAccess::CONNECT, name)?;
     let s = m
-        .open_service(name, ServiceAccess::QUERY_STATUS | ServiceAccess::STOP | ServiceAccess::DELETE)
+        .open_service(
+            name,
+            ServiceAccess::QUERY_STATUS | ServiceAccess::STOP | ServiceAccess::DELETE,
+        )
         .map_err(|e| describe(&e, name))?;
     let status = s.query_status().map_err(|e| describe(&e, name))?;
     if status.current_state != ServiceState::Stopped {
@@ -90,7 +102,9 @@ pub fn uninstall(name: &str) -> Result<(), String> {
 
 pub fn start(name: &str) -> Result<(), String> {
     let m = manager(ServiceManagerAccess::CONNECT, name)?;
-    let s = m.open_service(name, ServiceAccess::START).map_err(|e| describe(&e, name))?;
+    let s = m
+        .open_service(name, ServiceAccess::START)
+        .map_err(|e| describe(&e, name))?;
     s.start(&[] as &[&OsStr]).map_err(|e| describe(&e, name))
 }
 
@@ -153,7 +167,9 @@ fn service_main(_args: Vec<OsString>) {
         ServiceControl::Interrogate => ServiceControlHandlerResult::NoError,
         _ => ServiceControlHandlerResult::NotImplemented,
     };
-    let Ok(status) = service_control_handler::register(&name, handler) else { return };
+    let Ok(status) = service_control_handler::register(&name, handler) else {
+        return;
+    };
     let set = |state: ServiceState, code: u32, accept: ServiceControlAccept, wait: Duration| {
         let _ = status.set_service_status(ServiceStatus {
             service_type: ServiceType::OWN_PROCESS,
@@ -165,7 +181,12 @@ fn service_main(_args: Vec<OsString>) {
             process_id: None,
         });
     };
-    set(ServiceState::StartPending, 0, ServiceControlAccept::empty(), Duration::from_secs(10));
+    set(
+        ServiceState::StartPending,
+        0,
+        ServiceControlAccept::empty(),
+        Duration::from_secs(10),
+    );
 
     let log_path = std::env::current_exe()
         .ok()
@@ -208,5 +229,10 @@ fn service_main(_args: Vec<OsString>) {
             }
         }
     };
-    set(ServiceState::Stopped, code, ServiceControlAccept::empty(), Duration::default());
+    set(
+        ServiceState::Stopped,
+        code,
+        ServiceControlAccept::empty(),
+        Duration::default(),
+    );
 }

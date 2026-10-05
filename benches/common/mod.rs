@@ -27,11 +27,17 @@ pub fn broker() -> Arc<Broker> {
 pub fn broker_with(f: impl FnOnce(&mut FileConfig)) -> Arc<Broker> {
     let mut fc = FileConfig::default();
     f(&mut fc);
-    Broker::new(Arc::new(build(fc, ConfigSource::Defaults, &Overrides::default()).unwrap()))
+    Broker::new(Arc::new(
+        build(fc, ConfigSource::Defaults, &Overrides::default()).unwrap(),
+    ))
 }
 
 pub fn producer() -> ProducerId {
-    ProducerId { connection_id: Arc::from("ID:bench-1-1-1:1"), session_id: 1, value: 1 }
+    ProducerId {
+        connection_id: Arc::from("ID:bench-1-1-1:1"),
+        session_id: 1,
+        value: 1,
+    }
 }
 
 /// An `ActiveMQTextMessage` whose content is `size` bytes (as the client stores it).
@@ -39,7 +45,12 @@ pub fn text_message(dest: &Destination, seq: i64, size: usize) -> Message {
     let mut m = Message::new(t::ACTIVEMQ_TEXT_MESSAGE);
     m.producer_id = Some(producer());
     m.destination = Some(dest.clone());
-    m.message_id = Some(MessageId { text_view: None, producer_id: Some(producer()), producer_sequence_id: seq, broker_sequence_id: 0 });
+    m.message_id = Some(MessageId {
+        text_view: None,
+        producer_id: Some(producer()),
+        producer_sequence_id: seq,
+        broker_sequence_id: 0,
+    });
     m.correlation_id = Some("ORD-A".into());
     m.timestamp = 1;
     let mut body = vec![b'x'; size.max(4)];
@@ -57,7 +68,11 @@ pub struct Consumer {
 pub fn consumer(b: &Broker, d: &Dest, n: i64, prefetch: i32, selector: Option<&str>) -> Consumer {
     let (tx, rx) = mpsc::unbounded_channel();
     let handle = Arc::new(ConnHandle::new(b.new_conn_id(), "127.0.0.1:1".parse().unwrap(), tx));
-    let id = ConsumerId { connection_id: Arc::from(format!("ID:bench-consumer-{n}")), session_id: 1, value: n };
+    let id = ConsumerId {
+        connection_id: Arc::from(format!("ID:bench-consumer-{n}")),
+        session_id: 1,
+        value: n,
+    };
     d.add_sub(
         SubSpec {
             id: id.clone(),

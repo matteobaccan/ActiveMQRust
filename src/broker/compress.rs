@@ -92,7 +92,9 @@ pub fn maybe_compress(msg: &mut Message, threshold: u64, min_saving_pct: u64) ->
     if threshold == 0 || msg.compressed || !compressible(msg.msg_type) {
         return Outcome::Skipped;
     }
-    let Some(content) = &msg.content else { return Outcome::Skipped };
+    let Some(content) = &msg.content else {
+        return Outcome::Skipped;
+    };
     if (content.len() as u64) <= threshold {
         return Outcome::Skipped;
     }
@@ -121,7 +123,10 @@ mod tests {
         let body = vec![b'a'; 100_000];
         let c = compress_content(t::ACTIVEMQ_TEXT_MESSAGE, &body);
         assert!(c.len() < body.len() / 10);
-        assert_eq!(decompress_content(t::ACTIVEMQ_TEXT_MESSAGE, &c, usize::MAX).unwrap(), body);
+        assert_eq!(
+            decompress_content(t::ACTIVEMQ_TEXT_MESSAGE, &c, usize::MAX).unwrap(),
+            body
+        );
     }
 
     #[test]
@@ -129,16 +134,27 @@ mod tests {
         let body = vec![7u8; 50_000];
         let c = compress_content(t::ACTIVEMQ_BYTES_MESSAGE, &body);
         assert_eq!(&c[..4], &(50_000i32).to_be_bytes());
-        assert_eq!(decompress_content(t::ACTIVEMQ_BYTES_MESSAGE, &c, usize::MAX).unwrap(), body);
+        assert_eq!(
+            decompress_content(t::ACTIVEMQ_BYTES_MESSAGE, &c, usize::MAX).unwrap(),
+            body
+        );
     }
 
     #[test]
     fn threshold_and_saving() {
         let mut m = Message::new(t::ACTIVEMQ_TEXT_MESSAGE);
         m.content = Some(Bytes::from(vec![b'x'; 1023]));
-        assert_eq!(maybe_compress(&mut m, 1024, 10), Outcome::Skipped, "below the threshold");
+        assert_eq!(
+            maybe_compress(&mut m, 1024, 10),
+            Outcome::Skipped,
+            "below the threshold"
+        );
         m.content = Some(Bytes::from(vec![b'x'; 1024]));
-        assert_eq!(maybe_compress(&mut m, 1024, 10), Outcome::Skipped, "exactly at threshold is not compressed");
+        assert_eq!(
+            maybe_compress(&mut m, 1024, 10),
+            Outcome::Skipped,
+            "exactly at threshold is not compressed"
+        );
         m.content = Some(Bytes::from(vec![b'x'; 1025]));
         assert_eq!(maybe_compress(&mut m, 1024, 10), Outcome::Compressed);
         assert!(m.compressed);
@@ -183,7 +199,10 @@ mod tests {
         assert_eq!(maybe_compress(&mut m, 1024, 10), Outcome::Compressed);
         let p = m.marshalled_properties.as_ref().unwrap();
         let range = frame.as_ptr() as usize..frame.as_ptr() as usize + frame.len();
-        assert!(!range.contains(&(p.as_ptr() as usize)), "properties still point into the frame");
+        assert!(
+            !range.contains(&(p.as_ptr() as usize)),
+            "properties still point into the frame"
+        );
         assert_eq!(&p[..], &frame[150_000..150_100]);
     }
 
@@ -191,7 +210,10 @@ mod tests {
     fn preview_limit() {
         let body = vec![b'z'; 200_000];
         let c = compress_content(t::ACTIVEMQ_TEXT_MESSAGE, &body);
-        assert_eq!(decompress_content(t::ACTIVEMQ_TEXT_MESSAGE, &c, 65536).unwrap().len(), 65536);
+        assert_eq!(
+            decompress_content(t::ACTIVEMQ_TEXT_MESSAGE, &c, 65536).unwrap().len(),
+            65536
+        );
     }
 
     #[test]

@@ -33,8 +33,14 @@ impl AsyncWrite for RecordingWriter {
         Poll::Ready(Ok(buf.len()))
     }
 
-    fn poll_write_vectored(self: Pin<&mut Self>, _: &mut Context<'_>, bufs: &[IoSlice<'_>]) -> Poll<std::io::Result<usize>> {
-        self.calls.lock().push(bufs.iter().map(|b| (b.as_ptr() as usize, b.len())).collect());
+    fn poll_write_vectored(
+        self: Pin<&mut Self>,
+        _: &mut Context<'_>,
+        bufs: &[IoSlice<'_>],
+    ) -> Poll<std::io::Result<usize>> {
+        self.calls
+            .lock()
+            .push(bufs.iter().map(|b| (b.as_ptr() as usize, b.len())).collect());
         let mut data = self.data.lock();
         let mut n = 0;
         for b in bufs {
@@ -78,14 +84,23 @@ impl AsyncWrite for BlockedWriter {
 }
 
 fn pid() -> ProducerId {
-    ProducerId { connection_id: Arc::from("ID:test-1-1-1:1"), session_id: 1, value: 1 }
+    ProducerId {
+        connection_id: Arc::from("ID:test-1-1-1:1"),
+        session_id: 1,
+        value: 1,
+    }
 }
 
 fn text_message(dest: &Destination, seq: i64, body: Bytes) -> Message {
     let mut m = Message::new(t::ACTIVEMQ_TEXT_MESSAGE);
     m.producer_id = Some(pid());
     m.destination = Some(dest.clone());
-    m.message_id = Some(MessageId { text_view: None, producer_id: Some(pid()), producer_sequence_id: seq, broker_sequence_id: seq });
+    m.message_id = Some(MessageId {
+        text_view: None,
+        producer_id: Some(pid()),
+        producer_sequence_id: seq,
+        broker_sequence_id: seq,
+    });
     m.content = Some(body);
     m
 }
@@ -94,7 +109,11 @@ fn dispatch(seq: i64, body: Bytes) -> Out {
     let q = Destination::queue("W");
     Out::Cmd(Command::MessageDispatch(MessageDispatch {
         header: Header::default(),
-        consumer_id: Some(ConsumerId { connection_id: Arc::from("c"), session_id: 1, value: 1 }),
+        consumer_id: Some(ConsumerId {
+            connection_id: Arc::from("c"),
+            session_id: 1,
+            value: 1,
+        }),
         destination: Some(q.clone()),
         message: Some(Arc::new(text_message(&q, seq, body))),
         redelivery_counter: 0,
@@ -130,7 +149,10 @@ async fn batching_under_load() {
     for (i, f) in frames.into_iter().enumerate() {
         match dec.decode_frame(f).unwrap() {
             Some(Command::MessageDispatch(md)) => {
-                assert_eq!(md.message.unwrap().message_id.as_ref().unwrap().producer_sequence_id, i as i64)
+                assert_eq!(
+                    md.message.unwrap().message_id.as_ref().unwrap().producer_sequence_id,
+                    i as i64
+                )
             }
             other => panic!("unexpected {other:?}"),
         }
@@ -146,11 +168,19 @@ async fn large_body_is_a_separate_slice() {
     let w = RecordingWriter::default();
     writer_task(w.clone(), rx, loose_codec(12), None, Arc::new(Notify::new())).await;
     let calls = w.calls.lock().clone();
-    let found = calls.iter().flatten().any(|&(addr, len)| addr == body.as_ptr() as usize && len == body.len());
+    let found = calls
+        .iter()
+        .flatten()
+        .any(|&(addr, len)| addr == body.as_ptr() as usize && len == body.len());
     assert!(found, "the body was not written from the stored buffer: {calls:?}");
     let frames = split_frames(&w.data.lock());
-    match crate::openwire::marshal::Decoder::new(12).decode_frame(frames[0].clone()).unwrap() {
-        Some(Command::MessageDispatch(md)) => assert_eq!(md.message.unwrap().content.as_ref().unwrap(), &body),
+    match crate::openwire::marshal::Decoder::new(12)
+        .decode_frame(frames[0].clone())
+        .unwrap()
+    {
+        Some(Command::MessageDispatch(md)) => {
+            assert_eq!(md.message.unwrap().content.as_ref().unwrap(), &body)
+        }
         other => panic!("unexpected {other:?}"),
     }
 }
@@ -159,7 +189,13 @@ async fn large_body_is_a_separate_slice() {
 async fn single_frame_is_written_without_delay() {
     let (tx, rx) = mpsc::unbounded_channel();
     let w = RecordingWriter::default();
-    let task = tokio::spawn(writer_task(w.clone(), rx, loose_codec(12), None, Arc::new(Notify::new())));
+    let task = tokio::spawn(writer_task(
+        w.clone(),
+        rx,
+        loose_codec(12),
+        None,
+        Arc::new(Notify::new()),
+    ));
     tx.send(dispatch(1, Bytes::from_static(b"hello"))).unwrap();
     // The writer only needs to be scheduled: no timer has to fire (time never advances here).
     let start = tokio::time::Instant::now();
@@ -202,7 +238,10 @@ async fn reader_splits_frames_and_keeps_bodies_in_their_frame() {
         let cmd = dec.decode_frame(frame.clone()).unwrap().unwrap();
         if let Command::Message(m) = &cmd {
             let c = m.content.as_ref().unwrap();
-            assert!(range.contains(&(c.as_ptr() as usize)), "content was copied out of the frame");
+            assert!(
+                range.contains(&(c.as_ptr() as usize)),
+                "content was copied out of the frame"
+            );
             if c.len() == big_body.len() {
                 assert_eq!(c, &big_body);
             }
@@ -210,7 +249,15 @@ async fn reader_splits_frames_and_keeps_bodies_in_their_frame() {
         kinds.push(cmd.type_code());
     }
     writer.await.unwrap();
-    assert_eq!(kinds, vec![t::ACTIVEMQ_TEXT_MESSAGE, t::KEEP_ALIVE_INFO, t::ACTIVEMQ_TEXT_MESSAGE, t::ACTIVEMQ_TEXT_MESSAGE]);
+    assert_eq!(
+        kinds,
+        vec![
+            t::ACTIVEMQ_TEXT_MESSAGE,
+            t::KEEP_ALIVE_INFO,
+            t::ACTIVEMQ_TEXT_MESSAGE,
+            t::ACTIVEMQ_TEXT_MESSAGE
+        ]
+    );
 }
 
 #[tokio::test]
@@ -220,13 +267,18 @@ async fn reader_rejects_oversized_frames_and_truncated_streams() {
     let mut r = FrameReader::new(&data[..]);
     assert_eq!(r.next(1000).await.unwrap_err().kind(), std::io::ErrorKind::InvalidData);
     let mut r = FrameReader::new(&data[..]);
-    assert_eq!(r.next(10_000).await.unwrap_err().kind(), std::io::ErrorKind::UnexpectedEof);
+    assert_eq!(
+        r.next(10_000).await.unwrap_err().kind(),
+        std::io::ErrorKind::UnexpectedEof
+    );
     let empty: &[u8] = &[];
     assert!(FrameReader::new(empty).next(10).await.unwrap().is_none());
 }
 
 fn broker() -> Arc<Broker> {
-    Broker::new(Arc::new(build(FileConfig::default(), ConfigSource::Defaults, &Overrides::default()).unwrap()))
+    Broker::new(Arc::new(
+        build(FileConfig::default(), ConfigSource::Defaults, &Overrides::default()).unwrap(),
+    ))
 }
 
 #[tokio::test]
@@ -236,17 +288,35 @@ async fn blocked_consumer_socket_does_not_stall_the_queue() {
     let d = broker.get_or_create(&q, None);
     // Consumer A: its writer task is stuck on a socket the client does not read.
     let (tx_a, rx_a) = mpsc::unbounded_channel();
-    let a = Arc::new(ConnHandle::new(broker.new_conn_id(), "127.0.0.1:1".parse().unwrap(), tx_a));
+    let a = Arc::new(ConnHandle::new(
+        broker.new_conn_id(),
+        "127.0.0.1:1".parse().unwrap(),
+        tx_a,
+    ));
     let polled = Arc::new(AtomicUsize::new(0));
     let blocked = BlockedWriter { polled: polled.clone() };
-    let writer = tokio::spawn(writer_task(blocked, rx_a, loose_codec(12), None, Arc::new(Notify::new())));
+    let writer = tokio::spawn(writer_task(
+        blocked,
+        rx_a,
+        loose_codec(12),
+        None,
+        Arc::new(Notify::new()),
+    ));
     // Consumer B: reads normally.
     let (tx_b, mut rx_b) = mpsc::unbounded_channel();
-    let b = Arc::new(ConnHandle::new(broker.new_conn_id(), "127.0.0.1:2".parse().unwrap(), tx_b));
+    let b = Arc::new(ConnHandle::new(
+        broker.new_conn_id(),
+        "127.0.0.1:2".parse().unwrap(),
+        tx_b,
+    ));
     for (n, conn) in [(1, a), (2, b)] {
         d.add_sub(
             SubSpec {
-                id: ConsumerId { connection_id: Arc::from("c"), session_id: 1, value: n },
+                id: ConsumerId {
+                    connection_id: Arc::from("c"),
+                    session_id: 1,
+                    value: n,
+                },
                 conn,
                 prefetch: 100,
                 selector: None,
@@ -258,7 +328,9 @@ async fn blocked_consumer_socket_does_not_stall_the_queue() {
     }
     let mut received = 0;
     for i in 0..2000 {
-        broker.deliver(text_message(&q, i + 1, Bytes::from(vec![b'm'; 1024])), true, now_ms()).unwrap();
+        broker
+            .deliver(text_message(&q, i + 1, Bytes::from(vec![b'm'; 1024])), true, now_ms())
+            .unwrap();
         while let Ok(Out::Cmd(Command::MessageDispatch(md))) = rx_b.try_recv() {
             let m = md.message.unwrap();
             let ack = MessageAck {
@@ -279,8 +351,15 @@ async fn blocked_consumer_socket_does_not_stall_the_queue() {
             tokio::task::yield_now().await;
         }
     }
-    assert!(polled.load(Ordering::Relaxed) > 0, "the blocked writer never tried to write");
-    assert_eq!(received, 2000 - 100, "consumer B must get everything beyond A's prefetch");
+    assert!(
+        polled.load(Ordering::Relaxed) > 0,
+        "the blocked writer never tried to write"
+    );
+    assert_eq!(
+        received,
+        2000 - 100,
+        "consumer B must get everything beyond A's prefetch"
+    );
     writer.abort();
 }
 
@@ -324,17 +403,36 @@ async fn codec_is_pluggable() {
     let dec = crate::openwire::marshal::Decoder::new(12);
     let mut props = PrimitiveMap::new();
     props.set("MaxInactivityDuration", Value::Long(0));
-    let wf = WireFormatInfo { magic: wireformat::MAGIC, version: 12, properties: props };
-    let conn_id = ConnectionId { value: Arc::from("ID:codec-test-1") };
-    let session = SessionId { connection_id: conn_id.value.clone(), value: 1 };
-    let consumer = ConsumerId { connection_id: conn_id.value.clone(), session_id: 1, value: 1 };
+    let wf = WireFormatInfo {
+        magic: wireformat::MAGIC,
+        version: 12,
+        properties: props,
+    };
+    let conn_id = ConnectionId {
+        value: Arc::from("ID:codec-test-1"),
+    };
+    let session = SessionId {
+        connection_id: conn_id.value.clone(),
+        value: 1,
+    };
+    let consumer = ConsumerId {
+        connection_id: conn_id.value.clone(),
+        session_id: 1,
+        value: 1,
+    };
     let q = Destination::queue("CODEC.PLUG");
     let mut msg = text_message(&q, 1, Bytes::from_static(b"\x00\x00\x00\x05hello"));
-    msg.header = Header { command_id: 5, response_required: true };
+    msg.header = Header {
+        command_id: 5,
+        response_required: true,
+    };
     let sent = [
         Command::WireFormatInfo(wf),
         Command::ConnectionInfo(ConnectionInfo {
-            header: Header { command_id: 1, response_required: true },
+            header: Header {
+                command_id: 1,
+                response_required: true,
+            },
             connection_id: Some(conn_id.clone()),
             client_id: Some("codec-test".into()),
             password: Some("admin".into()),
@@ -347,9 +445,18 @@ async fn codec_is_pluggable() {
             failover_reconnect: false,
             client_ip: None,
         }),
-        Command::SessionInfo(SessionInfo { header: Header { command_id: 2, response_required: false }, session_id: Some(session) }),
+        Command::SessionInfo(SessionInfo {
+            header: Header {
+                command_id: 2,
+                response_required: false,
+            },
+            session_id: Some(session),
+        }),
         Command::ConsumerInfo(ConsumerInfo {
-            header: Header { command_id: 3, response_required: true },
+            header: Header {
+                command_id: 3,
+                response_required: true,
+            },
             consumer_id: Some(consumer),
             browser: false,
             destination: Some(q.clone()),
@@ -377,7 +484,11 @@ async fn codec_is_pluggable() {
     }
     let mut received = 0;
     let body = loop {
-        let frame = tokio::time::timeout(Duration::from_secs(10), r.next(i64::MAX)).await.unwrap().unwrap().unwrap();
+        let frame = tokio::time::timeout(Duration::from_secs(10), r.next(i64::MAX))
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
         received += 1;
         if let Some(Command::MessageDispatch(md)) = dec.decode_frame(frame).unwrap() {
             break md.message.unwrap().content.clone().unwrap();
@@ -387,7 +498,11 @@ async fn codec_is_pluggable() {
     // Every command after the client's WireFormatInfo went through the wrapper, and so did
     // every frame the broker wrote.
     assert_eq!(DECODED.load(Ordering::Relaxed), sent.len() - 1);
-    assert!(ENCODED.load(Ordering::Relaxed) >= received, "{} encoded, {received} received", ENCODED.load(Ordering::Relaxed));
+    assert!(
+        ENCODED.load(Ordering::Relaxed) >= received,
+        "{} encoded, {received} received",
+        ENCODED.load(Ordering::Relaxed)
+    );
 }
 
 // -- broker-side compression over real connections -------------------------------------------
@@ -397,7 +512,9 @@ async fn codec_is_pluggable() {
 async fn start_compressing_broker() -> (Arc<Broker>, SocketAddr, watch::Sender<bool>) {
     let mut fc = FileConfig::default();
     fc.broker.compress_threshold_kb = 32;
-    let broker = Broker::new(Arc::new(build(fc, ConfigSource::Defaults, &Overrides::default()).unwrap()));
+    let broker = Broker::new(Arc::new(
+        build(fc, ConfigSource::Defaults, &Overrides::default()).unwrap(),
+    ));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let (stop, shutdown) = watch::channel(false);
@@ -422,10 +539,21 @@ struct TestClient {
 impl TestClient {
     async fn open(addr: SocketAddr, name: &str) -> TestClient {
         let (r, w) = TcpStream::connect(addr).await.unwrap().into_split();
-        let mut c = TestClient { r: FrameReader::new(r), w, conn: Arc::from(name), next_id: 1, seq: 0 };
+        let mut c = TestClient {
+            r: FrameReader::new(r),
+            w,
+            conn: Arc::from(name),
+            next_id: 1,
+            seq: 0,
+        };
         let mut props = PrimitiveMap::new();
         props.set("MaxInactivityDuration", Value::Long(0));
-        c.write(Command::WireFormatInfo(WireFormatInfo { magic: wireformat::MAGIC, version: 12, properties: props })).await;
+        c.write(Command::WireFormatInfo(WireFormatInfo {
+            magic: wireformat::MAGIC,
+            version: 12,
+            properties: props,
+        }))
+        .await;
         let info = ConnectionInfo {
             header: Header::default(),
             connection_id: Some(ConnectionId { value: c.conn.clone() }),
@@ -441,8 +569,15 @@ impl TestClient {
             client_ip: None,
         };
         c.request(Command::ConnectionInfo(info)).await;
-        let session = SessionId { connection_id: c.conn.clone(), value: 1 };
-        c.request(Command::SessionInfo(SessionInfo { header: Header::default(), session_id: Some(session) })).await;
+        let session = SessionId {
+            connection_id: c.conn.clone(),
+            value: 1,
+        };
+        c.request(Command::SessionInfo(SessionInfo {
+            header: Header::default(),
+            session_id: Some(session),
+        }))
+        .await;
         c
     }
 
@@ -452,7 +587,10 @@ impl TestClient {
 
     /// Sends a command with `responseRequired` set, without waiting for the response.
     async fn send_request(&mut self, mut cmd: Command) {
-        let header = Header { command_id: self.next_id, response_required: true };
+        let header = Header {
+            command_id: self.next_id,
+            response_required: true,
+        };
         self.next_id += 1;
         match &mut cmd {
             Command::ConnectionInfo(x) => x.header = header,
@@ -481,14 +619,21 @@ impl TestClient {
     }
 
     async fn read(&mut self, timeout: Duration) -> Option<Command> {
-        let frame = tokio::time::timeout(timeout, self.r.next(i64::MAX)).await.ok()?.unwrap()?;
+        let frame = tokio::time::timeout(timeout, self.r.next(i64::MAX))
+            .await
+            .ok()?
+            .unwrap()?;
         crate::openwire::marshal::Decoder::new(12).decode_frame(frame).unwrap()
     }
 
     async fn consume(&mut self, q: &Destination, prefetch: i32) {
         let ci = ConsumerInfo {
             header: Header::default(),
-            consumer_id: Some(ConsumerId { connection_id: self.conn.clone(), session_id: 1, value: 1 }),
+            consumer_id: Some(ConsumerId {
+                connection_id: self.conn.clone(),
+                session_id: 1,
+                value: 1,
+            }),
             browser: false,
             destination: Some(q.clone()),
             prefetch_size: prefetch,
@@ -513,11 +658,20 @@ impl TestClient {
 
     fn message(&mut self, q: &Destination, content: Bytes) -> Message {
         self.seq += 1;
-        let pid = ProducerId { connection_id: self.conn.clone(), session_id: 1, value: 1 };
+        let pid = ProducerId {
+            connection_id: self.conn.clone(),
+            session_id: 1,
+            value: 1,
+        };
         let mut m = Message::new(t::ACTIVEMQ_TEXT_MESSAGE);
         m.producer_id = Some(pid.clone());
         m.destination = Some(q.clone());
-        m.message_id = Some(MessageId { text_view: None, producer_id: Some(pid), producer_sequence_id: self.seq, broker_sequence_id: 0 });
+        m.message_id = Some(MessageId {
+            text_view: None,
+            producer_id: Some(pid),
+            producer_sequence_id: self.seq,
+            broker_sequence_id: 0,
+        });
         m.correlation_id = Some(format!("corr-{}", self.seq));
         m.jms_type = Some("compression-test".into());
         m.priority = 7;
@@ -568,14 +722,22 @@ async fn large_compressed_message_keeps_fifo_and_headers() {
         producer.send_async(m).await;
     }
     for (i, s) in sent.iter().enumerate() {
-        let got = consumer.dispatch(Duration::from_secs(30)).await.expect("message not delivered");
-        let id = |m: &Message| m.message_id.as_ref().map(|x| (x.producer_id.clone(), x.producer_sequence_id));
+        let got = consumer
+            .dispatch(Duration::from_secs(30))
+            .await
+            .expect("message not delivered");
+        let id = |m: &Message| {
+            m.message_id
+                .as_ref()
+                .map(|x| (x.producer_id.clone(), x.producer_sequence_id))
+        };
         assert_eq!(id(&got), id(s), "message {i} out of order or with a changed MessageId");
         if i == 0 {
             assert!(got.compressed, "the 5 MB body was not compressed");
             let content = got.content.as_ref().unwrap();
             assert!(content.len() < big.len() / 10);
-            let back = crate::broker::compress::decompress_content(t::ACTIVEMQ_TEXT_MESSAGE, content, usize::MAX).unwrap();
+            let back =
+                crate::broker::compress::decompress_content(t::ACTIVEMQ_TEXT_MESSAGE, content, usize::MAX).unwrap();
             assert_eq!(&back[..], &big[..]);
         } else {
             assert!(!got.compressed);
@@ -616,12 +778,18 @@ async fn other_connections_progress_during_a_large_compression() {
     while !stored(&broker) {
         let m = other.message(&small_q, Bytes::from_static(b"\0\0\0\x02hi"));
         other.send_async(m).await;
-        other.dispatch(Duration::from_secs(10)).await.expect("small message not delivered");
+        other
+            .dispatch(Duration::from_secs(10))
+            .await
+            .expect("small message not delivered");
         if !stored(&broker) {
             while_compressing += 1;
         }
     }
     assert!(matches!(sender.await.unwrap(), Command::Response { .. }));
     assert!(broker.get_dest(&big_q).unwrap().message_count() == 1);
-    assert!(while_compressing >= 3, "only {while_compressing} round trips while the 50 MB body was compressed");
+    assert!(
+        while_compressing >= 3,
+        "only {while_compressing} round trips while the 50 MB body was compressed"
+    );
 }

@@ -29,12 +29,24 @@ fn frames(data: &[u8]) -> Vec<Bytes> {
 
 #[test]
 fn recorded_client_frames_round_trip() {
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests").join("data").join("golden");
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("data")
+        .join("golden");
     let mut files: Vec<_> = std::fs::read_dir(&dir)
-        .map(|r| r.filter_map(|e| e.ok()).map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "bin")).collect())
+        .map(|r| {
+            r.filter_map(|e| e.ok())
+                .map(|e| e.path())
+                .filter(|p| p.extension().is_some_and(|x| x == "bin"))
+                .collect()
+        })
         .unwrap_or_default();
     files.sort();
-    assert!(!files.is_empty(), "no golden vectors in {}: run scripts/capture-frames.py", dir.display());
+    assert!(
+        !files.is_empty(),
+        "no golden vectors in {}: run scripts/capture-frames.py",
+        dir.display()
+    );
     let mut checked = 0;
     let mut kinds = std::collections::BTreeSet::new();
     for f in &files {
@@ -59,7 +71,13 @@ fn recorded_client_frames_round_trip() {
             }
             kinds.insert(t::command_name(cmd.type_code()));
             let again = enc.frame(&cmd);
-            assert_eq!(&again[4..], &body[..], "{} frame {n} ({}) re-encodes differently", f.display(), t::command_name(cmd.type_code()));
+            assert_eq!(
+                &again[4..],
+                &body[..],
+                "{} frame {n} ({}) re-encodes differently",
+                f.display(),
+                t::command_name(cmd.type_code())
+            );
             checked += 1;
         }
     }
@@ -70,7 +88,11 @@ fn recorded_client_frames_round_trip() {
 /// Streams written by the ActiveMQ client's own OpenWire marshaller for versions 9 to 12
 /// (`GoldenVectors` in tests/java-it): the same commands, in the same order, in every file.
 fn marshaller_vectors() -> Vec<(i32, Vec<Bytes>)> {
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests").join("data").join("golden").join("broker");
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("data")
+        .join("golden")
+        .join("broker");
     (9..=12)
         .map(|v| {
             let path = dir.join(format!("v{v:02}.bin"));
@@ -81,7 +103,10 @@ fn marshaller_vectors() -> Vec<(i32, Vec<Bytes>)> {
 }
 
 fn decode(version: i32, body: &Bytes) -> Command {
-    Decoder::new(version).decode_frame(body.clone()).unwrap().expect("non-null command")
+    Decoder::new(version)
+        .decode_frame(body.clone())
+        .unwrap()
+        .expect("non-null command")
 }
 
 #[test]
@@ -92,17 +117,29 @@ fn marshaller_vectors_round_trip_for_every_version() {
             Command::WireFormatInfo(wf) => {
                 assert_eq!(wf.version, version);
                 let again = Encoder::new(version).frame(&Command::WireFormatInfo(wf));
-                assert_eq!(&again[4..], &all[0][..], "v{version} WireFormatInfo re-encodes differently");
+                assert_eq!(
+                    &again[4..],
+                    &all[0][..],
+                    "v{version} WireFormatInfo re-encodes differently"
+                );
             }
             other => panic!("v{version}: first frame is not WireFormatInfo: {other:?}"),
         }
         let mut kinds = std::collections::BTreeSet::new();
         for (n, body) in all.iter().enumerate().skip(1) {
             let cmd = decode(version, body);
-            assert!(!matches!(cmd, Command::Unsupported { .. }), "v{version} frame {n}: unsupported");
+            assert!(
+                !matches!(cmd, Command::Unsupported { .. }),
+                "v{version} frame {n}: unsupported"
+            );
             kinds.insert(t::command_name(cmd.type_code()));
             let again = Encoder::new(version).frame(&cmd);
-            assert_eq!(&again[4..], &body[..], "v{version} frame {n} ({}) re-encodes differently", t::command_name(cmd.type_code()));
+            assert_eq!(
+                &again[4..],
+                &body[..],
+                "v{version} frame {n} ({}) re-encodes differently",
+                t::command_name(cmd.type_code())
+            );
         }
         for k in [
             "BrokerInfo",
@@ -132,7 +169,12 @@ fn commands_re_encoded_for_another_version_match_the_java_marshaller() {
             // Decoded at version 12, encoded at `version`: identical to Java's bytes for that version.
             let cmd = decode(12, &v12[n]);
             let again = Encoder::new(*version).frame(&cmd);
-            assert_eq!(&again[4..], &frames[n][..], "frame {n} ({}) 12 -> {version}", t::command_name(cmd.type_code()));
+            assert_eq!(
+                &again[4..],
+                &frames[n][..],
+                "frame {n} ({}) 12 -> {version}",
+                t::command_name(cmd.type_code())
+            );
         }
     }
 }
@@ -159,17 +201,30 @@ fn marshaller_vectors_decode_to_the_expected_fields() {
         assert_eq!(m.correlation_id.as_deref(), Some("ORD-A"));
         assert!(m.persistent);
         // Null dispatch (end of browse / pull timeout).
-        assert!(cmds.iter().any(|c| matches!(c, Command::MessageDispatch(md) if md.message.is_none())));
+        assert!(cmds
+            .iter()
+            .any(|c| matches!(c, Command::MessageDispatch(md) if md.message.is_none())));
         // Transactions: local and XA identifiers in TransactionInfo, messages and acks.
-        let local = TransactionId::Local { value: 5, connection_id: Some(ConnectionId { value: "ID:golden-51234-1759672800000-1:1".into() }) };
-        assert!(cmds.iter().any(|c| matches!(c, Command::TransactionInfo(ti) if ti.transaction_id.as_ref() == Some(&local) && ti.tx_type == tx_type::COMMIT_ONE_PHASE)));
-        assert!(cmds.iter().any(|c| matches!(c, Command::Message(m) if m.transaction_id.as_ref() == Some(&local))));
-        assert!(cmds.iter().any(|c| matches!(c, Command::MessageAck(a) if a.transaction_id.as_ref() == Some(&local))));
-        let xa = |t: &Option<TransactionId>| {
-            matches!(t, Some(TransactionId::Xa { format_id: 0x1234, global_transaction_id: Some(g), branch_qualifier: Some(b) }) if &g[..] == b"global" && &b[..] == b"branch")
+        let local = TransactionId::Local {
+            value: 5,
+            connection_id: Some(ConnectionId {
+                value: "ID:golden-51234-1759672800000-1:1".into(),
+            }),
         };
-        assert!(cmds.iter().any(|c| matches!(c, Command::TransactionInfo(ti) if xa(&ti.transaction_id))));
-        assert!(cmds.iter().any(|c| matches!(c, Command::MessageAck(a) if xa(&a.transaction_id))));
+        assert!(cmds.iter().any(|c| matches!(c, Command::TransactionInfo(ti) if ti.transaction_id.as_ref() == Some(&local) && ti.tx_type == tx_type::COMMIT_ONE_PHASE)));
+        assert!(cmds
+            .iter()
+            .any(|c| matches!(c, Command::Message(m) if m.transaction_id.as_ref() == Some(&local))));
+        assert!(cmds
+            .iter()
+            .any(|c| matches!(c, Command::MessageAck(a) if a.transaction_id.as_ref() == Some(&local))));
+        let xa = |t: &Option<TransactionId>| matches!(t, Some(TransactionId::Xa { format_id: 0x1234, global_transaction_id: Some(g), branch_qualifier: Some(b) }) if &g[..] == b"global" && &b[..] == b"branch");
+        assert!(cmds
+            .iter()
+            .any(|c| matches!(c, Command::TransactionInfo(ti) if xa(&ti.transaction_id))));
+        assert!(cmds
+            .iter()
+            .any(|c| matches!(c, Command::MessageAck(a) if xa(&a.transaction_id))));
         // Durable subscription fields and RemoveSubscriptionInfo.
         let durable = cmds
             .iter()
@@ -181,11 +236,19 @@ fn marshaller_vectors_decode_to_the_expected_fields() {
         assert_eq!(durable.subscription_name.as_deref(), Some("golden-durable"));
         assert!(durable.no_local);
         assert_eq!(durable.selector.as_deref(), Some("color = 'blue' AND count > 3"));
-        assert_eq!(durable.client_id.is_some(), version >= 10, "v{version} ConsumerInfo.clientId");
+        assert_eq!(
+            durable.client_id.is_some(),
+            version >= 10,
+            "v{version} ConsumerInfo.clientId"
+        );
         assert!(cmds.iter().any(|c| matches!(c, Command::RemoveSubscriptionInfo(r)
             if r.subscription_name.as_deref() == Some("golden-durable") && r.client_id.as_deref() == Some("golden-client"))));
         // Broker-side commands.
-        assert!(cmds.iter().any(|c| matches!(c, Command::ProducerAck(p) if p.size == 1056)));
-        assert!(cmds.iter().any(|c| matches!(c, Command::BrokerInfo(b) if b.broker_name.as_deref() == Some("ActiveMQRust"))));
+        assert!(cmds
+            .iter()
+            .any(|c| matches!(c, Command::ProducerAck(p) if p.size == 1056)));
+        assert!(cmds
+            .iter()
+            .any(|c| matches!(c, Command::BrokerInfo(b) if b.broker_name.as_deref() == Some("ActiveMQRust"))));
     }
 }

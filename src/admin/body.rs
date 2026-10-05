@@ -57,10 +57,16 @@ pub fn stored_size(m: &Message) -> usize {
 
 pub fn render(m: &Message) -> Rendered {
     let Some(content) = &m.content else {
-        return Rendered { view: BodyView::NoBody, inflate_truncated: false };
+        return Rendered {
+            view: BodyView::NoBody,
+            inflate_truncated: false,
+        };
     };
     if m.msg_type == t::ACTIVEMQ_OBJECT_MESSAGE {
-        return Rendered { view: BodyView::Object { size: content.len() }, inflate_truncated: false };
+        return Rendered {
+            view: BodyView::Object { size: content.len() },
+            inflate_truncated: false,
+        };
     }
     let (data, inflate_truncated): (Bytes, bool) = if m.compressed {
         match decompress_content(m.msg_type, content, INFLATE_LIMIT + 1) {
@@ -70,7 +76,12 @@ pub fn render(m: &Message) -> Rendered {
                 v.truncate(INFLATE_LIMIT);
                 (Bytes::from(v), truncated)
             }
-            Err(e) => return Rendered { view: BodyView::Error(e), inflate_truncated: false },
+            Err(e) => {
+                return Rendered {
+                    view: BodyView::Error(e),
+                    inflate_truncated: false,
+                }
+            }
         }
     } else {
         (content.clone(), false)
@@ -83,11 +94,17 @@ pub fn render(m: &Message) -> Rendered {
             } else {
                 data.len()
             };
-            BodyView::Bytes { head: data[..data.len().min(HEX_LIMIT)].to_vec(), total }
+            BodyView::Bytes {
+                head: data[..data.len().min(HEX_LIMIT)].to_vec(),
+                total,
+            }
         }
         t::ACTIVEMQ_MAP_MESSAGE => match PrimitiveMap::decode(&data) {
             Ok(Some(map)) => BodyView::Map(
-                map.entries.iter().map(|(k, v)| (k.clone(), java_type(v), v.display())).collect(),
+                map.entries
+                    .iter()
+                    .map(|(k, v)| (k.clone(), java_type(v), v.display()))
+                    .collect(),
             ),
             Ok(None) => BodyView::NoBody,
             Err(e) => BodyView::Error(format!("cannot decode the map body: {e}")),
@@ -103,9 +120,15 @@ pub fn render(m: &Message) -> Rendered {
             }
             BodyView::Stream(values)
         }
-        _ => BodyView::Bytes { head: data[..data.len().min(HEX_LIMIT)].to_vec(), total: data.len() },
+        _ => BodyView::Bytes {
+            head: data[..data.len().min(HEX_LIMIT)].to_vec(),
+            total: data.len(),
+        },
     };
-    Rendered { view, inflate_truncated }
+    Rendered {
+        view,
+        inflate_truncated,
+    }
 }
 
 /// TextMessage content: i32 length, then modified UTF-8 (`MarshallingSupport.writeUTF8`).
@@ -126,7 +149,10 @@ fn text(data: &[u8]) -> BodyView {
     let truncated = (len as usize) > take;
     match decode_modified_utf8(&avail[..take]) {
         Ok(s) => BodyView::Text { text: s, truncated },
-        Err(_) => BodyView::Text { text: String::from_utf8_lossy(&avail[..take]).into_owned(), truncated },
+        Err(_) => BodyView::Text {
+            text: String::from_utf8_lossy(&avail[..take]).into_owned(),
+            truncated,
+        },
     }
 }
 
@@ -143,7 +169,11 @@ pub fn hex_dump(data: &[u8]) -> String {
         }
         out.push(' ');
         for b in chunk {
-            out.push(if b.is_ascii_graphic() || *b == b' ' { *b as char } else { '.' });
+            out.push(if b.is_ascii_graphic() || *b == b' ' {
+                *b as char
+            } else {
+                '.'
+            });
         }
         out.push('\n');
     }
@@ -174,7 +204,9 @@ pub fn full_text(m: &Message, limit: usize) -> Option<Option<String>> {
     }
     let avail = &data[4..];
     let raw = &avail[..avail.len().min(len as usize)];
-    Some(Some(decode_modified_utf8(raw).unwrap_or_else(|_| String::from_utf8_lossy(raw).into_owned())))
+    Some(Some(
+        decode_modified_utf8(raw).unwrap_or_else(|_| String::from_utf8_lossy(raw).into_owned()),
+    ))
 }
 
 #[cfg(test)]
@@ -257,11 +289,17 @@ mod tests {
         match render(&m).view {
             BodyView::Map(rows) => assert_eq!(
                 rows,
-                vec![("name".to_string(), "String", "abc".to_string()), ("qty".to_string(), "int", "5".to_string())]
+                vec![
+                    ("name".to_string(), "String", "abc".to_string()),
+                    ("qty".to_string(), "int", "5".to_string())
+                ]
             ),
             _ => panic!("map expected"),
         }
-        let m = msg(t::ACTIVEMQ_OBJECT_MESSAGE, Some(Bytes::from_static(b"\xac\xed\x00\x05sr\x00\x0ejava.util.Date")));
+        let m = msg(
+            t::ACTIVEMQ_OBJECT_MESSAGE,
+            Some(Bytes::from_static(b"\xac\xed\x00\x05sr\x00\x0ejava.util.Date")),
+        );
         assert!(matches!(render(&m).view, BodyView::Object { size: 22 }));
         let mut buf = BytesMut::new();
         {
@@ -274,11 +312,18 @@ mod tests {
         match render(&m).view {
             BodyView::Stream(v) => assert_eq!(
                 v,
-                vec![("boolean", "true".to_string()), ("long", "42".to_string()), ("String", "x".to_string())]
+                vec![
+                    ("boolean", "true".to_string()),
+                    ("long", "42".to_string()),
+                    ("String", "x".to_string())
+                ]
             ),
             _ => panic!("stream expected"),
         }
-        assert!(matches!(render(&msg(t::ACTIVEMQ_TEXT_MESSAGE, None)).view, BodyView::NoBody));
+        assert!(matches!(
+            render(&msg(t::ACTIVEMQ_TEXT_MESSAGE, None)).view,
+            BodyView::NoBody
+        ));
         assert!(matches!(render(&msg(t::ACTIVEMQ_MESSAGE, None)).view, BodyView::NoBody));
     }
 

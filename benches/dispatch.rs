@@ -21,12 +21,16 @@ fn dispatch(c: &mut Criterion) {
         let broker = common::broker();
         let q = Destination::queue(&format!("BENCH.DISPATCH.{consumers}"));
         let d = broker.get_or_create(&q, None);
-        let mut subs: Vec<_> = (0..consumers).map(|n| common::consumer(&broker, &d, n as i64 + 1, 1000, None)).collect();
+        let mut subs: Vec<_> = (0..consumers)
+            .map(|n| common::consumer(&broker, &d, n as i64 + 1, 1000, None))
+            .collect();
         let mut seq = 0i64;
         g.bench_function(format!("enqueue_dispatch_ack_1k_{consumers}_consumers"), |b| {
             b.iter(|| {
                 seq += 1;
-                broker.deliver(common::text_message(&q, seq, 1024), false, now_ms()).unwrap();
+                broker
+                    .deliver(common::text_message(&q, seq, 1024), false, now_ms())
+                    .unwrap();
                 for s in subs.iter_mut() {
                     common::drain_and_ack(&d, s);
                 }

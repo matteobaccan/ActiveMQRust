@@ -23,7 +23,9 @@ fn codec(c: &mut Criterion) {
         let enc = Encoder::new(version);
         let dec = Decoder::new(version);
         let body = enc.frame(&cmd).slice(4..);
-        g.bench_function(format!("encode_text_1k_v{version}"), |b| b.iter(|| black_box(enc.frame(black_box(&cmd)))));
+        g.bench_function(format!("encode_text_1k_v{version}"), |b| {
+            b.iter(|| black_box(enc.frame(black_box(&cmd))))
+        });
         g.bench_function(format!("decode_text_1k_v{version}"), |b| {
             b.iter(|| black_box(dec.decode_frame(black_box(body.clone())).unwrap()))
         });

@@ -28,7 +28,11 @@ pub enum XmlError {
     NotXml,
     TooLarge,
     TooDeep,
-    Malformed { line: usize, column: usize, message: String },
+    Malformed {
+        line: usize,
+        column: usize,
+        message: String,
+    },
 }
 
 impl fmt::Display for XmlError {
@@ -92,7 +96,11 @@ impl Class {
 type Segments = Vec<(Class, String)>;
 
 enum Tok {
-    Start { name: String, attrs: Vec<(String, String)>, empty: bool },
+    Start {
+        name: String,
+        attrs: Vec<(String, String)>,
+        empty: bool,
+    },
     End(String),
     /// Text as written, references included.
     Text(String),
@@ -110,7 +118,11 @@ fn start_tok(e: &BytesStart, empty: bool) -> Result<Tok, String> {
         let a = a.map_err(|e| e.to_string())?;
         attrs.push((utf8(a.key.as_ref()), utf8(&a.value)));
     }
-    Ok(Tok::Start { name: utf8(e.name().as_ref()), attrs, empty })
+    Ok(Tok::Start {
+        name: utf8(e.name().as_ref()),
+        attrs,
+        empty,
+    })
 }
 
 fn line_col(text: &str, offset: usize) -> (usize, usize) {
@@ -384,7 +396,10 @@ mod tests {
     #[test]
     fn text_only_and_mixed_content() {
         assert_eq!(plain("<a><b>x y</b></a>"), "<a>\n  <b>x y</b>\n</a>");
-        assert_eq!(plain("<p>Hello <b>big</b>  world</p>"), "<p>Hello <b>big</b>  world</p>");
+        assert_eq!(
+            plain("<p>Hello <b>big</b>  world</p>"),
+            "<p>Hello <b>big</b>  world</p>"
+        );
     }
 
     #[test]
@@ -398,7 +413,10 @@ mod tests {
 
     #[test]
     fn attribute_order_and_values_kept() {
-        assert_eq!(plain("<a z=\"1\" b='x\"y' m=\"&lt;\"/>"), "<a z=\"1\" b='x\"y' m=\"&lt;\"/>");
+        assert_eq!(
+            plain("<a z=\"1\" b='x\"y' m=\"&lt;\"/>"),
+            "<a z=\"1\" b='x\"y' m=\"&lt;\"/>"
+        );
     }
 
     #[test]
@@ -423,7 +441,10 @@ mod tests {
         assert!(matches!(format("<a></a><b/>"), Err(XmlError::Malformed { .. })));
         assert!(matches!(format("<a>"), Err(XmlError::Malformed { .. })));
         assert!(matches!(format("<a></a>text"), Err(XmlError::Malformed { .. })));
-        assert!(matches!(format("<a x=\"1\" x=\"2\"/>"), Err(XmlError::Malformed { .. })));
+        assert!(matches!(
+            format("<a x=\"1\" x=\"2\"/>"),
+            Err(XmlError::Malformed { .. })
+        ));
         let msg = format("<order><item></order>").unwrap_err().to_string();
         assert!(msg.starts_with("Not well-formed XML: line 1, column"), "{msg}");
     }

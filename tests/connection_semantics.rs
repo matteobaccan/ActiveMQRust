@@ -28,7 +28,9 @@ const XA_TEXT: &str = "XA transactions not supported";
 fn broker_with(f: impl FnOnce(&mut FileConfig)) -> Arc<Broker> {
     let mut fc = FileConfig::default();
     f(&mut fc);
-    Broker::new(Arc::new(build(fc, ConfigSource::Defaults, &Overrides::default()).unwrap()))
+    Broker::new(Arc::new(
+        build(fc, ConfigSource::Defaults, &Overrides::default()).unwrap(),
+    ))
 }
 
 /// A minimal OpenWire client speaking version 12 loose encoding.
@@ -70,10 +72,17 @@ impl Wire {
         p.set("MaxInactivityDuration", Value::Long(0));
         p.set("TightEncodingEnabled", Value::Bool(false));
         p.set("CacheEnabled", Value::Bool(false));
-        wire.write(&Command::WireFormatInfo(WireFormatInfo { magic: MAGIC, version: VERSION, properties: p })).await;
+        wire.write(&Command::WireFormatInfo(WireFormatInfo {
+            magic: MAGIC,
+            version: VERSION,
+            properties: p,
+        }))
+        .await;
         assert!(matches!(wire.read().await, Command::WireFormatInfo(_)));
         assert!(matches!(wire.read().await, Command::BrokerInfo(_)));
-        let conn_id = ConnectionId { value: wire.conn.clone() };
+        let conn_id = ConnectionId {
+            value: wire.conn.clone(),
+        };
         let r = wire
             .request(|header| {
                 Command::ConnectionInfo(ConnectionInfo {
@@ -93,8 +102,18 @@ impl Wire {
             })
             .await;
         assert_ok(&r);
-        let sid = SessionId { connection_id: wire.conn.clone(), value: 1 };
-        let r = wire.request(|header| Command::SessionInfo(SessionInfo { header, session_id: Some(sid) })).await;
+        let sid = SessionId {
+            connection_id: wire.conn.clone(),
+            value: 1,
+        };
+        let r = wire
+            .request(|header| {
+                Command::SessionInfo(SessionInfo {
+                    header,
+                    session_id: Some(sid),
+                })
+            })
+            .await;
         assert_ok(&r);
         wire
     }
@@ -104,7 +123,9 @@ impl Wire {
     }
 
     async fn read(&mut self) -> Command {
-        tokio::time::timeout(Duration::from_secs(5), self.read_frame()).await.expect("no frame within 5 s")
+        tokio::time::timeout(Duration::from_secs(5), self.read_frame())
+            .await
+            .expect("no frame within 5 s")
     }
 
     async fn read_frame(&mut self) -> Command {
@@ -123,7 +144,11 @@ impl Wire {
     async fn request(&mut self, make: impl FnOnce(Header) -> Command) -> Command {
         let id = self.next;
         self.next += 1;
-        self.write(&make(Header { command_id: id, response_required: true })).await;
+        self.write(&make(Header {
+            command_id: id,
+            response_required: true,
+        }))
+        .await;
         loop {
             let c = self.read().await;
             match &c {
@@ -141,13 +166,21 @@ impl Wire {
     async fn post(&mut self, make: impl FnOnce(Header) -> Command) {
         let id = self.next;
         self.next += 1;
-        self.write(&make(Header { command_id: id, response_required: false })).await;
+        self.write(&make(Header {
+            command_id: id,
+            response_required: false,
+        }))
+        .await;
     }
 
     /// Next `MessageDispatch`, or `None` after `ms` milliseconds without one.
     async fn dispatch(&mut self, ms: u64) -> Option<MessageDispatch> {
         loop {
-            if let Some(pos) = self.backlog.iter().position(|c| matches!(c, Command::MessageDispatch(_))) {
+            if let Some(pos) = self
+                .backlog
+                .iter()
+                .position(|c| matches!(c, Command::MessageDispatch(_)))
+            {
                 if let Some(Command::MessageDispatch(md)) = self.backlog.remove(pos) {
                     return Some(md);
                 }
@@ -160,11 +193,19 @@ impl Wire {
     }
 
     fn consumer_id(&self, n: i64) -> ConsumerId {
-        ConsumerId { connection_id: self.conn.clone(), session_id: 1, value: n }
+        ConsumerId {
+            connection_id: self.conn.clone(),
+            session_id: 1,
+            value: n,
+        }
     }
 
     fn producer_id(&self) -> ProducerId {
-        ProducerId { connection_id: self.conn.clone(), session_id: 1, value: 1 }
+        ProducerId {
+            connection_id: self.conn.clone(),
+            session_id: 1,
+            value: 1,
+        }
     }
 
     fn message(&mut self, dest: &Destination, body: &str) -> Message {
@@ -203,23 +244,49 @@ impl Wire {
 
     async fn consume(&mut self, n: i64, dest: &Destination, prefetch: i32) -> Command {
         let id = self.consumer_id(n);
-        self.request(|header| Command::ConsumerInfo(consumer_info(header, id, dest.clone(), prefetch))).await
+        self.request(|header| Command::ConsumerInfo(consumer_info(header, id, dest.clone(), prefetch)))
+            .await
     }
 
     async fn tx(&mut self, value: i64, op: u8) -> Command {
-        let txid = TransactionId::Local { value, connection_id: Some(ConnectionId { value: self.conn.clone() }) };
-        let conn = ConnectionId { value: self.conn.clone() };
+        let txid = TransactionId::Local {
+            value,
+            connection_id: Some(ConnectionId {
+                value: self.conn.clone(),
+            }),
+        };
+        let conn = ConnectionId {
+            value: self.conn.clone(),
+        };
         self.request(|header| {
-            Command::TransactionInfo(TransactionInfo { header, connection_id: Some(conn), transaction_id: Some(txid), tx_type: op })
+            Command::TransactionInfo(TransactionInfo {
+                header,
+                connection_id: Some(conn),
+                transaction_id: Some(txid),
+                tx_type: op,
+            })
         })
         .await
     }
 
     fn local_tx(&self, value: i64) -> TransactionId {
-        TransactionId::Local { value, connection_id: Some(ConnectionId { value: self.conn.clone() }) }
+        TransactionId::Local {
+            value,
+            connection_id: Some(ConnectionId {
+                value: self.conn.clone(),
+            }),
+        }
     }
 
-    async fn ack(&mut self, n: i64, dest: &Destination, kind: u8, first: i64, last: i64, tx: Option<TransactionId>) -> Command {
+    async fn ack(
+        &mut self,
+        n: i64,
+        dest: &Destination,
+        kind: u8,
+        first: i64,
+        last: i64,
+        tx: Option<TransactionId>,
+    ) -> Command {
         let a = ack_cmd(self.consumer_id(n), dest, kind, first, last, tx);
         self.request(|header| {
             let mut a = a;
@@ -255,8 +322,20 @@ fn consumer_info(header: Header, id: ConsumerId, dest: Destination, prefetch: i3
     }
 }
 
-fn ack_cmd(consumer: ConsumerId, dest: &Destination, kind: u8, first: i64, last: i64, tx: Option<TransactionId>) -> MessageAck {
-    let mid = |seq: i64| MessageId { text_view: None, producer_id: None, producer_sequence_id: 0, broker_sequence_id: seq };
+fn ack_cmd(
+    consumer: ConsumerId,
+    dest: &Destination,
+    kind: u8,
+    first: i64,
+    last: i64,
+    tx: Option<TransactionId>,
+) -> MessageAck {
+    let mid = |seq: i64| MessageId {
+        text_view: None,
+        producer_id: None,
+        producer_sequence_id: 0,
+        broker_sequence_id: seq,
+    };
     MessageAck {
         header: Header::default(),
         destination: Some(dest.clone()),
@@ -304,7 +383,13 @@ fn body(md: &MessageDispatch) -> String {
 }
 
 fn seq(md: &MessageDispatch) -> i64 {
-    md.message.as_ref().unwrap().message_id.as_ref().unwrap().broker_sequence_id
+    md.message
+        .as_ref()
+        .unwrap()
+        .message_id
+        .as_ref()
+        .unwrap()
+        .broker_sequence_id
 }
 
 /// Waits until `cond` holds (connection cleanup runs asynchronously).
@@ -328,7 +413,14 @@ async fn message_pull_with_response_required_gets_a_response() {
     let dest = q.clone();
     let r = c
         .request(|header| {
-            Command::MessagePull(MessagePull { header, consumer_id: Some(id), destination: Some(dest), timeout: -1, correlation_id: None, message_id: None })
+            Command::MessagePull(MessagePull {
+                header,
+                consumer_id: Some(id),
+                destination: Some(dest),
+                timeout: -1,
+                correlation_id: None,
+                message_id: None,
+            })
         })
         .await;
     assert_ok(&r);
@@ -348,7 +440,14 @@ async fn wildcard_and_composite_destinations_are_rejected() {
     let dest = composite.clone();
     let r = c
         .request(|header| {
-            Command::ProducerInfo(ProducerInfo { header, producer_id: Some(pid), destination: Some(dest), broker_path: None, dispatch_async: false, window_size: 0 })
+            Command::ProducerInfo(ProducerInfo {
+                header,
+                producer_id: Some(pid),
+                destination: Some(dest),
+                broker_path: None,
+                dispatch_async: false,
+                window_size: 0,
+            })
         })
         .await;
     assert_exception(&r, INVALID_DESTINATION, "A,B");
@@ -357,7 +456,14 @@ async fn wildcard_and_composite_destinations_are_rejected() {
         let star = Destination::queue("X.*");
         let r = c
             .request(|header| {
-                Command::DestinationInfo(DestinationInfo { header, connection_id: None, destination: Some(star), operation_type: op, timeout: 0, broker_path: None })
+                Command::DestinationInfo(DestinationInfo {
+                    header,
+                    connection_id: None,
+                    destination: Some(star),
+                    operation_type: op,
+                    timeout: 0,
+                    broker_path: None,
+                })
             })
             .await;
         assert_exception(&r, INVALID_DESTINATION, "X.*");
@@ -368,17 +474,31 @@ async fn wildcard_and_composite_destinations_are_rejected() {
     c.send_async(m).await;
     // The connection stays usable and nothing was created.
     assert_ok(&c.consume(2, &Destination::queue("FINE"), 10).await);
-    assert!(b.destinations().iter().all(|d| !d.dest.is_wildcard() && !d.dest.is_composite()));
+    assert!(b
+        .destinations()
+        .iter()
+        .all(|d| !d.dest.is_wildcard() && !d.dest.is_composite()));
 }
 
 #[tokio::test]
 async fn xa_transactions_are_refused_with_the_exact_text() {
     let b = broker_with(|_| {});
     let mut c = Wire::open(&b, "ID:xa-1").await;
-    let xa = TransactionId::Xa { format_id: 1, global_transaction_id: Some(Bytes::from_static(b"g")), branch_qualifier: Some(Bytes::from_static(b"b")) };
+    let xa = TransactionId::Xa {
+        format_id: 1,
+        global_transaction_id: Some(Bytes::from_static(b"g")),
+        branch_qualifier: Some(Bytes::from_static(b"b")),
+    };
     let x = xa.clone();
     let r = c
-        .request(|header| Command::TransactionInfo(TransactionInfo { header, connection_id: None, transaction_id: Some(x), tx_type: tx_type::BEGIN }))
+        .request(|header| {
+            Command::TransactionInfo(TransactionInfo {
+                header,
+                connection_id: None,
+                transaction_id: Some(x),
+                tx_type: tx_type::BEGIN,
+            })
+        })
         .await;
     assert_exception(&r, JMS_EXCEPTION, XA_TEXT);
     for op in [tx_type::PREPARE, tx_type::COMMIT_TWO_PHASE, tx_type::RECOVER] {
@@ -388,7 +508,11 @@ async fn xa_transactions_are_refused_with_the_exact_text() {
     let mut m = c.message(&q, "x");
     m.transaction_id = Some(xa.clone());
     assert_exception(&c.send(m).await, JMS_EXCEPTION, XA_TEXT);
-    assert_exception(&c.ack(9, &q, ack_type::STANDARD, 1, 1, Some(xa)).await, JMS_EXCEPTION, XA_TEXT);
+    assert_exception(
+        &c.ack(9, &q, ack_type::STANDARD, 1, 1, Some(xa)).await,
+        JMS_EXCEPTION,
+        XA_TEXT,
+    );
     assert!(b.get_dest(&q).is_none_or(|d| d.snapshot().pending == 0));
     assert_ok(&c.consume(1, &q, 10).await);
 }
@@ -403,10 +527,18 @@ async fn unknown_transactions_are_reported() {
     let q = Destination::queue("TX.UNKNOWN");
     let mut m = c.message(&q, "x");
     m.transaction_id = Some(c.local_tx(8));
-    assert_exception(&c.send(m).await, JMS_EXCEPTION, "Transaction 'TX:ID:unknown-1:8' has not been started.");
+    assert_exception(
+        &c.send(m).await,
+        JMS_EXCEPTION,
+        "Transaction 'TX:ID:unknown-1:8' has not been started.",
+    );
     assert_ok(&c.consume(1, &q, 10).await);
     let tx = Some(c.local_tx(8));
-    assert_exception(&c.ack(1, &q, ack_type::STANDARD, 1, 1, tx).await, JMS_EXCEPTION, "has not been started.");
+    assert_exception(
+        &c.ack(1, &q, ack_type::STANDARD, 1, 1, tx).await,
+        JMS_EXCEPTION,
+        "has not been started.",
+    );
     // END and FORGET are acknowledged with no effect.
     assert_ok(&c.tx(8, tx_type::END).await);
     assert_ok(&c.tx(8, tx_type::FORGET).await);
@@ -443,7 +575,11 @@ async fn transacted_sends_are_invisible_until_commit_and_ordered() {
         got.push(body(&c.dispatch(2000).await.unwrap()));
     }
     assert_eq!(got, vec!["n-1", "t-1", "t-2", "t-3"]);
-    assert_eq!(b.get_dest(&other).unwrap().snapshot().pending, 1, "commit across destinations");
+    assert_eq!(
+        b.get_dest(&other).unwrap().snapshot().pending,
+        1,
+        "commit across destinations"
+    );
 }
 
 #[tokio::test]
@@ -482,7 +618,11 @@ async fn memory_limit_applies_to_transacted_sends() {
     }
     let mut m = p.message(&q, &big);
     m.transaction_id = Some(p.local_tx(1));
-    assert_exception(&p.send(m).await, "javax.jms.ResourceAllocationException", "Memory Limit");
+    assert_exception(
+        &p.send(m).await,
+        "javax.jms.ResourceAllocationException",
+        "Memory Limit",
+    );
     // An asynchronous transacted send that does not fit: discarded and counted.
     let mut m = p.message(&q, &big);
     m.transaction_id = Some(p.local_tx(1));
@@ -518,11 +658,31 @@ async fn deferred_acks_free_the_window_and_count_at_commit() {
     assert_eq!(d.snapshot().inflight, 4);
     // REDELIVERED, DELIVERED and EXPIRED acks are never deferred, even with an unknown transaction id.
     let unknown = Some(c.local_tx(99));
-    assert_ok(&c.ack(1, &q, ack_type::REDELIVERED, seq(&fourth), seq(&fourth), unknown.clone()).await);
-    assert_ok(&c.ack(1, &q, ack_type::DELIVERED, seq(&fourth), seq(&fourth), unknown.clone()).await);
-    assert_ok(&c.ack(1, &q, ack_type::EXPIRED, seq(&fourth), seq(&fourth), unknown.clone()).await);
+    assert_ok(
+        &c.ack(
+            1,
+            &q,
+            ack_type::REDELIVERED,
+            seq(&fourth),
+            seq(&fourth),
+            unknown.clone(),
+        )
+        .await,
+    );
+    assert_ok(
+        &c.ack(1, &q, ack_type::DELIVERED, seq(&fourth), seq(&fourth), unknown.clone())
+            .await,
+    );
+    assert_ok(
+        &c.ack(1, &q, ack_type::EXPIRED, seq(&fourth), seq(&fourth), unknown.clone())
+            .await,
+    );
     assert_eq!(d.snapshot().stats.expired, 1, "EXPIRED applied at once");
-    assert_exception(&c.ack(1, &q, ack_type::INDIVIDUAL, 1, 1, unknown).await, JMS_EXCEPTION, "has not been started.");
+    assert_exception(
+        &c.ack(1, &q, ack_type::INDIVIDUAL, 1, 1, unknown).await,
+        JMS_EXCEPTION,
+        "has not been started.",
+    );
     assert_ok(&c.tx(1, tx_type::COMMIT_ONE_PHASE).await);
     assert_eq!(d.snapshot().stats.dequeued, 2, "consumed counter after commit");
     assert_eq!(d.snapshot().inflight, 1);
@@ -551,14 +711,26 @@ async fn rollback_of_receives_then_close_redelivers_first() {
     // The consumer closes having delivered m1 and m2 to the application.
     let cid = c.consumer_id(1);
     let last = seq(&second);
-    assert_ok(&c.request(|header| Command::RemoveInfo(RemoveInfo { header, object_id: Some(DataStructure::ConsumerId(cid)), last_delivered_sequence_id: last })).await);
+    assert_ok(
+        &c.request(|header| {
+            Command::RemoveInfo(RemoveInfo {
+                header,
+                object_id: Some(DataStructure::ConsumerId(cid)),
+                last_delivered_sequence_id: last,
+            })
+        })
+        .await,
+    );
     assert_ok(&c.consume(2, &q, 10).await);
     let mut got = Vec::new();
     for _ in 0..4 {
         let md = c.dispatch(2000).await.unwrap();
         got.push((body(&md), md.redelivery_counter));
     }
-    assert_eq!(got, vec![("m1".into(), 1), ("m2".into(), 1), ("m3".into(), 0), ("m4".into(), 0)]);
+    assert_eq!(
+        got,
+        vec![("m1".into(), 1), ("m2".into(), 1), ("m3".into(), 0), ("m4".into(), 0)]
+    );
 }
 
 #[tokio::test]
@@ -623,7 +795,10 @@ async fn transacted_message_expired_at_commit_is_counted() {
 async fn temporary_queue_lifecycle_and_advisories() {
     let b = broker_with(|_| {});
     let mut watcher = Wire::open(&b, "ID:watch-1").await;
-    let advisory = Destination::new(DestKind::Topic, "ActiveMQ.Advisory.TempQueue,ActiveMQ.Advisory.TempTopic");
+    let advisory = Destination::new(
+        DestKind::Topic,
+        "ActiveMQ.Advisory.TempQueue,ActiveMQ.Advisory.TempTopic",
+    );
     assert_ok(&watcher.consume(1, &advisory, 100).await);
     let base = b.memory.used();
     let tq = Destination::new(DestKind::TempQueue, "ID:owner-1:1:1");
@@ -631,7 +806,16 @@ async fn temporary_queue_lifecycle_and_advisories() {
         let mut owner = Wire::open(&b, "ID:owner-1").await;
         let d = tq.clone();
         let r = owner
-            .request(|header| Command::DestinationInfo(DestinationInfo { header, connection_id: None, destination: Some(d), operation_type: dest_op::ADD, timeout: 0, broker_path: None }))
+            .request(|header| {
+                Command::DestinationInfo(DestinationInfo {
+                    header,
+                    connection_id: None,
+                    destination: Some(d),
+                    operation_type: dest_op::ADD,
+                    timeout: 0,
+                    broker_path: None,
+                })
+            })
             .await;
         assert_ok(&r);
         for i in 0..5 {
@@ -640,7 +824,11 @@ async fn temporary_queue_lifecycle_and_advisories() {
         }
         assert!(b.memory.used() > base);
         // Only the owner may consume.
-        assert_exception(&watcher.consume(2, &tq, 10).await, INVALID_DESTINATION, "temporary destination");
+        assert_exception(
+            &watcher.consume(2, &tq, 10).await,
+            INVALID_DESTINATION,
+            "temporary destination",
+        );
         assert_ok(&owner.consume(1, &tq, 1).await);
         assert_eq!(body(&owner.dispatch(2000).await.unwrap()), "reply-0");
     }
@@ -650,8 +838,14 @@ async fn temporary_queue_lifecycle_and_advisories() {
         Some(DataStructure::DestinationInfo(di)) => (di.destination.clone().unwrap(), di.operation_type),
         other => panic!("not an advisory: {other:?}"),
     };
-    assert_eq!(advisory_op(&watcher.dispatch(2000).await.unwrap()), (tq.clone(), dest_op::ADD));
-    assert_eq!(advisory_op(&watcher.dispatch(2000).await.unwrap()), (tq.clone(), dest_op::REMOVE));
+    assert_eq!(
+        advisory_op(&watcher.dispatch(2000).await.unwrap()),
+        (tq.clone(), dest_op::ADD)
+    );
+    assert_eq!(
+        advisory_op(&watcher.dispatch(2000).await.unwrap()),
+        (tq.clone(), dest_op::REMOVE)
+    );
     // Sends to the deleted temporary queue: refused when synchronous, nothing recreated.
     let mut m = watcher.message(&tq, "late");
     m.expiration = now_ms() - 1000;
@@ -666,15 +860,43 @@ async fn temporary_topic_ownership_and_durable_refusal() {
     let mut other = Wire::open(&b, "ID:tother-1").await;
     let tt = Destination::new(DestKind::TempTopic, "ID:towner-1:1:1");
     let d = tt.clone();
-    assert_ok(&owner.request(|header| Command::DestinationInfo(DestinationInfo { header, connection_id: None, destination: Some(d), operation_type: dest_op::ADD, timeout: 0, broker_path: None })).await);
-    assert_exception(&other.consume(1, &tt, 10).await, INVALID_DESTINATION, "temporary destination");
+    assert_ok(
+        &owner
+            .request(|header| {
+                Command::DestinationInfo(DestinationInfo {
+                    header,
+                    connection_id: None,
+                    destination: Some(d),
+                    operation_type: dest_op::ADD,
+                    timeout: 0,
+                    broker_path: None,
+                })
+            })
+            .await,
+    );
+    assert_exception(
+        &other.consume(1, &tt, 10).await,
+        INVALID_DESTINATION,
+        "temporary destination",
+    );
     assert_ok(&owner.consume(1, &tt, 10).await);
     let m = other.message(&tt, "event");
     assert_ok(&other.send(m).await);
     assert_eq!(body(&owner.dispatch(2000).await.unwrap()), "event");
     // Removal refused while a consumer is attached.
     let d = tt.clone();
-    let r = owner.request(|header| Command::DestinationInfo(DestinationInfo { header, connection_id: None, destination: Some(d), operation_type: dest_op::REMOVE, timeout: 0, broker_path: None })).await;
+    let r = owner
+        .request(|header| {
+            Command::DestinationInfo(DestinationInfo {
+                header,
+                connection_id: None,
+                destination: Some(d),
+                operation_type: dest_op::REMOVE,
+                timeout: 0,
+                broker_path: None,
+            })
+        })
+        .await;
     assert_exception(&r, JMS_EXCEPTION, "active subscription");
     // Durable subscriptions are refused.
     let topic = Destination::new(DestKind::Topic, "DURABLE");
@@ -688,7 +910,14 @@ async fn temporary_topic_ownership_and_durable_refusal() {
         .await;
     assert_exception(&r, JMS_EXCEPTION, "Durable subscriptions are not supported");
     let r = other
-        .request(|header| Command::RemoveSubscriptionInfo(RemoveSubscriptionInfo { header, connection_id: None, subscription_name: Some("sub".into()), client_id: Some("c".into()) }))
+        .request(|header| {
+            Command::RemoveSubscriptionInfo(RemoveSubscriptionInfo {
+                header,
+                connection_id: None,
+                subscription_name: Some("sub".into()),
+                client_id: Some("c".into()),
+            })
+        })
         .await;
     assert_exception(&r, JMS_EXCEPTION, "Durable subscriptions are not supported");
     drop(owner);
@@ -707,10 +936,18 @@ async fn duplicate_windows_are_released_when_the_connection_closes() {
         resent = m.clone();
         assert_ok(&p.send(m.clone()).await);
         assert_ok(&p.send(m).await);
-        assert_eq!(b.get_dest(&q).unwrap().snapshot().pending, 1, "duplicate discarded with a Response");
+        assert_eq!(
+            b.get_dest(&q).unwrap().snapshot().pending,
+            1,
+            "duplicate discarded with a Response"
+        );
     }
     eventually("connection cleanup", || b.connections().is_empty()).await;
     let mut p = Wire::open(&b, "ID:anon-1").await;
     assert_ok(&p.send(resent).await);
-    assert_eq!(b.get_dest(&q).unwrap().snapshot().pending, 2, "window forgotten with the old connection");
+    assert_eq!(
+        b.get_dest(&q).unwrap().snapshot().pending,
+        2,
+        "window forgotten with the old connection"
+    );
 }

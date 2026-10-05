@@ -70,7 +70,10 @@ static ID_GENERATOR_INSTANCES: AtomicU64 = AtomicU64::new(0);
 impl IdGenerator {
     pub fn new(host: &str, port: u16, start_ms: i64) -> IdGenerator {
         let instance = ID_GENERATOR_INSTANCES.fetch_add(1, Ordering::Relaxed);
-        IdGenerator { seed: format!("ID:{host}-{port}-{start_ms}-{instance}:"), sequence: AtomicU64::new(0) }
+        IdGenerator {
+            seed: format!("ID:{host}-{port}-{start_ms}-{instance}:"),
+            sequence: AtomicU64::new(0),
+        }
     }
 
     /// The common prefix of the IDs of this generator.
@@ -143,7 +146,9 @@ impl Broker {
         let auth = Authenticator::new(cfg.users.clone(), cfg.allow_anonymous);
         let started = chrono::Local::now();
         let ids = IdGenerator::new(&hostname(), cfg.port, started.timestamp_millis());
-        let broker_id = BrokerId { value: Arc::from(ids.generate_id()) };
+        let broker_id = BrokerId {
+            value: Arc::from(ids.generate_id()),
+        };
         let advisory_producer = Arc::from(ids.generate_id());
         Arc::new(Broker {
             cfg,
@@ -211,7 +216,11 @@ impl Broker {
         w.entry(d.clone())
             .or_insert_with(|| {
                 tracing::debug!("destination created: {d}");
-                Arc::new(Dest::new(d.clone(), owner, self.cfg.topic_max_pending_per_consumer as usize))
+                Arc::new(Dest::new(
+                    d.clone(),
+                    owner,
+                    self.cfg.topic_max_pending_per_consumer as usize,
+                ))
             })
             .clone()
     }
@@ -221,9 +230,7 @@ impl Broker {
         let mut w = self.dests[shard_of(d)].write();
         match w.get(d) {
             None => Ok(false),
-            Some(x) if x.has_consumers() => {
-                Err(format!("Destination still has an active subscription: {d}"))
-            }
+            Some(x) if x.has_consumers() => Err(format!("Destination still has an active subscription: {d}")),
             Some(_) => {
                 let x = w.remove(d).unwrap();
                 drop(w);
@@ -236,7 +243,11 @@ impl Broker {
     }
 
     pub fn destinations(&self) -> Vec<Arc<Dest>> {
-        let mut v: Vec<_> = self.dests.iter().flat_map(|s| s.read().values().cloned().collect::<Vec<_>>()).collect();
+        let mut v: Vec<_> = self
+            .dests
+            .iter()
+            .flat_map(|s| s.read().values().cloned().collect::<Vec<_>>())
+            .collect();
         v.sort_by(|a, b| a.dest.name.cmp(&b.dest.name));
         v
     }
@@ -278,10 +289,17 @@ impl Broker {
         if !queues && !topics {
             return;
         }
-        let sub = AdvisorySub { conn, consumer, dest, queues, topics };
+        let sub = AdvisorySub {
+            conn,
+            consumer,
+            dest,
+            queues,
+            topics,
+        };
         // Like ActiveMQ, a new advisory consumer first learns the existing temporary destinations.
         for d in self.destinations() {
-            if (d.dest.kind == DestKind::TempQueue && sub.queues) || (d.dest.kind == DestKind::TempTopic && sub.topics) {
+            if (d.dest.kind == DestKind::TempQueue && sub.queues) || (d.dest.kind == DestKind::TempTopic && sub.topics)
+            {
                 self.send_advisory(&sub, &d.dest, dest_op::ADD);
             }
         }
@@ -310,8 +328,16 @@ impl Broker {
     }
 
     fn send_advisory(&self, s: &AdvisorySub, d: &Destination, op: u8) {
-        let topic = if d.kind == DestKind::TempQueue { ADVISORY_TEMP_QUEUE } else { ADVISORY_TEMP_TOPIC };
-        let pid = ProducerId { connection_id: self.advisory_producer.clone(), session_id: 0, value: 0 };
+        let topic = if d.kind == DestKind::TempQueue {
+            ADVISORY_TEMP_QUEUE
+        } else {
+            ADVISORY_TEMP_TOPIC
+        };
+        let pid = ProducerId {
+            connection_id: self.advisory_producer.clone(),
+            session_id: 0,
+            value: 0,
+        };
         let seq = self.advisory_seq.fetch_add(1, Ordering::Relaxed);
         let mut m = Message::new(crate::openwire::types::ACTIVEMQ_MESSAGE);
         m.producer_id = Some(pid.clone());
@@ -352,7 +378,11 @@ impl Broker {
             msg.timestamp = now;
             msg.expiration = now + ttl.max(0);
         }
-        let base = if msg.timestamp > 0 && !cfg.use_broker_clock { msg.timestamp } else { now };
+        let base = if msg.timestamp > 0 && !cfg.use_broker_clock {
+            msg.timestamp
+        } else {
+            now
+        };
         // 2. Default TTL, measured from the timestamp or, on the broker clock, from the arrival time.
         if msg.expiration == 0 && cfg.default_ttl_ms > 0 {
             msg.expiration = base + cfg.default_ttl_ms as i64;
@@ -376,7 +406,8 @@ impl Broker {
     }
 
     pub fn compress(&self, msg: &mut Message) -> compress::Outcome {
-        let outcome = compress::maybe_compress(msg, self.cfg.compress_threshold_bytes, self.cfg.compress_min_saving_pct);
+        let outcome =
+            compress::maybe_compress(msg, self.cfg.compress_threshold_bytes, self.cfg.compress_min_saving_pct);
         match outcome {
             compress::Outcome::Compressed => self.stats.compressed.fetch_add(1, Ordering::Relaxed),
             compress::Outcome::Discarded => self.stats.compress_discarded.fetch_add(1, Ordering::Relaxed),
@@ -493,7 +524,12 @@ impl Broker {
         msg.broker_in_time = now;
         let expiring = msg.expiration > 0;
         let meta = Meta::new(self.memory.clone(), &msg);
-        let entry = Entry { seq, msg: Arc::new(msg), meta, redelivery: 0 };
+        let entry = Entry {
+            seq,
+            msg: Arc::new(msg),
+            meta,
+            redelivery: 0,
+        };
         self.stats.messages_in.fetch_add(1, Ordering::Relaxed);
         let effects = d.enqueue(entry, now);
         if expiring {
@@ -558,7 +594,12 @@ impl Broker {
         }
         let expiring = msg.expiration > 0;
         let meta = Meta::new(self.memory.clone(), &msg);
-        let e = Entry { seq, msg: Arc::new(msg), meta, redelivery: entry.redelivery };
+        let e = Entry {
+            seq,
+            msg: Arc::new(msg),
+            meta,
+            redelivery: entry.redelivery,
+        };
         let d = self.get_or_create(&dlq, None);
         let effects = d.enqueue(e, now);
         if expiring {

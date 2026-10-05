@@ -155,7 +155,14 @@ impl Sub {
         self.conn.send(Command::MessageDispatch(md));
         self.conn.count_dispatch();
         self.by_seq.insert(e.seq, dseq);
-        self.inflight.insert(dseq, Inflight { entry: e, freed: false, tx: false });
+        self.inflight.insert(
+            dseq,
+            Inflight {
+                entry: e,
+                freed: false,
+                tx: false,
+            },
+        );
         self.pull = None;
         self.dispatched += 1;
     }
@@ -183,13 +190,20 @@ impl Sub {
 
     /// Dispatch sequence numbers of an ack range, in dispatch order.
     fn ack_range(&self, ack: &MessageAck, cumulative: bool) -> Vec<u64> {
-        let Some(last) = ack.last_message_id.as_ref().and_then(|m| self.by_seq.get(&(m.broker_sequence_id as u64))) else {
+        let Some(last) = ack
+            .last_message_id
+            .as_ref()
+            .and_then(|m| self.by_seq.get(&(m.broker_sequence_id as u64)))
+        else {
             return Vec::new();
         };
         let first = if cumulative {
             None
         } else {
-            ack.first_message_id.as_ref().and_then(|m| self.by_seq.get(&(m.broker_sequence_id as u64))).copied()
+            ack.first_message_id
+                .as_ref()
+                .and_then(|m| self.by_seq.get(&(m.broker_sequence_id as u64)))
+                .copied()
         };
         let start = first.unwrap_or(0).min(*last);
         self.inflight.range(start..=*last).map(|(k, _)| *k).collect()
@@ -335,12 +349,19 @@ impl Dest {
 
     /// Returns true when this producer already sent this sequence id recently.
     pub fn is_duplicate(&self, msg: &Message) -> bool {
-        let Some(id) = &msg.message_id else { return false };
-        let Some(pid) = &id.producer_id else { return false };
+        let Some(id) = &msg.message_id else {
+            return false;
+        };
+        let Some(pid) = &id.producer_id else {
+            return false;
+        };
         let mut st = self.state.lock();
         st.audit
             .entry(pid.clone())
-            .or_insert_with(|| Audit { seen: HashSet::new(), order: VecDeque::new() })
+            .or_insert_with(|| Audit {
+                seen: HashSet::new(),
+                order: VecDeque::new(),
+            })
             .check_and_record(id.producer_sequence_id)
     }
 
@@ -361,7 +382,11 @@ impl Dest {
     pub fn expired_before_storing(&self, msg: &Message) {
         self.state.lock().stats.expired += 1;
         self.expired_minute.fetch_add(1, Ordering::Relaxed);
-        tracing::debug!("{}: message {} expired before it was stored", self.dest, msg.message_id_text());
+        tracing::debug!(
+            "{}: message {} expired before it was stored",
+            self.dest,
+            msg.message_id_text()
+        );
     }
 
     /// The single deletion path of expired messages, after the caller has taken the message out of
@@ -455,7 +480,14 @@ impl Dest {
     // -- dispatch -----------------------------------------------------------
 
     fn dispatch_queue(&self, st: &mut State, now_ms: i64) {
-        let State { pending, expiry, subs, rr, stats, .. } = st;
+        let State {
+            pending,
+            expiry,
+            subs,
+            rr,
+            stats,
+            ..
+        } = st;
         if subs.is_empty() {
             return;
         }
@@ -521,7 +553,11 @@ impl Dest {
     ) {
         let dest = &self.dest;
         loop {
-            let credit = if sub.prefetch == 0 { sub.pull.is_some() } else { sub.window() < sub.prefetch };
+            let credit = if sub.prefetch == 0 {
+                sub.pull.is_some()
+            } else {
+                sub.window() < sub.prefetch
+            };
             if !credit {
                 return;
             }
@@ -550,7 +586,9 @@ impl Dest {
         let State { subs, stats, .. } = st;
         for sub in subs.iter_mut() {
             while sub.has_credit() {
-                let Some((seq, e)) = sub.tpending.pop_first() else { break };
+                let Some((seq, e)) = sub.tpending.pop_first() else {
+                    break;
+                };
                 if e.msg.expiration > 0 {
                     sub.texpiry.remove(&(e.msg.expiration, seq));
                 }
@@ -605,7 +643,9 @@ impl Dest {
     /// Removes a subscription. Queue messages it held return to pending.
     pub fn remove_sub(&self, id: &ConsumerId, last_delivered: i64, now_ms: i64) -> bool {
         let mut st = self.state.lock();
-        let Some(pos) = st.subs.iter().position(|s| &s.id == id) else { return false };
+        let Some(pos) = st.subs.iter().position(|s| &s.id == id) else {
+            return false;
+        };
         let sub = st.subs.remove(pos);
         if st.rr >= st.subs.len() {
             st.rr = 0;
@@ -654,10 +694,16 @@ impl Dest {
     pub fn ack(&self, ack: &MessageAck, transacted: bool, now_ms: i64) -> Vec<Effect> {
         let mut effects = Vec::new();
         let mut st = self.state.lock();
-        let Some(cid) = &ack.consumer_id else { return effects };
+        let Some(cid) = &ack.consumer_id else {
+            return effects;
+        };
         let Some(pos) = st.subs.iter().position(|s| &s.id == cid) else {
             if transacted || !self.ack_reserved(&mut st, cid, ack, &mut effects) {
-                tracing::debug!("{}: ack of type {} for unknown consumer {cid} ignored", self.dest, ack.ack_type);
+                tracing::debug!(
+                    "{}: ack of type {} for unknown consumer {cid} ignored",
+                    self.dest,
+                    ack.ack_type
+                );
                 return effects;
             }
             Self::touch_idle(&mut st);
@@ -730,7 +776,10 @@ impl Dest {
                                     continue;
                                 }
                                 if e.msg.persistent {
-                                    effects.push(Effect::ToDlq { entry: e, cause: cause.clone() });
+                                    effects.push(Effect::ToDlq {
+                                        entry: e,
+                                        cause: cause.clone(),
+                                    });
                                 } else {
                                     discarded += 1;
                                 }
@@ -763,7 +812,11 @@ impl Dest {
             }
         }
         if matched == 0 {
-            tracing::debug!("{}: ack of type {} from {cid} matches no inflight message", self.dest, ack.ack_type);
+            tracing::debug!(
+                "{}: ack of type {} from {cid} matches no inflight message",
+                self.dest,
+                ack.ack_type
+            );
         }
         st.stats.dequeued += consumed;
         for e in expired {
@@ -778,8 +831,12 @@ impl Dest {
     /// Commits an ack of a consumer that closed while its transaction was open.
     /// Returns false when the consumer has no reserved messages.
     fn ack_reserved(&self, st: &mut State, cid: &ConsumerId, ack: &MessageAck, effects: &mut Vec<Effect>) -> bool {
-        let Some(list) = st.reserved.get_mut(cid) else { return false };
-        let Some(last) = ack.last_message_id.as_ref().map(|m| m.broker_sequence_id as u64) else { return true };
+        let Some(list) = st.reserved.get_mut(cid) else {
+            return false;
+        };
+        let Some(last) = ack.last_message_id.as_ref().map(|m| m.broker_sequence_id as u64) else {
+            return true;
+        };
         let first = ack.first_message_id.as_ref().map(|m| m.broker_sequence_id as u64);
         let mut taken = Vec::new();
         list.retain(|e| {
@@ -801,7 +858,10 @@ impl Dest {
             match ack.ack_type {
                 ack_type::POISON => {
                     if e.msg.persistent {
-                        effects.push(Effect::ToDlq { entry: e, cause: "Delivery failure: poison ack".into() });
+                        effects.push(Effect::ToDlq {
+                            entry: e,
+                            cause: "Delivery failure: poison ack".into(),
+                        });
                     } else {
                         st.stats.discarded += 1;
                     }
@@ -822,7 +882,9 @@ impl Dest {
                 inf.tx = false;
             }
         }
-        let Some(list) = st.reserved.remove(cid) else { return };
+        let Some(list) = st.reserved.remove(cid) else {
+            return;
+        };
         let returned = list
             .into_iter()
             .map(|mut e| {
@@ -882,7 +944,9 @@ impl Dest {
         let mut st = self.state.lock();
         let mut removed = 0;
         while removed < max {
-            let Some(&(exp, seq)) = st.expiry.first() else { break };
+            let Some(&(exp, seq)) = st.expiry.first() else {
+                break;
+            };
             if exp > now_ms {
                 break;
             }
@@ -895,7 +959,9 @@ impl Dest {
         let State { subs, stats, .. } = &mut *st;
         for sub in subs.iter_mut() {
             while removed < max {
-                let Some(&(exp, seq)) = sub.texpiry.first() else { break };
+                let Some(&(exp, seq)) = sub.texpiry.first() else {
+                    break;
+                };
                 if exp > now_ms {
                     break;
                 }
@@ -928,9 +994,10 @@ impl Dest {
     pub fn unmark_expiring_if_none(&self) -> bool {
         let st = self.state.lock();
         let any = !st.expiry.is_empty()
-            || st.subs.iter().any(|s| {
-                !s.texpiry.is_empty() || s.inflight.values().any(|i| i.entry.msg.expiration > 0)
-            })
+            || st
+                .subs
+                .iter()
+                .any(|s| !s.texpiry.is_empty() || s.inflight.values().any(|i| i.entry.msg.expiration > 0))
             || st.reserved.values().flatten().any(|e| e.msg.expiration > 0);
         if any {
             return false;
@@ -942,9 +1009,7 @@ impl Dest {
     // -- lifecycle ------------------------------------------------------------
 
     fn touch_idle(st: &mut State) {
-        let empty = st.pending.is_empty()
-            && st.subs.is_empty()
-            && st.producers.is_empty();
+        let empty = st.pending.is_empty() && st.subs.is_empty() && st.producers.is_empty();
         if empty {
             if st.idle_since.is_none() {
                 st.idle_since = Some(Instant::now());
@@ -966,7 +1031,11 @@ impl Dest {
     /// Number of messages held (pending plus inflight, all subscriptions).
     pub fn message_count(&self) -> usize {
         let st = self.state.lock();
-        st.pending.len() + st.subs.iter().map(|s| s.inflight.len() + s.tpending.len()).sum::<usize>()
+        st.pending.len()
+            + st.subs
+                .iter()
+                .map(|s| s.inflight.len() + s.tpending.len())
+                .sum::<usize>()
     }
 
     /// Drops every message, pending, inflight or reserved (used when the destination is deleted).
@@ -1052,13 +1121,21 @@ impl Dest {
     fn seq_at(&self, index: usize) -> Option<u64> {
         let (len, first, last) = {
             let st = self.state.lock();
-            (st.pending.len(), *st.pending.keys().next()?, *st.pending.keys().next_back()?)
+            (
+                st.pending.len(),
+                *st.pending.keys().next()?,
+                *st.pending.keys().next_back()?,
+            )
         };
         if index >= len {
             return None;
         }
         let forward = index <= len / 2;
-        let (mut at, mut left) = if forward { (first, index) } else { (last, len - 1 - index) };
+        let (mut at, mut left) = if forward {
+            (first, index)
+        } else {
+            (last, len - 1 - index)
+        };
         while left > 0 {
             let step = left.min(WALK_CHUNK);
             let st = self.state.lock();
@@ -1104,7 +1181,12 @@ impl Dest {
                 return Some((e.clone(), false));
             }
             for s in st.subs.iter().filter(|s| s.browser.is_none()) {
-                if let Some(i) = s.by_seq.get(&seq).and_then(|d| s.inflight.get(d)).filter(|i| matches(&i.entry)) {
+                if let Some(i) = s
+                    .by_seq
+                    .get(&seq)
+                    .and_then(|d| s.inflight.get(d))
+                    .filter(|i| matches(&i.entry))
+                {
                     return Some((i.entry.clone(), true));
                 }
             }

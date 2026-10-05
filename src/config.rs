@@ -58,7 +58,12 @@ pub struct ExpirySection {
 
 impl Default for ExpirySection {
     fn default() -> Self {
-        ExpirySection { check_interval_ms: 1000, use_broker_clock: false, ttl_ceiling_ms: 0, default_ttl_ms: 0 }
+        ExpirySection {
+            check_interval_ms: 1000,
+            use_broker_clock: false,
+            ttl_ceiling_ms: 0,
+            default_ttl_ms: 0,
+        }
     }
 }
 
@@ -201,7 +206,9 @@ impl std::fmt::Display for ConfigError {
 
 /// Path of `mqrust.toml` next to the executable.
 pub fn default_config_path() -> Option<PathBuf> {
-    std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join("mqrust.toml")))
+    std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.join("mqrust.toml")))
 }
 
 /// Locates and loads the configuration: `--config`, then next to the executable, then defaults.
@@ -300,16 +307,20 @@ fn secret(field: &str, password: &Option<String>, hash: &Option<String>) -> Resu
 }
 
 fn parse_ip(field: &str, value: &str) -> Result<IpAddr, ConfigError> {
-    value
-        .parse()
-        .map_err(|_| ConfigError(format!("configuration error: {field} = \"{value}\" is not a valid IP address")))
+    value.parse().map_err(|_| {
+        ConfigError(format!(
+            "configuration error: {field} = \"{value}\" is not a valid IP address"
+        ))
+    })
 }
 
 fn parse_port(field: &str, value: i64) -> Result<u16, ConfigError> {
     if (1..=65535).contains(&value) {
         Ok(value as u16)
     } else {
-        Err(ConfigError(format!("configuration error: {field} = {value} is not a valid port (1-65535)")))
+        Err(ConfigError(format!(
+            "configuration error: {field} = {value} is not a valid port (1-65535)"
+        )))
     }
 }
 
@@ -318,13 +329,17 @@ fn in_range(field: &str, value: i64, min: i64, max: i64) -> Result<u64, ConfigEr
     if (min..=max).contains(&value) {
         Ok(value as u64)
     } else {
-        Err(ConfigError(format!("configuration error: {field} = {value} must be between {min} and {max}")))
+        Err(ConfigError(format!(
+            "configuration error: {field} = {value} must be between {min} and {max}"
+        )))
     }
 }
 
 fn non_negative(field: &str, value: i64) -> Result<u64, ConfigError> {
     if value < 0 {
-        Err(ConfigError(format!("configuration error: {field} = {value} must not be negative")))
+        Err(ConfigError(format!(
+            "configuration error: {field} = {value} must not be negative"
+        )))
     } else {
         Ok(value as u64)
     }
@@ -357,7 +372,10 @@ pub fn build(file: FileConfig, source: ConfigSource, overrides: &Overrides) -> R
     }
     let max_memory_mb = non_negative("broker.max_memory_mb", b.max_memory_mb)?;
     let auto_delete = non_negative("broker.auto_delete_empty_after_secs", b.auto_delete_empty_after_secs)?;
-    let topic_pending = non_negative("broker.topic_max_pending_per_consumer", b.topic_max_pending_per_consumer)?;
+    let topic_pending = non_negative(
+        "broker.topic_max_pending_per_consumer",
+        b.topic_max_pending_per_consumer,
+    )?;
     let threshold_kb = non_negative("broker.compress_threshold_kb", b.compress_threshold_kb)?;
     if !(0..=99).contains(&b.compress_min_saving_pct) {
         return Err(ConfigError(format!(
@@ -399,10 +417,16 @@ pub fn build(file: FileConfig, source: ConfigSource, overrides: &Overrides) -> R
 
     let admin_secret = secret("admin", &a.password, &a.password_hash)?;
     let admin_user = match admin_secret {
-        Some(s) => User { username: a.username.clone(), secret: s },
+        Some(s) => User {
+            username: a.username.clone(),
+            secret: s,
+        },
         None if !is_file => {
             default_credentials = true;
-            User { username: DEFAULT_USER.into(), secret: Secret::Plain(DEFAULT_PASSWORD.into()) }
+            User {
+                username: DEFAULT_USER.into(),
+                secret: Secret::Plain(DEFAULT_PASSWORD.into()),
+            }
         }
         None => {
             return Err(ConfigError(
@@ -416,14 +440,22 @@ pub fn build(file: FileConfig, source: ConfigSource, overrides: &Overrides) -> R
     for (i, u) in file.users.iter().enumerate() {
         let field = format!("users[{i}] ({})", u.username);
         if u.username.is_empty() {
-            return Err(ConfigError(format!("configuration error: users[{i}].username must not be empty")));
+            return Err(ConfigError(format!(
+                "configuration error: users[{i}].username must not be empty"
+            )));
         }
         if !seen.insert(u.username.clone()) {
-            return Err(ConfigError(format!("configuration error: duplicate username \"{}\"", u.username)));
+            return Err(ConfigError(format!(
+                "configuration error: duplicate username \"{}\"",
+                u.username
+            )));
         }
         let s = secret(&field, &u.password, &u.password_hash)?
             .ok_or_else(|| ConfigError(format!("configuration error: {field} needs password or password_hash")))?;
-        users.push(User { username: u.username.clone(), secret: s });
+        users.push(User {
+            username: u.username.clone(),
+            secret: s,
+        });
     }
     if users.is_empty() {
         if is_file && !b.allow_anonymous {
@@ -434,7 +466,10 @@ pub fn build(file: FileConfig, source: ConfigSource, overrides: &Overrides) -> R
         }
         if !is_file {
             default_credentials = true;
-            users.push(User { username: DEFAULT_USER.into(), secret: Secret::Plain(DEFAULT_PASSWORD.into()) });
+            users.push(User {
+                username: DEFAULT_USER.into(),
+                secret: Secret::Plain(DEFAULT_PASSWORD.into()),
+            });
         }
     }
 
@@ -558,7 +593,8 @@ mod tests {
 
     #[test]
     fn admin_session_keys() {
-        let keys = "session_idle_minutes = 5\nsession_max_hours = 1\nlogin_max_failures = 0\nlogin_lockout_seconds = 86400\n";
+        let keys =
+            "session_idle_minutes = 5\nsession_max_hours = 1\nlogin_max_failures = 0\nlogin_lockout_seconds = 86400\n";
         let c = cfg(&MIN.replace("password = \"a\"\n", &format!("password = \"a\"\n{keys}"))).unwrap();
         assert_eq!(c.admin_session_idle_minutes, 5);
         assert_eq!(c.admin_session_max_hours, 1);
@@ -593,7 +629,10 @@ mod tests {
 
     #[test]
     fn overrides_win() {
-        let o = Overrides { port: Some(61620), ..Default::default() };
+        let o = Overrides {
+            port: Some(61620),
+            ..Default::default()
+        };
         let text = format!("[broker]\nport = 61617\n{MIN}");
         let c = from_toml(&text, ConfigSource::File("t".into()), &o).unwrap();
         assert_eq!(c.port, 61620);
@@ -629,25 +668,55 @@ mod tests {
     #[test]
     fn every_validation_error_names_the_field() {
         refused(&format!("[broker]\nbind = \"1.2.3\"\n{MIN}"), "broker.bind");
-        refused("[admin]\nbind = \"localhost\"\npassword = \"a\"\n[[users]]\nusername = \"u\"\npassword = \"p\"\n", "admin.bind");
+        refused(
+            "[admin]\nbind = \"localhost\"\npassword = \"a\"\n[[users]]\nusername = \"u\"\npassword = \"p\"\n",
+            "admin.bind",
+        );
         refused(&format!("[broker]\nport = 0\n{MIN}"), "broker.port");
-        refused("[admin]\nport = 70000\npassword = \"a\"\n[[users]]\nusername = \"u\"\npassword = \"p\"\n", "admin.port");
+        refused(
+            "[admin]\nport = 70000\npassword = \"a\"\n[[users]]\nusername = \"u\"\npassword = \"p\"\n",
+            "admin.port",
+        );
         refused(&format!("[log]\nlevel = \"verbose\"\n{MIN}"), "log.level");
         refused("[admin]\npassword = \"a\"\n", "[[users]]");
-        refused("[admin]\npassword = \"a\"\n[[users]]\nusername = \"\"\npassword = \"p\"\n", "users[0].username");
-        refused("[admin]\npassword = \"a\"\n[[users]]\nusername = \"u\"\n", "needs password or password_hash");
+        refused(
+            "[admin]\npassword = \"a\"\n[[users]]\nusername = \"\"\npassword = \"p\"\n",
+            "users[0].username",
+        );
+        refused(
+            "[admin]\npassword = \"a\"\n[[users]]\nusername = \"u\"\n",
+            "needs password or password_hash",
+        );
         refused(
             "[admin]\npassword = \"a\"\n[[users]]\nusername = \"u\"\npassword_hash = \"plain\"\n",
             "password_hash is not an Argon2 hash",
         );
-        refused("[admin]\npassword_hash = \"md5\"\n[[users]]\nusername = \"u\"\npassword = \"p\"\n", "admin.password_hash");
+        refused(
+            "[admin]\npassword_hash = \"md5\"\n[[users]]\nusername = \"u\"\npassword = \"p\"\n",
+            "admin.password_hash",
+        );
         refused("[[users]]\nusername = \"u\"\npassword = \"p\"\n", "admin.password");
-        refused(&format!("[broker]\nmax_frame_size_mb = 0\n{MIN}"), "broker.max_frame_size_mb");
-        refused(&format!("[broker]\nauto_delete_empty_after_secs = -1\n{MIN}"), "broker.auto_delete_empty_after_secs");
+        refused(
+            &format!("[broker]\nmax_frame_size_mb = 0\n{MIN}"),
+            "broker.max_frame_size_mb",
+        );
+        refused(
+            &format!("[broker]\nauto_delete_empty_after_secs = -1\n{MIN}"),
+            "broker.auto_delete_empty_after_secs",
+        );
         refused(&format!("[broker]\nmax_memory_mb = -1\n{MIN}"), "broker.max_memory_mb");
-        refused(&format!("[broker]\ntopic_max_pending_per_consumer = -5\n{MIN}"), "broker.topic_max_pending_per_consumer");
-        refused(&format!("[broker]\ncompress_threshold_kb = -1\n{MIN}"), "broker.compress_threshold_kb");
-        refused(&format!("[broker]\ncompress_min_saving_pct = 150\n{MIN}"), "broker.compress_min_saving_pct");
+        refused(
+            &format!("[broker]\ntopic_max_pending_per_consumer = -5\n{MIN}"),
+            "broker.topic_max_pending_per_consumer",
+        );
+        refused(
+            &format!("[broker]\ncompress_threshold_kb = -1\n{MIN}"),
+            "broker.compress_threshold_kb",
+        );
+        refused(
+            &format!("[broker]\ncompress_min_saving_pct = 150\n{MIN}"),
+            "broker.compress_min_saving_pct",
+        );
     }
 
     #[test]
@@ -662,7 +731,10 @@ mod tests {
         let c = cfg(MIN).unwrap();
         assert_eq!(c.max_memory_bytes, 0, "no memory limit by default");
         assert_eq!(c.auto_delete_empty_after_secs, 0);
-        let c = cfg(&format!("[broker]\nmax_memory_mb = 64\nauto_delete_empty_after_secs = 30\n{MIN}")).unwrap();
+        let c = cfg(&format!(
+            "[broker]\nmax_memory_mb = 64\nauto_delete_empty_after_secs = 30\n{MIN}"
+        ))
+        .unwrap();
         assert_eq!(c.max_memory_bytes, 64 * 1024 * 1024);
         assert_eq!(c.auto_delete_empty_after_secs, 30);
     }
@@ -676,23 +748,44 @@ mod tests {
         assert_eq!(c.default_ttl_ms, 0);
         let c = cfg(&format!("[expiry]\nttl_ceiling_ms = 60000\n{MIN}")).unwrap();
         assert_eq!(c.ttl_ceiling_ms, 60_000);
-        assert_eq!(c.expiry_check_interval_ms, 1000, "missing keys of the section take their default");
+        assert_eq!(
+            c.expiry_check_interval_ms, 1000,
+            "missing keys of the section take their default"
+        );
         assert_eq!(c.default_ttl_ms, 0);
-        let c = cfg(&format!("[expiry]\ncheck_interval_ms = 1\nuse_broker_clock = true\ndefault_ttl_ms = 5000\n{MIN}")).unwrap();
+        let c = cfg(&format!(
+            "[expiry]\ncheck_interval_ms = 1\nuse_broker_clock = true\ndefault_ttl_ms = 5000\n{MIN}"
+        ))
+        .unwrap();
         assert_eq!(c.expiry_check_interval_ms, 1);
         assert!(c.use_broker_clock);
         assert_eq!(c.default_ttl_ms, 5000);
-        refused(&format!("[expiry]\ncheck_interval_ms = 0\n{MIN}"), "expiry.check_interval_ms");
-        refused(&format!("[expiry]\nttl_ceiling_ms = -1\n{MIN}"), "expiry.ttl_ceiling_ms");
-        refused(&format!("[expiry]\ndefault_ttl_ms = -1\n{MIN}"), "expiry.default_ttl_ms");
-        refused(&format!("[expiry]\nuse_broker_clock = \"yes\"\n{MIN}"), "expiry.use_broker_clock");
+        refused(
+            &format!("[expiry]\ncheck_interval_ms = 0\n{MIN}"),
+            "expiry.check_interval_ms",
+        );
+        refused(
+            &format!("[expiry]\nttl_ceiling_ms = -1\n{MIN}"),
+            "expiry.ttl_ceiling_ms",
+        );
+        refused(
+            &format!("[expiry]\ndefault_ttl_ms = -1\n{MIN}"),
+            "expiry.default_ttl_ms",
+        );
+        refused(
+            &format!("[expiry]\nuse_broker_clock = \"yes\"\n{MIN}"),
+            "expiry.use_broker_clock",
+        );
     }
 
     #[test]
     fn file_wins_over_defaults_and_command_line_over_file() {
         let text = "[broker]\nbind = \"127.0.0.1\"\nport = 61617\n[admin]\nport = 8200\npassword = \"a\"\n[[users]]\nusername = \"u\"\npassword = \"p\"\n";
         let c = cfg(text).unwrap();
-        assert_eq!((c.bind.to_string().as_str(), c.port, c.admin_port), ("127.0.0.1", 61617, 8200));
+        assert_eq!(
+            (c.bind.to_string().as_str(), c.port, c.admin_port),
+            ("127.0.0.1", 61617, 8200)
+        );
         let o = Overrides {
             bind: Some("0.0.0.0".into()),
             admin_port: Some(8300),
@@ -700,11 +793,20 @@ mod tests {
             ..Default::default()
         };
         let c = from_toml(text, ConfigSource::File("t".into()), &o).unwrap();
-        assert_eq!((c.bind.to_string().as_str(), c.port, c.admin_port), ("0.0.0.0", 61617, 8300));
+        assert_eq!(
+            (c.bind.to_string().as_str(), c.port, c.admin_port),
+            ("0.0.0.0", 61617, 8300)
+        );
         assert_eq!(c.admin_bind.to_string(), "127.0.0.2");
         // A bad command-line value is reported like a file value.
-        let o = Overrides { bind: Some("nowhere".into()), ..Default::default() };
-        assert!(from_toml(MIN, ConfigSource::File("t".into()), &o).unwrap_err().0.contains("broker.bind"));
+        let o = Overrides {
+            bind: Some("nowhere".into()),
+            ..Default::default()
+        };
+        assert!(from_toml(MIN, ConfigSource::File("t".into()), &o)
+            .unwrap_err()
+            .0
+            .contains("broker.bind"));
     }
 
     #[test]

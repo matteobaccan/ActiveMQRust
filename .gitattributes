@@ -1,0 +1,10 @@
+# ActiveMQRust by Matteo Baccan
+# SPDX-License-Identifier: MIT
+
+# Sources keep LF line endings on every platform (tests compare embedded text byte by byte).
+* text=auto eol=lf
+*.cmd text eol=crlf
+*.bat text eol=crlf
+*.png binary
+*.bin binary
+*.jar binary

@@ -28,11 +28,17 @@ pub struct Failure {
 
 impl Failure {
     pub fn usage(message: impl Into<String>) -> Self {
-        Failure { code: 2, message: message.into() }
+        Failure {
+            code: 2,
+            message: message.into(),
+        }
     }
 
     pub fn runtime(message: impl Into<String>) -> Self {
-        Failure { code: 1, message: message.into() }
+        Failure {
+            code: 1,
+            message: message.into(),
+        }
     }
 }
 
@@ -51,7 +57,9 @@ pub fn check_username(name: &str) -> Result<(), String> {
 /// Checks a new password: at least 8 characters, different from the username, not a common one.
 pub fn check_password(username: Option<&str>, password: &str) -> Result<(), String> {
     if password.chars().count() < MIN_PASSWORD_CHARS {
-        return Err(format!("password refused: it must have at least {MIN_PASSWORD_CHARS} characters"));
+        return Err(format!(
+            "password refused: it must have at least {MIN_PASSWORD_CHARS} characters"
+        ));
     }
     if username.is_some_and(|u| u == password) {
         return Err("password refused: it must differ from the username".into());
@@ -84,7 +92,9 @@ pub fn ask_new_password(
         }
         return Ok(first);
     }
-    Err(Failure::usage(format!("no valid password after {ATTEMPTS} attempts; nothing changed")))
+    Err(Failure::usage(format!(
+        "no valid password after {ATTEMPTS} attempts; nothing changed"
+    )))
 }
 
 /// Fails fast when a password must be typed but standard input is not a terminal.
@@ -116,7 +126,11 @@ pub fn new_password(username: Option<&str>, password_stdin: bool) -> Result<Stri
         return Ok(pw);
     }
     require_terminal(false)?;
-    ask_new_password(username, &mut |prompt| rpassword::prompt_password(prompt), &mut std::io::stderr())
+    ask_new_password(
+        username,
+        &mut |prompt| rpassword::prompt_password(prompt),
+        &mut std::io::stderr(),
+    )
 }
 
 /// Hashes a password with Argon2id.
@@ -134,7 +148,10 @@ pub fn target_path(explicit: Option<&Path>) -> Result<PathBuf, Failure> {
 
 /// Writes `text` to a temporary file in the same folder, then replaces `path` with it.
 pub fn write_atomic(path: &Path, text: &str) -> std::io::Result<()> {
-    let mut name = path.file_name().map(|n| n.to_os_string()).unwrap_or_else(|| "mqrust.toml".into());
+    let mut name = path
+        .file_name()
+        .map(|n| n.to_os_string())
+        .unwrap_or_else(|| "mqrust.toml".into());
     name.push(".tmp");
     let tmp = path.with_file_name(name);
     let written = (|| {
@@ -175,9 +192,17 @@ impl ConfigFile {
     pub fn parse(path: &Path, text: &str, created: bool) -> Result<Self, Failure> {
         let crlf = text.contains("\r\n");
         let doc = text.replace("\r\n", "\n").parse::<DocumentMut>().map_err(|e| {
-            Failure::usage(format!("cannot edit {}, it is not valid TOML; file unchanged\n{e}", path.display()))
+            Failure::usage(format!(
+                "cannot edit {}, it is not valid TOML; file unchanged\n{e}",
+                path.display()
+            ))
         })?;
-        Ok(ConfigFile { path: path.to_path_buf(), created, doc, crlf })
+        Ok(ConfigFile {
+            path: path.to_path_buf(),
+            created,
+            doc,
+            crlf,
+        })
     }
 
     pub fn text(&self) -> String {
@@ -199,11 +224,18 @@ impl ConfigFile {
         let Some(users) = self.doc.get("users").and_then(Item::as_array_of_tables) else {
             return Vec::new();
         };
-        users.iter().filter_map(|t| t.get("username").and_then(Item::as_str).map(str::to_string)).collect()
+        users
+            .iter()
+            .filter_map(|t| t.get("username").and_then(Item::as_str).map(str::to_string))
+            .collect()
     }
 
     fn allow_anonymous(&self) -> bool {
-        self.doc.get("broker").and_then(|b| b.get("allow_anonymous")).and_then(Item::as_bool).unwrap_or(false)
+        self.doc
+            .get("broker")
+            .and_then(|b| b.get("allow_anonymous"))
+            .and_then(Item::as_bool)
+            .unwrap_or(false)
     }
 
     /// True when the template's messaging user `admin` with password `admin` is still present.
@@ -240,7 +272,10 @@ impl ConfigFile {
     }
 
     fn user_index(&mut self, name: &str) -> Result<Option<usize>, Failure> {
-        Ok(self.users_mut()?.iter().position(|t| t.get("username").and_then(Item::as_str) == Some(name)))
+        Ok(self
+            .users_mut()?
+            .iter()
+            .position(|t| t.get("username").and_then(Item::as_str) == Some(name)))
     }
 
     /// Adds a `[[users]]` entry; refuses a name that already exists.
@@ -281,8 +316,12 @@ impl ConfigFile {
 
     /// Validates the edited document as the broker would read it.
     pub fn validate(&self) -> Result<Config, Failure> {
-        config::from_toml(&self.text(), ConfigSource::File(self.path.clone()), &Overrides::default())
-            .map_err(|e| Failure::usage(format!("{}: {e}; file unchanged", self.path.display())))
+        config::from_toml(
+            &self.text(),
+            ConfigSource::File(self.path.clone()),
+            &Overrides::default(),
+        )
+        .map_err(|e| Failure::usage(format!("{}: {e}; file unchanged", self.path.display())))
     }
 
     /// Validates, then writes the file atomically. Returns the configuration it now holds.
@@ -295,7 +334,9 @@ impl ConfigFile {
 }
 
 fn duplicate_user(name: &str) -> Failure {
-    Failure::usage(format!("user {name} already exists; to change its password run: mqrust.exe user passwd {name}"))
+    Failure::usage(format!(
+        "user {name} already exists; to change its password run: mqrust.exe user passwd {name}"
+    ))
 }
 
 fn unknown_user(name: &str) -> Failure {
@@ -337,7 +378,11 @@ fn set_secret(table: &mut dyn TableLike, password_hash: &str) {
 
 /// Console URL for messages: an unspecified bind address is shown as 127.0.0.1.
 pub fn console_url(cfg: &Config) -> String {
-    let ip = if cfg.admin_bind.is_unspecified() { "127.0.0.1".parse().unwrap() } else { cfg.admin_bind };
+    let ip = if cfg.admin_bind.is_unspecified() {
+        "127.0.0.1".parse().unwrap()
+    } else {
+        cfg.admin_bind
+    };
     format!("http://{}", std::net::SocketAddr::new(ip, cfg.admin_port))
 }
 
@@ -351,7 +396,9 @@ fn print_created(file: &ConfigFile) {
 pub fn set_admin(path: &Path, username: Option<String>, password_stdin: bool) -> Result<(), Failure> {
     require_terminal(password_stdin)?;
     let mut file = ConfigFile::open(path)?;
-    let current = file.admin_username().unwrap_or_else(|| config::DEFAULT_USER.to_string());
+    let current = file
+        .admin_username()
+        .unwrap_or_else(|| config::DEFAULT_USER.to_string());
     let username = match username {
         Some(u) => u,
         None if password_stdin => current,
@@ -367,7 +414,9 @@ pub fn set_admin(path: &Path, username: Option<String>, password_stdin: bool) ->
     println!("Admin console user \"{username}\" written to {}", file.path.display());
     println!("Console: {} (log in as {username})", console_url(&cfg));
     if file.has_default_user() {
-        println!("Next: create a messaging user with `mqrust.exe user add <name>`, then `mqrust.exe user remove admin`.");
+        println!(
+            "Next: create a messaging user with `mqrust.exe user add <name>`, then `mqrust.exe user remove admin`."
+        );
     }
     println!("{RESTART_NOTICE}");
     Ok(())
@@ -506,7 +555,10 @@ mod tests {
         assert!(text.contains("# the old secret\npassword_hash = "), "{text}");
         assert!(!text.contains("password = \"admin\""), "{text}");
         assert!(!text.contains("change me"), "{text}");
-        assert!(text.contains("[[users]]\nusername = \"app1\"\npassword = \"app1-secret\"\n"), "{text}");
+        assert!(
+            text.contains("[[users]]\nusername = \"app1\"\npassword = \"app1-secret\"\n"),
+            "{text}"
+        );
         let cfg = f.validate().unwrap();
         assert_eq!(cfg.admin_user.username, "ops");
         assert_eq!(cfg.port, 61620);
@@ -553,7 +605,9 @@ mod tests {
 
     #[test]
     fn invalid_toml_refused_with_line() {
-        let e = ConfigFile::parse(Path::new("t.toml"), "[broker]\nport = = 1\n", false).err().unwrap();
+        let e = ConfigFile::parse(Path::new("t.toml"), "[broker]\nport = = 1\n", false)
+            .err()
+            .unwrap();
         assert_eq!(e.code, 2);
         assert!(e.message.contains("line 2"), "{}", e.message);
     }
@@ -612,17 +666,32 @@ mod tests {
     #[test]
     fn prompt_retries_then_gives_up() {
         let mut out = Vec::new();
-        let pw = ask_new_password(Some("ops"), &mut scripted(&["admin", "S3cure-pass", "other-pass", "S3cure-pass", "S3cure-pass"]), &mut out).unwrap();
+        let pw = ask_new_password(
+            Some("ops"),
+            &mut scripted(&["admin", "S3cure-pass", "other-pass", "S3cure-pass", "S3cure-pass"]),
+            &mut out,
+        )
+        .unwrap();
         assert_eq!(pw, "S3cure-pass");
         let text = String::from_utf8(out).unwrap();
         assert!(text.contains("at least 8"), "{text}");
         assert!(text.contains("Passwords do not match"), "{text}");
 
         let mut out = Vec::new();
-        let e = ask_new_password(Some("ops"), &mut scripted(&["S3cure-pass", "x1", "S3cure-pass", "x2", "S3cure-pass", "x3"]), &mut out)
-            .unwrap_err();
+        let e = ask_new_password(
+            Some("ops"),
+            &mut scripted(&["S3cure-pass", "x1", "S3cure-pass", "x2", "S3cure-pass", "x3"]),
+            &mut out,
+        )
+        .unwrap_err();
         assert_eq!(e.code, 2);
-        assert_eq!(String::from_utf8(out).unwrap().matches("Passwords do not match").count(), 3);
+        assert_eq!(
+            String::from_utf8(out)
+                .unwrap()
+                .matches("Passwords do not match")
+                .count(),
+            3
+        );
     }
 
     #[test]

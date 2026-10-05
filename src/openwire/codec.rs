@@ -41,7 +41,10 @@ impl Reader {
 
     fn need(&self, n: usize) -> CodecResult<()> {
         if self.buf.remaining() < n {
-            err(format!("unexpected end of frame: need {n} bytes, have {}", self.buf.remaining()))
+            err(format!(
+                "unexpected end of frame: need {n} bytes, have {}",
+                self.buf.remaining()
+            ))
         } else {
             Ok(())
         }

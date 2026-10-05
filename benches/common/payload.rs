@@ -12,7 +12,10 @@ struct Lcg(u64);
 
 impl Lcg {
     fn next(&mut self) -> u64 {
-        self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        self.0 = self
+            .0
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         self.0 >> 33
     }
 }
@@ -25,10 +28,20 @@ pub fn xml_base64(size: usize, seed: u64) -> Vec<u8> {
     let mut s = String::from("<message><id>1</id>");
     for i in 1..=20 {
         let value: String = match i {
-            1..=4 => (0..8 + r.next() % 17).map(|_| ALNUM[(r.next() % 62) as usize] as char).collect(),
+            1..=4 => (0..8 + r.next() % 17)
+                .map(|_| ALNUM[(r.next() % 62) as usize] as char)
+                .collect(),
             5..=8 => (r.next() as i32).to_string(),
             9..=12 => format!("{}.{:04}", r.next() as i64 % 1_000_000, r.next() % 10_000),
-            13..=16 => format!("2024-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z", 1 + r.next() % 12, 1 + r.next() % 28, r.next() % 24, r.next() % 60, r.next() % 60, r.next() % 1000),
+            13..=16 => format!(
+                "2024-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z",
+                1 + r.next() % 12,
+                1 + r.next() % 28,
+                r.next() % 24,
+                r.next() % 60,
+                r.next() % 60,
+                r.next() % 1000
+            ),
             _ => r.next().is_multiple_of(2).to_string(),
         };
         s += &format!("<field{i:02}>{value}</field{i:02}>");

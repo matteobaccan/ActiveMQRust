@@ -21,7 +21,9 @@ use mqrust::selector::Selector;
 fn broker_with(f: impl FnOnce(&mut FileConfig)) -> Arc<Broker> {
     let mut fc = FileConfig::default();
     f(&mut fc);
-    Broker::new(Arc::new(build(fc, ConfigSource::Defaults, &Overrides::default()).unwrap()))
+    Broker::new(Arc::new(
+        build(fc, ConfigSource::Defaults, &Overrides::default()).unwrap(),
+    ))
 }
 
 fn broker() -> Arc<Broker> {
@@ -42,7 +44,11 @@ impl Client {
     }
 
     fn consumer_id(&self, n: i64) -> ConsumerId {
-        ConsumerId { connection_id: Arc::from(self.conn), session_id: 1, value: n }
+        ConsumerId {
+            connection_id: Arc::from(self.conn),
+            session_id: 1,
+            value: n,
+        }
     }
 
     /// Received dispatches: (text, broker seq, redelivery counter); `None` text for null dispatches.
@@ -69,7 +75,11 @@ fn texts(v: &[(Option<String>, i64, i32)]) -> Vec<String> {
 }
 
 fn producer() -> ProducerId {
-    ProducerId { connection_id: Arc::from("ID:prod-1-1-1:1"), session_id: 1, value: 1 }
+    ProducerId {
+        connection_id: Arc::from("ID:prod-1-1-1:1"),
+        session_id: 1,
+        value: 1,
+    }
 }
 
 static SEQ: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(1);
@@ -110,9 +120,22 @@ fn subscribe(b: &Broker, c: &Client, n: i64, dest: &Destination, prefetch: i32, 
     id
 }
 
-fn ack(b: &Broker, dest: &Destination, consumer: &ConsumerId, kind: u8, first: Option<i64>, last: i64, persistent_poison: bool) {
+fn ack(
+    b: &Broker,
+    dest: &Destination,
+    consumer: &ConsumerId,
+    kind: u8,
+    first: Option<i64>,
+    last: i64,
+    persistent_poison: bool,
+) {
     let _ = persistent_poison;
-    let mid = |seq: i64| MessageId { text_view: None, producer_id: Some(producer()), producer_sequence_id: 0, broker_sequence_id: seq };
+    let mid = |seq: i64| MessageId {
+        text_view: None,
+        producer_id: Some(producer()),
+        producer_sequence_id: 0,
+        broker_sequence_id: seq,
+    };
     let a = MessageAck {
         header: Header::default(),
         destination: Some(dest.clone()),
@@ -215,7 +238,10 @@ fn selector_does_not_block_and_keeps_fifo() {
     let mut c1 = Client::new(&b, "c1");
     let id = subscribe(&b, &c1, 1, &q, 1000, Some("JMSCorrelationID IN ('ORD-A','ORD-C')"));
     let got = texts(&c1.drain());
-    assert_eq!(got, vec!["ORD-A-1", "ORD-C-1", "ORD-A-2", "ORD-C-2", "ORD-A-3", "ORD-C-3", "ORD-A-4", "ORD-C-4"]);
+    assert_eq!(
+        got,
+        vec!["ORD-A-1", "ORD-C-1", "ORD-A-2", "ORD-C-2", "ORD-A-3", "ORD-C-3", "ORD-A-4", "ORD-C-4"]
+    );
     // Ack all, close, and an unfiltered consumer gets exactly the B messages.
     let last = c1.handle.dispatched.load(std::sync::atomic::Ordering::Relaxed);
     assert_eq!(last, 8);
@@ -289,7 +315,10 @@ fn expired_messages_are_deleted_not_dispatched() {
     subscribe(&b, &c, 1, &q, 10, None);
     assert_eq!(texts(&c.drain()), vec!["long"]);
     assert_eq!(d.snapshot().stats.expired, 1);
-    assert!(b.get_dest(&Destination::queue(DLQ_NAME)).is_none(), "never moved to a DLQ");
+    assert!(
+        b.get_dest(&Destination::queue(DLQ_NAME)).is_none(),
+        "never moved to a DLQ"
+    );
 }
 
 #[test]
@@ -364,7 +393,14 @@ fn browser_snapshot_then_end_marker() {
     let id = c.consumer_id(9);
     let d = b.get_dest(&q).unwrap();
     d.add_sub(
-        SubSpec { id, conn: c.handle.clone(), prefetch: 100, selector: None, no_local: false, browser: true },
+        SubSpec {
+            id,
+            conn: c.handle.clone(),
+            prefetch: 100,
+            selector: None,
+            no_local: false,
+            browser: true,
+        },
         now_ms(),
     );
     let got = c.drain();
@@ -449,11 +485,19 @@ fn delete_destination_rules() {
 }
 
 fn tx_ack(b: &Broker, dest: &Destination, consumer: &ConsumerId, last: i64) -> MessageAck {
-    let mid = MessageId { text_view: None, producer_id: Some(producer()), producer_sequence_id: 0, broker_sequence_id: last };
+    let mid = MessageId {
+        text_view: None,
+        producer_id: Some(producer()),
+        producer_sequence_id: 0,
+        broker_sequence_id: last,
+    };
     let a = MessageAck {
         header: Header::default(),
         destination: Some(dest.clone()),
-        transaction_id: Some(TransactionId::Local { value: 1, connection_id: None }),
+        transaction_id: Some(TransactionId::Local {
+            value: 1,
+            connection_id: None,
+        }),
         consumer_id: Some(consumer.clone()),
         ack_type: ack_type::STANDARD,
         first_message_id: None,
@@ -527,7 +571,14 @@ fn ack_with(b: &Broker, dest: &Destination, consumer: &ConsumerId, kind: u8, fir
 }
 
 fn sub_spec(c: &Client, n: i64, prefetch: i32) -> SubSpec {
-    SubSpec { id: c.consumer_id(n), conn: c.handle.clone(), prefetch, selector: None, no_local: false, browser: false }
+    SubSpec {
+        id: c.consumer_id(n),
+        conn: c.handle.clone(),
+        prefetch,
+        selector: None,
+        no_local: false,
+        browser: false,
+    }
 }
 
 fn ttl_msg(dest: &Destination, body: &str, ttl_ms: i64) -> Message {
@@ -749,7 +800,10 @@ fn temp_destination_advisories() {
     assert!(got.contains(&(tq.clone(), dest_op::ADD)));
     assert!(got.contains(&(tq, dest_op::REMOVE)));
     assert!(got.contains(&(existing, dest_op::REMOVE)));
-    assert!(watcher_t.dispatches().is_empty(), "temporary queues are not announced on the TempTopic advisory");
+    assert!(
+        watcher_t.dispatches().is_empty(),
+        "temporary queues are not announced on the TempTopic advisory"
+    );
     // Normal destinations produce no advisories.
     send(&b, &Destination::queue("PLAIN"), "x");
     assert!(watcher_q.dispatches().is_empty());
@@ -789,10 +843,19 @@ fn async_send_dropped_by_memory_limit_is_counted() {
     assert_eq!(b.stats.dropped_async.load(std::sync::atomic::Ordering::Relaxed), 1);
     let snap = b.get_dest(&q).unwrap().snapshot();
     assert_eq!(snap.pending, 1);
-    assert_eq!(snap.stats.discarded, 1, "a dropped asynchronous message is counted as discarded");
+    assert_eq!(
+        snap.stats.discarded, 1,
+        "a dropped asynchronous message is counted as discarded"
+    );
     // A synchronous refusal is reported to the sender, not counted as discarded.
     let r = b.deliver(msg(&q, &big), true, now_ms());
-    assert!(matches!(r, Err(mqrust::broker::Rejection::Error { class: "javax.jms.ResourceAllocationException", .. })));
+    assert!(matches!(
+        r,
+        Err(mqrust::broker::Rejection::Error {
+            class: "javax.jms.ResourceAllocationException",
+            ..
+        })
+    ));
     assert_eq!(b.get_dest(&q).unwrap().snapshot().stats.discarded, 1);
 }
 
@@ -815,7 +878,10 @@ fn memory_limit_hysteresis_and_returned_messages() {
     // One consumed: about 93% of the limit, still refused.
     ack_with(&b, &q, &id, ack_type::STANDARD, None, got[0].1);
     assert!(b.memory.used() > limit * 9 / 10);
-    assert!(b.deliver(msg(&q, "tiny"), true, now_ms()).is_err(), "still limited above 90%");
+    assert!(
+        b.deliver(msg(&q, "tiny"), true, now_ms()).is_err(),
+        "still limited above 90%"
+    );
     // Messages returning to pending are never refused.
     b.get_dest(&q).unwrap().remove_sub(&id, -1, now_ms());
     assert_eq!(b.get_dest(&q).unwrap().snapshot().pending, 19);
@@ -907,7 +973,10 @@ fn broker_ids_follow_the_activemq_format_and_are_unique() {
     let parts: Vec<&str> = head.rsplitn(4, '-').collect();
     assert_eq!(parts.len(), 4, "{id}");
     assert!(parts[0].parse::<u64>().is_ok(), "instance counter in {id}");
-    assert!(parts[1].parse::<i64>().unwrap() > 1_600_000_000_000, "timestamp in {id}");
+    assert!(
+        parts[1].parse::<i64>().unwrap() > 1_600_000_000_000,
+        "timestamp in {id}"
+    );
     assert_eq!(parts[2], "61616", "port in {id}");
     assert!(b.generate_id().starts_with(&format!("ID:{head}:")));
     let g = mqrust::broker::IdGenerator::new("host", 61616, now_ms());
@@ -941,7 +1010,10 @@ fn topic_fan_out_in_publish_order_and_late_subscriber() {
     }
     let mut late = Client::new(&b, "late");
     subscribe(&b, &late, 1, &t, 1000, None);
-    assert!(late.drain().is_empty(), "a late subscriber gets nothing published before it");
+    assert!(
+        late.drain().is_empty(),
+        "a late subscriber gets nothing published before it"
+    );
     send(&b, &t, "new");
     assert_eq!(texts(&late.drain()), vec!["new"]);
 }
@@ -978,7 +1050,10 @@ fn topic_eviction_with_slow_and_fast_subscribers() {
         send(&b, &t, &format!("{i}"));
     }
     assert_eq!(texts(&fast.drain()).len(), 200);
-    assert_eq!(texts(&slow.drain()), (1..=10).map(|i| i.to_string()).collect::<Vec<_>>());
+    assert_eq!(
+        texts(&slow.drain()),
+        (1..=10).map(|i| i.to_string()).collect::<Vec<_>>()
+    );
     let snap = b.get_dest(&t).unwrap().snapshot();
     assert_eq!(snap.stats.discarded, 90);
     assert_eq!(snap.pending, 100, "messages 101-200 pending for the slow subscriber");
@@ -1037,7 +1112,11 @@ fn topic_poison_persistent_to_dlq_non_persistent_discarded() {
     assert_eq!(n, 1);
     assert_eq!(entries[0].msg.original_destination.as_ref(), Some(&t));
     assert_eq!(b.get_dest(&t).unwrap().snapshot().stats.discarded, 1);
-    assert_eq!(texts(&other.drain()), vec!["persistent", "transient"], "other subscribers unaffected");
+    assert_eq!(
+        texts(&other.drain()),
+        vec!["persistent", "transient"],
+        "other subscribers unaffected"
+    );
 }
 
 #[test]
@@ -1072,7 +1151,10 @@ fn expiry_options_client_clock_ahead_and_behind() {
         let mut m = msg(&q, "x");
         m.timestamp = now + skew;
         m.expiration = m.timestamp + 10_000;
-        assert!(b.apply_expiry_options(&mut m, now), "not expired on arrival (skew {skew})");
+        assert!(
+            b.apply_expiry_options(&mut m, now),
+            "not expired on arrival (skew {skew})"
+        );
         assert_eq!(m.timestamp, now);
         assert_eq!(m.expiration, now + 10_000);
     }
@@ -1215,7 +1297,11 @@ fn alternating_expired_and_valid_messages_keep_fifo() {
     let b = broker();
     let q = Destination::queue("EXP.ALT");
     for i in 0..10 {
-        let m = if i % 2 == 0 { ttl_msg(&q, &format!("x{i}"), 30) } else { msg(&q, &format!("v{i}")) };
+        let m = if i % 2 == 0 {
+            ttl_msg(&q, &format!("x{i}"), 30)
+        } else {
+            msg(&q, &format!("v{i}"))
+        };
         b.deliver(m, true, now_ms()).unwrap();
     }
     sleep_ms(60);
@@ -1234,7 +1320,10 @@ fn pull_skips_expired_messages() {
     let mut c = Client::new(&b, "c1");
     let id = subscribe(&b, &c, 1, &q, 0, None);
     let d = b.get_dest(&q).unwrap();
-    assert!(d.pull(&id, 500, now_ms()).is_some(), "nothing valid: the normal timeout applies");
+    assert!(
+        d.pull(&id, 500, now_ms()).is_some(),
+        "nothing valid: the normal timeout applies"
+    );
     assert!(c.drain().is_empty());
     assert_eq!(d.snapshot().stats.expired, 1);
 }
@@ -1252,14 +1341,28 @@ fn browser_skips_and_deletes_expired_messages() {
     let id = c.consumer_id(5);
     let d = b.get_dest(&q).unwrap();
     // Prefetch 1: "later" expires while the browser waits for credit.
-    d.add_sub(SubSpec { id: id.clone(), conn: c.handle.clone(), prefetch: 1, selector: None, no_local: false, browser: true }, now_ms());
+    d.add_sub(
+        SubSpec {
+            id: id.clone(),
+            conn: c.handle.clone(),
+            prefetch: 1,
+            selector: None,
+            no_local: false,
+            browser: true,
+        },
+        now_ms(),
+    );
     assert_eq!(d.snapshot().stats.expired, 1, "expired before browsing: deleted");
     let first = c.drain();
     assert_eq!(texts(&first), vec!["a"]);
     sleep_ms(150);
     ack_with(&b, &q, &id, ack_type::STANDARD, None, first[0].1);
     assert_eq!(texts(&c.drain()), vec!["b"]);
-    assert_eq!(d.snapshot().stats.expired, 2, "expired while browsing: skipped and deleted");
+    assert_eq!(
+        d.snapshot().stats.expired,
+        2,
+        "expired while browsing: skipped and deleted"
+    );
     assert_eq!(d.snapshot().pending, 2, "browsing does not consume the valid messages");
 }
 
@@ -1312,7 +1415,10 @@ fn persistent_and_non_persistent_expire_without_dlq() {
     b.deliver(ttl_msg(&q, "n", 50), true, now_ms()).unwrap();
     sleep_ms(80);
     assert_eq!(b.sweep_expired(now_ms(), 10_000), 2);
-    assert!(b.get_dest(&Destination::queue(DLQ_NAME)).is_none(), "ActiveMQ.DLQ stays empty");
+    assert!(
+        b.get_dest(&Destination::queue(DLQ_NAME)).is_none(),
+        "ActiveMQ.DLQ stays empty"
+    );
 }
 
 #[test]
@@ -1372,7 +1478,12 @@ fn enqueue_out_of_sequence_is_still_dispatched() {
     let entry = |seq: u64, body: &str| {
         let m = msg(&q, body);
         let meta = Meta::new(b.memory.clone(), &m);
-        Entry { seq, msg: Arc::new(m), meta, redelivery: 0 }
+        Entry {
+            seq,
+            msg: Arc::new(m),
+            meta,
+            redelivery: 0,
+        }
     };
     d.enqueue(entry(1_000_002, "second"), now_ms());
     d.enqueue(entry(1_000_001, "first"), now_ms());

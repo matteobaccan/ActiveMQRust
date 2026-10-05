@@ -67,7 +67,9 @@ impl<S: Send + Sync> FromRequestParts<S> for Ctx {
     type Rejection = Infallible;
 
     async fn from_request_parts(parts: &mut Parts, _: &S) -> Result<Self, Self::Rejection> {
-        let q = Query::<HashMap<String, String>>::try_from_uri(&parts.uri).map(|q| q.0).unwrap_or_default();
+        let q = Query::<HashMap<String, String>>::try_from_uri(&parts.uri)
+            .map(|q| q.0)
+            .unwrap_or_default();
         Ok(Ctx {
             user: parts.extensions.get::<CurrentUser>().map(|u| u.0.clone()),
             path: parts.uri.path().to_string(),
@@ -125,7 +127,11 @@ fn head(title: &str, refresh: bool) -> String {
          <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\
          <meta name=\"color-scheme\" content=\"light dark\">{}\
          <title>{} - {PROVIDER_NAME}</title><link rel=\"stylesheet\" href=\"/style.css\"></head>",
-        if refresh { "<meta http-equiv=\"refresh\" content=\"5\">" } else { "" },
+        if refresh {
+            "<meta http-equiv=\"refresh\" content=\"5\">"
+        } else {
+            ""
+        },
         esc(title),
     )
 }
@@ -141,14 +147,25 @@ fn footer() -> String {
 /// The page shell: top bar (navigation, refresh, user, logout), content and footer.
 fn layout(ctx: &Ctx, title: &str, section: &str, content: &str) -> Response {
     let mut nav = String::new();
-    for (href, label) in [("/", "Overview"), ("/queues", "Queues"), ("/topics", "Topics"), ("/connections", "Connections")] {
+    for (href, label) in [
+        ("/", "Overview"),
+        ("/queues", "Queues"),
+        ("/topics", "Topics"),
+        ("/connections", "Connections"),
+    ] {
         let current = if section == href { " aria-current=\"page\"" } else { "" };
         let _ = write!(nav, "<a href=\"{}\"{current}>{label}</a>", ctx.link(href, &[]));
     }
     let refresh = if ctx.refresh() {
-        format!("<a class=\"chip on\" href=\"{}\">Auto-refresh on</a>", esc(&ctx.with("refresh", None)))
+        format!(
+            "<a class=\"chip on\" href=\"{}\">Auto-refresh on</a>",
+            esc(&ctx.with("refresh", None))
+        )
     } else {
-        format!("<a class=\"chip\" href=\"{}\">Auto-refresh off</a>", esc(&ctx.with("refresh", Some("5"))))
+        format!(
+            "<a class=\"chip\" href=\"{}\">Auto-refresh off</a>",
+            esc(&ctx.with("refresh", Some("5")))
+        )
     };
     let user = match &ctx.user {
         Some(u) => format!(
@@ -176,12 +193,20 @@ pub async fn style() -> Response {
 }
 
 pub async fn not_found() -> Response {
-    (StatusCode::NOT_FOUND, Html("<!doctype html><html lang=\"en\"><title>Not found</title><h1>404 Not Found</h1></html>".to_string()))
+    (
+        StatusCode::NOT_FOUND,
+        Html("<!doctype html><html lang=\"en\"><title>Not found</title><h1>404 Not Found</h1></html>".to_string()),
+    )
         .into_response()
 }
 
 fn not_found_page(ctx: &Ctx, what: &str) -> Response {
-    let mut r = layout(ctx, "Not found", "", &format!("<h1>Not found</h1><p class=\"notice\">{}</p>", esc(what)));
+    let mut r = layout(
+        ctx,
+        "Not found",
+        "",
+        &format!("<h1>Not found</h1><p class=\"notice\">{}</p>", esc(what)),
+    );
     *r.status_mut() = StatusCode::NOT_FOUND;
     r
 }
@@ -190,7 +215,11 @@ fn not_found_page(ctx: &Ctx, what: &str) -> Response {
 
 pub fn login_page(state: &AdminState, user: &str, error: Option<&str>, next: Option<&str>) -> Html<String> {
     let mut c = String::new();
-    let _ = write!(c, "{}<body class=\"login\"><main><div class=\"login-box\">", head("Log in", false));
+    let _ = write!(
+        c,
+        "{}<body class=\"login\"><main><div class=\"login-box\">",
+        head("Log in", false)
+    );
     let _ = write!(c, "<p class=\"brand\">ActiveMQ<span>Rust</span></p><h1>Log in</h1>");
     if state.broker.cfg.default_credentials {
         c.push_str(
@@ -250,7 +279,11 @@ pub async fn overview(State(s): State<AdminState>, ctx: Ctx) -> Response {
     let topics = dests.iter().filter(|d| d.dest.kind.is_topic() && visible(d)).count();
     let (ws, private) = process_memory();
     let uptime = (chrono::Local::now() - b.started).num_seconds();
-    let limit = if b.memory.limit == 0 { "no limit".to_string() } else { format!("of {}", fmt_bytes(b.memory.limit)) };
+    let limit = if b.memory.limit == 0 {
+        "no limit".to_string()
+    } else {
+        format!("of {}", fmt_bytes(b.memory.limit))
+    };
     let openwire = esc(&format!("tcp://{}:{}", b.cfg.bind, b.cfg.port));
     let admin = esc(&format!("http://{}:{}", b.cfg.admin_bind, b.cfg.admin_port));
     let mut c = format!(
@@ -266,12 +299,22 @@ pub async fn overview(State(s): State<AdminState>, ctx: Ctx) -> Response {
     let mem = format!(
         "{} <small>{limit}</small>{}",
         fmt_bytes(b.memory.used()),
-        if b.memory_limited() { badge("warn", "limit reached") } else { String::new() }
+        if b.memory_limited() {
+            badge("warn", "limit reached")
+        } else {
+            String::new()
+        }
     );
     c.push_str(&card("Message memory", &mem));
     let relaxed = std::sync::atomic::Ordering::Relaxed;
-    c.push_str(&card("Compressed by the broker", &b.stats.compressed.load(relaxed).to_string()));
-    c.push_str(&card("Compressions discarded", &b.stats.compress_discarded.load(relaxed).to_string()));
+    c.push_str(&card(
+        "Compressed by the broker",
+        &b.stats.compressed.load(relaxed).to_string(),
+    ));
+    c.push_str(&card(
+        "Compressions discarded",
+        &b.stats.compress_discarded.load(relaxed).to_string(),
+    ));
     c.push_str(&card("Working Set (RSS)", &fmt_bytes(ws)));
     c.push_str(&card("Private Bytes", &fmt_bytes(private)));
     c.push_str("</div>");
@@ -292,7 +335,11 @@ pub const QUEUE_COLUMNS: [(&str, &str); 8] = [
 
 /// Normalized sort column and direction: unknown columns fall back to Name.
 pub fn sort_params(sort: Option<&str>, order: Option<&str>) -> (&'static str, bool) {
-    let col = QUEUE_COLUMNS.iter().map(|c| c.0).find(|c| Some(*c) == sort).unwrap_or("name");
+    let col = QUEUE_COLUMNS
+        .iter()
+        .map(|c| c.0)
+        .find(|c| Some(*c) == sort)
+        .unwrap_or("name");
     (col, order == Some("desc"))
 }
 
@@ -311,10 +358,18 @@ pub fn sort_queues(rows: &mut [DestSnapshot], col: &str, desc: bool) {
         }
     };
     let by_name = |a: &DestSnapshot, b: &DestSnapshot| {
-        a.dest.name.to_lowercase().cmp(&b.dest.name.to_lowercase()).then_with(|| a.dest.name.cmp(&b.dest.name))
+        a.dest
+            .name
+            .to_lowercase()
+            .cmp(&b.dest.name.to_lowercase())
+            .then_with(|| a.dest.name.cmp(&b.dest.name))
     };
     rows.sort_by(|a, b| {
-        let primary = if col == "name" { by_name(a, b) } else { key(a).cmp(&key(b)) };
+        let primary = if col == "name" {
+            by_name(a, b)
+        } else {
+            key(a).cmp(&key(b))
+        };
         let primary = if desc { primary.reverse() } else { primary };
         if col == "name" {
             primary
@@ -325,8 +380,13 @@ pub fn sort_queues(rows: &mut [DestSnapshot], col: &str, desc: bool) {
 }
 
 pub async fn queues(State(s): State<AdminState>, ctx: Ctx) -> Response {
-    let mut rows: Vec<DestSnapshot> =
-        s.broker.destinations().iter().filter(|d| d.dest.kind.is_queue()).map(|d| d.snapshot()).collect();
+    let mut rows: Vec<DestSnapshot> = s
+        .broker
+        .destinations()
+        .iter()
+        .filter(|d| d.dest.kind.is_queue())
+        .map(|d| d.snapshot())
+        .collect();
     let (col, desc) = sort_params(ctx.get("sort"), ctx.get("order"));
     sort_queues(&mut rows, col, desc);
     let mut c = String::from("<h1>Queues</h1><div class=\"table-wrap\"><table><thead><tr>");
@@ -334,19 +394,35 @@ pub async fn queues(State(s): State<AdminState>, ctx: Ctx) -> Response {
         let num = if key == "name" { "" } else { " class=\"num\"" };
         let (next, aria, arrow) = if key == col {
             if desc {
-                ("asc", " aria-sort=\"descending\"", " <span aria-hidden=\"true\">&#9660;</span>")
+                (
+                    "asc",
+                    " aria-sort=\"descending\"",
+                    " <span aria-hidden=\"true\">&#9660;</span>",
+                )
             } else {
-                ("desc", " aria-sort=\"ascending\"", " <span aria-hidden=\"true\">&#9650;</span>")
+                (
+                    "desc",
+                    " aria-sort=\"ascending\"",
+                    " <span aria-hidden=\"true\">&#9650;</span>",
+                )
             }
         } else {
             ("asc", "", "")
         };
         let href = ctx.link("/queues", &[("sort", key), ("order", next)]);
-        let _ = write!(c, "<th scope=\"col\"{num}{aria}><a href=\"{}\">{label}{arrow}</a></th>", esc(&href));
+        let _ = write!(
+            c,
+            "<th scope=\"col\"{num}{aria}><a href=\"{}\">{label}{arrow}</a></th>",
+            esc(&href)
+        );
     }
     c.push_str("</tr></thead><tbody>");
     for q in &rows {
-        let kind = if q.dest.kind.is_temporary() { badge("info", "temporary") } else { String::new() };
+        let kind = if q.dest.kind.is_temporary() {
+            badge("info", "temporary")
+        } else {
+            String::new()
+        };
         let name = esc(&q.dest.name);
         let _ = write!(
             c,
@@ -369,13 +445,22 @@ pub async fn queues(State(s): State<AdminState>, ctx: Ctx) -> Response {
 }
 
 pub async fn queue_detail(State(s): State<AdminState>, Path(name): Path<String>, ctx: Ctx) -> Response {
-    let Some(d) = find_queue(&s, &name) else { return not_found_page(&ctx, &format!("No queue named {name}")) };
+    let Some(d) = find_queue(&s, &name) else {
+        return not_found_page(&ctx, &format!("No queue named {name}"));
+    };
     let snap = d.snapshot();
-    let page: usize = ctx.get("page").and_then(|v| v.parse().ok()).filter(|v: &usize| *v >= 1).unwrap_or(1);
+    let page: usize = ctx
+        .get("page")
+        .and_then(|v| v.parse().ok())
+        .filter(|v: &usize| *v >= 1)
+        .unwrap_or(1);
     let (total, entries) = d.page((page - 1).saturating_mul(PAGE_SIZE), PAGE_SIZE);
     let now = now_ms();
     let qpath = format!("/queues/{}", enc(&name));
-    let mut c = format!("<h1>Queue <span class=\"id\">{}</span></h1><div class=\"cards\">", esc(&name));
+    let mut c = format!(
+        "<h1>Queue <span class=\"id\">{}</span></h1><div class=\"cards\">",
+        esc(&name)
+    );
     for (label, value) in [
         ("Pending", snap.pending.to_string()),
         ("Inflight", snap.inflight.to_string()),
@@ -388,7 +473,12 @@ pub async fn queue_detail(State(s): State<AdminState>, Path(name): Path<String>,
         ("Message memory", fmt_bytes(snap.memory)),
         ("Compressed pending", snap.compressed.to_string()),
         ("Pending with expiration", snap.with_expiry.to_string()),
-        ("Next expiration", snap.next_expiry.map(|e| fmt_expiration(e, now)).unwrap_or_else(|| "-".into())),
+        (
+            "Next expiration",
+            snap.next_expiry
+                .map(|e| fmt_expiration(e, now))
+                .unwrap_or_else(|| "-".into()),
+        ),
     ] {
         c.push_str(&card(label, &esc(&value)));
     }
@@ -456,12 +546,24 @@ pub async fn queue_detail(State(s): State<AdminState>, Path(name): Path<String>,
     c.push_str("</tbody></table></div><nav class=\"pager\" aria-label=\"Pages\">");
     if page > 1 {
         let p = (page - 1).to_string();
-        let _ = write!(c, "<a href=\"{}\" rel=\"prev\">&larr; Previous</a>", esc(&ctx.link(&qpath, &[("page", &p)])));
+        let _ = write!(
+            c,
+            "<a href=\"{}\" rel=\"prev\">&larr; Previous</a>",
+            esc(&ctx.link(&qpath, &[("page", &p)]))
+        );
     }
-    let _ = write!(c, "<span class=\"muted\">Page {page} of {}</span>", total.div_ceil(PAGE_SIZE).max(1));
+    let _ = write!(
+        c,
+        "<span class=\"muted\">Page {page} of {}</span>",
+        total.div_ceil(PAGE_SIZE).max(1)
+    );
     if page.saturating_mul(PAGE_SIZE) < total {
         let p = (page + 1).to_string();
-        let _ = write!(c, "<a href=\"{}\" rel=\"next\">Next &rarr;</a>", esc(&ctx.link(&qpath, &[("page", &p)])));
+        let _ = write!(
+            c,
+            "<a href=\"{}\" rel=\"next\">Next &rarr;</a>",
+            esc(&ctx.link(&qpath, &[("page", &p)]))
+        );
     }
     c.push_str("</nav>");
     layout(&ctx, &format!("Queue {name}"), "/queues", &c)
@@ -496,7 +598,9 @@ pub async fn message_detail(
     Path((name, id)): Path<(String, String)>,
     ctx: Ctx,
 ) -> Response {
-    let Some(d) = find_queue(&s, &name) else { return not_found_page(&ctx, &format!("No queue named {name}")) };
+    let Some(d) = find_queue(&s, &name) else {
+        return not_found_page(&ctx, &format!("No queue named {name}"));
+    };
     let seq = ctx.get("seq").and_then(|v| v.parse().ok());
     let Some((e, inflight)) = d.find(seq, &id) else {
         return not_found_page(&ctx, "This message is no longer in the queue.");
@@ -514,7 +618,11 @@ pub async fn message_detail(
         c.push_str("<p class=\"notice\">This message has been delivered to a consumer and is waiting for its acknowledgement (in flight).</p>");
     }
     let expiration = if super::is_expired(&e.msg, now) {
-        format!("{}{}", esc(&fmt_expiration(m.expiration, now)), badge("warn", "expired"))
+        format!(
+            "{}{}",
+            esc(&fmt_expiration(m.expiration, now)),
+            badge("warn", "expired")
+        )
     } else {
         esc(&fmt_expiration(m.expiration, now))
     };
@@ -528,8 +636,14 @@ pub async fn message_detail(
         ("MessageID", esc(&m.message_id_text())),
         ("CorrelationID", esc(m.correlation_id.as_deref().unwrap_or(""))),
         ("Type", esc(m.jms_type.as_deref().unwrap_or(""))),
-        ("ReplyTo", esc(&m.reply_to.as_ref().map(|d| d.to_string()).unwrap_or_default())),
-        ("DeliveryMode", if m.persistent { "PERSISTENT" } else { "NON_PERSISTENT" }.to_string()),
+        (
+            "ReplyTo",
+            esc(&m.reply_to.as_ref().map(|d| d.to_string()).unwrap_or_default()),
+        ),
+        (
+            "DeliveryMode",
+            if m.persistent { "PERSISTENT" } else { "NON_PERSISTENT" }.to_string(),
+        ),
         ("Priority", m.priority.to_string()),
         ("Timestamp", fmt_time_ms(m.timestamp)),
         ("Expiration", expiration),
@@ -568,7 +682,11 @@ pub async fn message_detail(
     let formatted = ctx.get("view") == Some("xml");
     match &xml_state {
         XmlView::Formatted(_) => {
-            let (raw_cur, fmt_cur) = if formatted { ("", " aria-current=\"true\"") } else { (" aria-current=\"true\"", "") };
+            let (raw_cur, fmt_cur) = if formatted {
+                ("", " aria-current=\"true\"")
+            } else {
+                (" aria-current=\"true\"", "")
+            };
             let _ = write!(
                 c,
                 "<nav class=\"views\" aria-label=\"Body view\"><a href=\"{}\"{raw_cur}>Raw</a><a href=\"{}\"{fmt_cur}>Formatted</a></nav>",
@@ -605,18 +723,29 @@ fn body_html(c: &mut String, view: BodyView) {
         BodyView::Bytes { head, total } => {
             let _ = write!(c, "<pre class=\"body\">{}</pre>", esc(&hex_dump(&head)));
             if total > HEX_LIMIT {
-                let _ = write!(c, "<p class=\"notice\">Showing the first 4096 bytes; the body is {total} bytes long.</p>");
+                let _ = write!(
+                    c,
+                    "<p class=\"notice\">Showing the first 4096 bytes; the body is {total} bytes long.</p>"
+                );
             }
         }
         BodyView::Map(entries) => {
             c.push_str("<div class=\"table-wrap\"><table><thead><tr><th scope=\"col\">Key</th><th scope=\"col\">Type</th><th scope=\"col\">Value</th></tr></thead><tbody>");
             for (k, ty, v) in entries {
-                let _ = write!(c, "<tr><td class=\"id\">{}</td><td>{ty}</td><td class=\"id\">{}</td></tr>", esc(&k), esc(&v));
+                let _ = write!(
+                    c,
+                    "<tr><td class=\"id\">{}</td><td>{ty}</td><td class=\"id\">{}</td></tr>",
+                    esc(&k),
+                    esc(&v)
+                );
             }
             c.push_str("</tbody></table></div>");
         }
         BodyView::Object { size } => {
-            let _ = write!(c, "<p>{size} bytes: serialized Java object (not deserialized by the broker)</p>");
+            let _ = write!(
+                c,
+                "<p>{size} bytes: serialized Java object (not deserialized by the broker)</p>"
+            );
         }
         BodyView::Stream(values) => {
             c.push_str("<div class=\"table-wrap\"><table><thead><tr><th scope=\"col\">Type</th><th scope=\"col\">Value</th></tr></thead><tbody>");
@@ -634,10 +763,19 @@ fn body_html(c: &mut String, view: BodyView) {
 pub async fn topics(State(s): State<AdminState>, ctx: Ctx) -> Response {
     let mut c = String::from("<h1>Topics</h1><div class=\"table-wrap\"><table><thead><tr><th scope=\"col\">Name</th><th scope=\"col\" class=\"num\">Consumers</th><th scope=\"col\" class=\"num\">Producers</th><th scope=\"col\" class=\"num\">Published</th><th scope=\"col\" class=\"num\">Discarded</th></tr></thead><tbody>");
     let mut any = false;
-    for d in s.broker.destinations().iter().filter(|d| d.dest.kind.is_topic() && visible(d)) {
+    for d in s
+        .broker
+        .destinations()
+        .iter()
+        .filter(|d| d.dest.kind.is_topic() && visible(d))
+    {
         any = true;
         let snap = d.snapshot();
-        let kind = if d.dest.kind.is_temporary() { badge("info", "temporary") } else { String::new() };
+        let kind = if d.dest.kind.is_temporary() {
+            badge("info", "temporary")
+        } else {
+            String::new()
+        };
         let _ = write!(
             c,
             "<tr><th scope=\"row\" class=\"id\">{}{kind}</th><td class=\"num\">{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td></tr>",
@@ -686,19 +824,31 @@ mod tests {
 
     #[test]
     fn escaping_and_encoding() {
-        assert_eq!(esc("<a href=\"x\">'&'</a>"), "&lt;a href=&quot;x&quot;&gt;&#39;&amp;&#39;&lt;/a&gt;");
+        assert_eq!(
+            esc("<a href=\"x\">'&'</a>"),
+            "&lt;a href=&quot;x&quot;&gt;&#39;&amp;&#39;&lt;/a&gt;"
+        );
         assert_eq!(enc("orders/eu 1"), "orders%2Feu%201");
         assert_eq!(enc("/queues?refresh=5"), "%2Fqueues%3Frefresh%3D5");
     }
 
     #[test]
     fn links_keep_parameters() {
-        let q: HashMap<String, String> =
-            [("sort", "pending"), ("order", "desc"), ("refresh", "5"), ("junk", "x")].iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
-        let ctx = Ctx { user: None, path: "/queues".into(), q };
+        let q: HashMap<String, String> = [("sort", "pending"), ("order", "desc"), ("refresh", "5"), ("junk", "x")]
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        let ctx = Ctx {
+            user: None,
+            path: "/queues".into(),
+            q,
+        };
         assert_eq!(ctx.with("refresh", None), "/queues?sort=pending&order=desc");
         assert_eq!(ctx.link("/topics", &[]), "/topics?refresh=5");
-        assert_eq!(ctx.link("/queues", &[("sort", "name"), ("order", "asc")]), "/queues?sort=name&order=asc&refresh=5");
+        assert_eq!(
+            ctx.link("/queues", &[("sort", "name"), ("order", "asc")]),
+            "/queues?sort=name&order=asc&refresh=5"
+        );
     }
 
     #[test]

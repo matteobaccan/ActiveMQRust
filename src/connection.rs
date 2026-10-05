@@ -3,12 +3,12 @@
 
 //! One OpenWire client connection: framing, negotiation, keep-alive and command handling.
 
+use bytes::Buf;
 use bytes::{Bytes, BytesMut};
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
-use bytes::Buf;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, watch, Notify};
@@ -48,7 +48,10 @@ pub struct FrameReader<R> {
 
 impl<R: AsyncRead + Unpin> FrameReader<R> {
     pub fn new(r: R) -> Self {
-        FrameReader { r, buf: BytesMut::with_capacity(READ_BUF) }
+        FrameReader {
+            r,
+            buf: BytesMut::with_capacity(READ_BUF),
+        }
     }
 
     /// Reads more bytes into the buffer; 0 means end of stream.
@@ -117,7 +120,10 @@ const BATCH_BYTES: usize = 256 * 1024;
 
 /// Writes all chunks with vectored writes (large bodies are sent without copying), at most
 /// `MAX_IO_SLICES` slices per call.
-async fn write_chunks<W: AsyncWrite + Unpin>(w: &mut W, chunks: &mut std::collections::VecDeque<Bytes>) -> std::io::Result<()> {
+async fn write_chunks<W: AsyncWrite + Unpin>(
+    w: &mut W,
+    chunks: &mut std::collections::VecDeque<Bytes>,
+) -> std::io::Result<()> {
     while !chunks.is_empty() {
         let mut slices = [std::io::IoSlice::new(&[]); MAX_IO_SLICES];
         let count = chunks.len().min(MAX_IO_SLICES);
@@ -284,7 +290,10 @@ pub async fn serve_with_codec(
             return;
         }
         Err(NegotiationError::VersionTooOld(v)) => {
-            tracing::warn!("{remote}: OpenWire version {v} is not supported (minimum {}), closing", t::MIN_VERSION);
+            tracing::warn!(
+                "{remote}: OpenWire version {v} is not supported (minimum {}), closing",
+                t::MIN_VERSION
+            );
             return;
         }
     };
@@ -294,10 +303,13 @@ pub async fn serve_with_codec(
     let id = broker.new_conn_id();
     let handle = Arc::new(ConnHandle::new(id, remote, tx));
     handle.info.lock().version = neg.version;
-    let keepalive = (neg.max_inactivity_ms > 0).then(|| Duration::from_millis((neg.max_inactivity_ms / 2).max(1) as u64));
+    let keepalive =
+        (neg.max_inactivity_ms > 0).then(|| Duration::from_millis((neg.max_inactivity_ms / 2).max(1) as u64));
     let closed = Arc::new(Notify::new());
     let writer = tokio::spawn(writer_task(w, rx, make_codec(neg.version), keepalive, closed.clone()));
-    handle.send(Command::WireFormatInfo(wireformat::broker_wire_format(&client_wf, max_frame)));
+    handle.send(Command::WireFormatInfo(wireformat::broker_wire_format(
+        &client_wf, max_frame,
+    )));
     handle.send(Command::BrokerInfo(BrokerInfo {
         header: Header::default(),
         broker_id: Some(broker.broker_id.clone()),
@@ -466,7 +478,10 @@ impl Conn {
                 self.reply(header, r);
             }
             Command::RemoveSubscriptionInfo(_) => {
-                self.reply(header, Err((JMS_EXCEPTION, "Durable subscriptions are not supported".into())));
+                self.reply(
+                    header,
+                    Err((JMS_EXCEPTION, "Durable subscriptions are not supported".into())),
+                );
             }
             Command::KeepAliveInfo(h) => {
                 if h.response_required {
@@ -496,8 +511,18 @@ impl Conn {
                 self.reply(header, Ok(()));
             }
             Command::Unsupported { type_code, header } => {
-                tracing::debug!("{}: unsupported command type {type_code} ({})", self.remote, t::command_name(type_code));
-                self.reply(header, Err((UNSUPPORTED, format!("Unsupported command: {}", t::command_name(type_code)))));
+                tracing::debug!(
+                    "{}: unsupported command type {type_code} ({})",
+                    self.remote,
+                    t::command_name(type_code)
+                );
+                self.reply(
+                    header,
+                    Err((
+                        UNSUPPORTED,
+                        format!("Unsupported command: {}", t::command_name(type_code)),
+                    )),
+                );
             }
         }
     }
@@ -527,8 +552,12 @@ impl Conn {
                     info.client_id = ci.client_id.clone().unwrap_or_default();
                     info.user = self.user.clone();
                 }
-                tracing::info!("connection opened: {} user={} ({})", self.remote, self.user,
-                    ci.connection_id.as_ref().map(|c| c.to_string()).unwrap_or_default());
+                tracing::info!(
+                    "connection opened: {} user={} ({})",
+                    self.remote,
+                    self.user,
+                    ci.connection_id.as_ref().map(|c| c.to_string()).unwrap_or_default()
+                );
                 self.reply(header, Ok(()));
             }
             Login::Rejected => {
@@ -553,10 +582,16 @@ impl Conn {
     /// Checks a destination used by a producer or consumer.
     fn check_destination(&self, d: &Destination, consuming: bool) -> Result<(), (&'static str, String)> {
         if d.is_wildcard() {
-            return Err((INVALID_DESTINATION, format!("Wildcard destinations are not supported: {d}")));
+            return Err((
+                INVALID_DESTINATION,
+                format!("Wildcard destinations are not supported: {d}"),
+            ));
         }
         if d.is_composite() {
-            return Err((INVALID_DESTINATION, format!("Composite destinations are not supported: {d}")));
+            return Err((
+                INVALID_DESTINATION,
+                format!("Composite destinations are not supported: {d}"),
+            ));
         }
         if d.kind.is_temporary() {
             match self.broker.get_dest(d) {
@@ -636,7 +671,14 @@ impl Conn {
             }
             None => None,
         };
-        self.producers.insert(pid, ProducerReg { dest, window: pi.window_size, session });
+        self.producers.insert(
+            pid,
+            ProducerReg {
+                dest,
+                window: pi.window_size,
+                session,
+            },
+        );
         Ok(())
     }
 
@@ -653,7 +695,10 @@ impl Conn {
             .unwrap_or(0);
         // Asynchronous messages that can never be accepted deserve a warning: a wildcard or composite
         // destination, an XA transaction or a transaction that is not open.
-        let serious = msg.destination.as_ref().is_some_and(|d| d.is_wildcard() || d.is_composite())
+        let serious = msg
+            .destination
+            .as_ref()
+            .is_some_and(|d| d.is_wildcard() || d.is_composite())
             || match &msg.transaction_id {
                 Some(TransactionId::Xa { .. }) => true,
                 Some(txid) => !self.txs.contains_key(txid),
@@ -664,9 +709,17 @@ impl Conn {
         if !sync {
             if let Err((class, m)) = &result {
                 if serious || transacted {
-                    tracing::warn!("{}: asynchronous message {} dropped: {class}: {m}", self.remote, msg.message_id_text());
+                    tracing::warn!(
+                        "{}: asynchronous message {} dropped: {class}: {m}",
+                        self.remote,
+                        msg.message_id_text()
+                    );
                 } else {
-                    tracing::debug!("{}: asynchronous message {} dropped: {class}: {m}", self.remote, msg.message_id_text());
+                    tracing::debug!(
+                        "{}: asynchronous message {} dropped: {class}: {m}",
+                        self.remote,
+                        msg.message_id_text()
+                    );
                 }
             }
             if producer_window > 0 {
@@ -715,12 +768,18 @@ impl Conn {
         match msg.transaction_id.clone() {
             Some(txid) => {
                 if !self.txs.contains_key(&txid) {
-                    return Err((JMS_EXCEPTION, format!("Transaction '{}' has not been started.", tx_text(&txid))));
+                    return Err((
+                        JMS_EXCEPTION,
+                        format!("Transaction '{}' has not been started.", tx_text(&txid)),
+                    ));
                 }
                 // The destination exists from the send on; the memory limit applies now, not at commit.
                 let d = self.broker.target(&dest).map_err(rejection)?;
-                let size = msg.content_len() as u64 + msg.properties_len() as u64 + crate::broker::entry::ENTRY_OVERHEAD;
-                self.broker.check_memory(size, sync, &dest, Some(&d)).map_err(rejection)?;
+                let size =
+                    msg.content_len() as u64 + msg.properties_len() as u64 + crate::broker::entry::ENTRY_OVERHEAD;
+                self.broker
+                    .check_memory(size, sync, &dest, Some(&d))
+                    .map_err(rejection)?;
                 let ticket = MemTicket::new(self.broker.memory.clone(), size);
                 if let Some(tx) = self.txs.get_mut(&txid) {
                     tx.sends.push((msg.clone(), ticket));
@@ -752,7 +811,10 @@ impl Conn {
         match &ack.transaction_id {
             Some(txid) if deferred => {
                 let Some(tx) = self.txs.get_mut(txid) else {
-                    return Err((JMS_EXCEPTION, format!("Transaction '{}' has not been started.", tx_text(txid))));
+                    return Err((
+                        JMS_EXCEPTION,
+                        format!("Transaction '{}' has not been started.", tx_text(txid)),
+                    ));
                 };
                 tx.acks.push((d.clone(), ack.clone()));
                 d.ack(&ack, true, now);
@@ -767,8 +829,12 @@ impl Conn {
     }
 
     fn on_pull(&mut self, p: MessagePull) {
-        let Some(cid) = p.consumer_id.clone() else { return };
-        let Some(Some(d)) = self.consumers.get(&cid).map(|c| c.dest.clone()) else { return };
+        let Some(cid) = p.consumer_id.clone() else {
+            return;
+        };
+        let Some(Some(d)) = self.consumers.get(&cid).map(|c| c.dest.clone()) else {
+            return;
+        };
         if let Some(generation) = d.pull(&cid, p.timeout, now_ms()) {
             let timeout = Duration::from_millis(p.timeout.max(0) as u64);
             tokio::spawn(async move {
@@ -792,7 +858,10 @@ impl Conn {
             }
             tx_type::COMMIT_ONE_PHASE => {
                 let Some(tx) = self.txs.remove(&txid) else {
-                    return Err((JMS_EXCEPTION, format!("Transaction '{}' has not been started.", tx_text(&txid))));
+                    return Err((
+                        JMS_EXCEPTION,
+                        format!("Transaction '{}' has not been started.", tx_text(&txid)),
+                    ));
                 };
                 let now = now_ms();
                 for (mut m, ticket) in tx.sends {
@@ -818,7 +887,10 @@ impl Conn {
             }
             tx_type::ROLLBACK => {
                 let Some(tx) = self.txs.remove(&txid) else {
-                    return Err((JMS_EXCEPTION, format!("Transaction '{}' has not been started.", tx_text(&txid))));
+                    return Err((
+                        JMS_EXCEPTION,
+                        format!("Transaction '{}' has not been started.", tx_text(&txid)),
+                    ));
                 };
                 release_tx(tx);
                 Ok(())

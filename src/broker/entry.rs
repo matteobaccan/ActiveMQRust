@@ -22,7 +22,10 @@ pub struct Memory {
 
 impl Memory {
     pub fn new(limit: u64) -> Self {
-        Memory { used: AtomicU64::new(0), limit }
+        Memory {
+            used: AtomicU64::new(0),
+            limit,
+        }
     }
 
     pub fn used(&self) -> u64 {
@@ -93,7 +96,12 @@ pub struct Meta {
 impl Meta {
     pub fn new(memory: Arc<Memory>, msg: &Message) -> Arc<Meta> {
         let size = msg.content_len() as u64 + msg.properties_len() as u64 + ENTRY_OVERHEAD;
-        Arc::new(Meta { size, _ticket: MemTicket::new(memory, size), usage: OnceLock::new(), props: OnceLock::new() })
+        Arc::new(Meta {
+            size,
+            _ticket: MemTicket::new(memory, size),
+            usage: OnceLock::new(),
+            props: OnceLock::new(),
+        })
     }
 
     /// Charges the message to a destination's usage (once; later calls do nothing).
@@ -103,7 +111,11 @@ impl Meta {
             if compressed {
                 usage.compressed.fetch_add(1, Ordering::Relaxed);
             }
-            UsageTicket { usage: usage.clone(), size: self.size, compressed }
+            UsageTicket {
+                usage: usage.clone(),
+                size: self.size,
+                compressed,
+            }
         });
     }
 }
@@ -142,7 +154,11 @@ impl Entry {
                 Ok(Some(m)) => Props::Map(Arc::new(m)),
                 Ok(None) => Props::Absent,
                 Err(e) => {
-                    tracing::warn!("cannot decode properties of message {}: {}", self.msg.message_id_text(), e);
+                    tracing::warn!(
+                        "cannot decode properties of message {}: {}",
+                        self.msg.message_id_text(),
+                        e
+                    );
                     Props::Undecodable
                 }
             }
@@ -206,11 +222,21 @@ fn transaction_text(t: &TransactionId) -> String {
             Some(c) => format!("TX:{c}:{value}"),
             None => format!("TX:null:{value}"),
         },
-        TransactionId::Xa { format_id, global_transaction_id, branch_qualifier } => {
+        TransactionId::Xa {
+            format_id,
+            global_transaction_id,
+            branch_qualifier,
+        } => {
             let hex = |b: &Option<bytes::Bytes>| {
-                b.as_ref().map(|b| b.iter().map(|x| format!("{x:x}")).collect::<String>()).unwrap_or_default()
+                b.as_ref()
+                    .map(|b| b.iter().map(|x| format!("{x:x}")).collect::<String>())
+                    .unwrap_or_default()
             };
-            format!("XID:[{format_id},globalId={},branchId={}]", hex(global_transaction_id), hex(branch_qualifier))
+            format!(
+                "XID:[{format_id},globalId={},branchId={}]",
+                hex(global_transaction_id),
+                hex(branch_qualifier)
+            )
         }
     }
 }
@@ -240,11 +266,19 @@ impl MessageView for Entry {
                 Some(d) => SVal::Str(d.to_string()),
                 None => SVal::Null,
             },
-            Header::ReplyTo => m.reply_to.as_ref().map(|d| SVal::Str(d.to_string())).unwrap_or(SVal::Null),
+            Header::ReplyTo => m
+                .reply_to
+                .as_ref()
+                .map(|d| SVal::Str(d.to_string()))
+                .unwrap_or(SVal::Null),
             Header::Type => opt_str(&m.jms_type),
             Header::DeliveryMode => SVal::Str(if m.persistent { "PERSISTENT" } else { "NON_PERSISTENT" }.into()),
             Header::Priority => SVal::Int(m.priority as i32),
-            Header::MessageId => m.message_id.as_ref().map(|id| SVal::Str(id.to_string())).unwrap_or(SVal::Null),
+            Header::MessageId => m
+                .message_id
+                .as_ref()
+                .map(|id| SVal::Str(id.to_string()))
+                .unwrap_or(SVal::Null),
             Header::Timestamp => SVal::Long(m.timestamp),
             Header::CorrelationId => opt_str(&m.correlation_id),
             Header::Expiration => SVal::Long(m.expiration),
@@ -289,7 +323,12 @@ mod tests {
         m.priority = 7;
         m.marshalled_properties = props;
         let meta = Meta::new(Arc::new(Memory::new(0)), &m);
-        Entry { seq: 1, msg: Arc::new(m), meta, redelivery: 0 }
+        Entry {
+            seq: 1,
+            msg: Arc::new(m),
+            meta,
+            redelivery: 0,
+        }
     }
 
     fn props(entries: &[(&str, Value)]) -> Bytes {
@@ -307,7 +346,9 @@ mod tests {
     #[test]
     fn header_only_selector_does_not_decode_properties() {
         let e = entry(Some(props(&[("color", Value::String("red".into()))])));
-        let s = Selector::compile("JMSCorrelationID = 'ORD-A' AND JMSPriority > 3").unwrap().unwrap();
+        let s = Selector::compile("JMSCorrelationID = 'ORD-A' AND JMSPriority > 3")
+            .unwrap()
+            .unwrap();
         let before = decodes();
         assert!(s.matches(&e));
         assert_eq!(decodes(), before);
@@ -319,12 +360,21 @@ mod tests {
 
     #[test]
     fn properties_are_decoded_once_for_many_consumers() {
-        let e = entry(Some(props(&[("color", Value::String("red".into())), ("n", Value::Int(5))])));
+        let e = entry(Some(props(&[
+            ("color", Value::String("red".into())),
+            ("n", Value::Int(5)),
+        ])));
         let copies: Vec<Entry> = (0..5).map(|_| e.clone()).collect();
-        let selectors: Vec<Selector> = ["color = 'red'", "n = 5", "n > 1 AND color LIKE 'r%'", "missing IS NULL", "n BETWEEN 1 AND 9"]
-            .iter()
-            .map(|s| Selector::compile(s).unwrap().unwrap())
-            .collect();
+        let selectors: Vec<Selector> = [
+            "color = 'red'",
+            "n = 5",
+            "n > 1 AND color LIKE 'r%'",
+            "missing IS NULL",
+            "n BETWEEN 1 AND 9",
+        ]
+        .iter()
+        .map(|s| Selector::compile(s).unwrap().unwrap())
+        .collect();
         let before = decodes();
         for (s, c) in selectors.iter().zip(&copies) {
             assert!(s.matches(c), "{}", s.text());
@@ -337,7 +387,12 @@ mod tests {
         // A truncated map: one entry announced, nothing follows.
         let e = entry(Some(Bytes::from_static(&[0, 0, 0, 1])));
         let before = decodes();
-        for s in ["color = 'red'", "color IS NULL", "NOT (color = 'red')", "color IS NOT NULL"] {
+        for s in [
+            "color = 'red'",
+            "color IS NULL",
+            "NOT (color = 'red')",
+            "color IS NOT NULL",
+        ] {
             assert!(!Selector::compile(s).unwrap().unwrap().matches(&e), "{s}");
         }
         assert_eq!(decodes() - before, 1, "decoded (and logged) once");

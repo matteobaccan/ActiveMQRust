@@ -26,10 +26,14 @@ fn header_selector(c: &mut Criterion) {
     broker.deliver(common::text_message(&q, 1, 64), true, now_ms()).unwrap();
     let (_, entries) = broker.get_dest(&q).unwrap().page(0, 1);
     let entry = entries[0].clone();
-    let sel = Selector::compile("JMSCorrelationID IN ('ORD-A','ORD-C') AND JMSPriority >= 4").unwrap().unwrap();
+    let sel = Selector::compile("JMSCorrelationID IN ('ORD-A','ORD-C') AND JMSPriority >= 4")
+        .unwrap()
+        .unwrap();
     let mut g = c.benchmark_group("selector");
     g.throughput(Throughput::Elements(1));
-    g.bench_function("header_selector", |b| b.iter(|| black_box(sel.matches(black_box(&entry)))));
+    g.bench_function("header_selector", |b| {
+        b.iter(|| black_box(sel.matches(black_box(&entry))))
+    });
     g.finish();
 }
 
@@ -66,7 +70,11 @@ fn selective_dispatch(c: &mut Criterion) {
                     let selector = Selector::compile(&format!("n = '{k}'")).unwrap().map(Arc::new);
                     d.add_sub(
                         SubSpec {
-                            id: ConsumerId { connection_id: Arc::from(format!("c{k}")), session_id: 1, value: 1 },
+                            id: ConsumerId {
+                                connection_id: Arc::from(format!("c{k}")),
+                                session_id: 1,
+                                value: 1,
+                            },
                             conn: handle,
                             prefetch: i32::MAX,
                             selector,

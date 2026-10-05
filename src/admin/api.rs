@@ -22,7 +22,11 @@ use crate::openwire::wireformat::{PROVIDER_NAME, PROVIDER_VERSION};
 type Params = Query<HashMap<String, String>>;
 
 fn not_found(what: &str) -> Response {
-    (StatusCode::NOT_FOUND, Json(json!({ "error": format!("{what} not found") }))).into_response()
+    (
+        StatusCode::NOT_FOUND,
+        Json(json!({ "error": format!("{what} not found") })),
+    )
+        .into_response()
 }
 
 fn queue_json(s: &DestSnapshot) -> J {
@@ -115,15 +119,22 @@ pub async fn overview(State(s): State<AdminState>) -> Json<J> {
 }
 
 pub async fn queues(State(s): State<AdminState>, Query(p): Params) -> Json<J> {
-    let mut rows: Vec<DestSnapshot> =
-        s.broker.destinations().iter().filter(|d| d.dest.kind.is_queue()).map(|d| d.snapshot()).collect();
+    let mut rows: Vec<DestSnapshot> = s
+        .broker
+        .destinations()
+        .iter()
+        .filter(|d| d.dest.kind.is_queue())
+        .map(|d| d.snapshot())
+        .collect();
     let (col, desc) = sort_params(p.get("sort").map(String::as_str), p.get("order").map(String::as_str));
     sort_queues(&mut rows, col, desc);
     Json(json!(rows.iter().map(queue_json).collect::<Vec<_>>()))
 }
 
 pub async fn queue_detail(State(s): State<AdminState>, Path(name): Path<String>) -> Response {
-    let Some(d) = find_queue(&s, &name) else { return not_found("queue") };
+    let Some(d) = find_queue(&s, &name) else {
+        return not_found("queue");
+    };
     let snap = d.snapshot();
     let mut v = queue_json(&snap);
     v["consumers"] = json!(snap
@@ -152,9 +163,15 @@ pub async fn queue_detail(State(s): State<AdminState>, Path(name): Path<String>)
 
 /// A page of messages: `offset` (default 0) and `limit` (default 50, clamped to 1..50).
 pub async fn messages(State(s): State<AdminState>, Path(name): Path<String>, Query(p): Params) -> Response {
-    let Some(d) = find_queue(&s, &name) else { return not_found("queue") };
+    let Some(d) = find_queue(&s, &name) else {
+        return not_found("queue");
+    };
     let offset: usize = p.get("offset").and_then(|v| v.parse().ok()).unwrap_or(0);
-    let limit: usize = p.get("limit").and_then(|v| v.parse().ok()).unwrap_or(PAGE_SIZE).clamp(1, PAGE_SIZE);
+    let limit: usize = p
+        .get("limit")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(PAGE_SIZE)
+        .clamp(1, PAGE_SIZE);
     let (total, entries) = d.page(offset, limit);
     let now = now_ms();
     Json(json!({
@@ -176,9 +193,13 @@ pub async fn message(
     Path((name, id)): Path<(String, String)>,
     Query(p): Params,
 ) -> Response {
-    let Some(d) = find_queue(&s, &name) else { return not_found("queue") };
+    let Some(d) = find_queue(&s, &name) else {
+        return not_found("queue");
+    };
     let seq = p.get("seq").and_then(|v| v.parse().ok());
-    let Some((e, inflight)) = d.find(seq, &id) else { return not_found("message") };
+    let Some((e, inflight)) = d.find(seq, &id) else {
+        return not_found("message");
+    };
     let mut v = message_json(&e, now_ms());
     v["inflight"] = json!(inflight);
     let rendered = render(&e.msg);
@@ -189,7 +210,9 @@ pub async fn message(
     };
     v["body"] = match rendered.view {
         BodyView::NoBody => json!({ "kind": "none" }),
-        BodyView::Text { text, truncated } => json!({ "kind": "text", "text": text, "truncated": truncated }),
+        BodyView::Text { text, truncated } => {
+            json!({ "kind": "text", "text": text, "truncated": truncated })
+        }
         BodyView::Bytes { head, total } => {
             json!({ "kind": "bytes", "hex": hex(&head), "size": total, "truncated": total > HEX_LIMIT })
         }

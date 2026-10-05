@@ -27,7 +27,9 @@ use mqrust::openwire::types as t;
 fn broker_with(f: impl FnOnce(&mut FileConfig)) -> Arc<Broker> {
     let mut fc = FileConfig::default();
     f(&mut fc);
-    Broker::new(Arc::new(build(fc, ConfigSource::Defaults, &Overrides::default()).unwrap()))
+    Broker::new(Arc::new(
+        build(fc, ConfigSource::Defaults, &Overrides::default()).unwrap(),
+    ))
 }
 
 /// Frame bodies (without the size prefix) of a recorded stream.
@@ -55,7 +57,10 @@ fn decode_message(frame: &Bytes) -> Message {
 /// of the same body without compression.
 #[test]
 fn golden_vectors_of_the_five_types() {
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests").join("data").join("compression");
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("data")
+        .join("compression");
     let types = [
         ("text", t::ACTIVEMQ_TEXT_MESSAGE),
         ("bytes", t::ACTIVEMQ_BYTES_MESSAGE),
@@ -72,21 +77,37 @@ fn golden_vectors_of_the_five_types() {
         assert_eq!(zipped.msg_type, msg_type, "{name}");
         assert!(zipped.compressed && !plain.compressed, "{name}: compressed flags");
         // The codec re-encodes the client's frames byte for byte.
-        assert_eq!(&Encoder::new(12).frame(&Command::Message(Box::new(zipped.clone())))[4..], &f[0][..], "{name}");
+        assert_eq!(
+            &Encoder::new(12).frame(&Command::Message(Box::new(zipped.clone())))[4..],
+            &f[0][..],
+            "{name}"
+        );
         let zc = zipped.content.clone().unwrap();
         let pc = plain.content.clone().unwrap();
         // The client's compressed form decodes to exactly the uncompressed form.
-        assert_eq!(decompress_content(msg_type, &zc, usize::MAX).unwrap(), pc.to_vec(), "{name}: client body");
+        assert_eq!(
+            decompress_content(msg_type, &zc, usize::MAX).unwrap(),
+            pc.to_vec(),
+            "{name}: client body"
+        );
         // The broker's form has the same layout and decodes to the same bytes.
         let ours = compress_content(msg_type, &pc);
-        assert_eq!(decompress_content(msg_type, &ours, usize::MAX).unwrap(), pc.to_vec(), "{name}: broker body");
+        assert_eq!(
+            decompress_content(msg_type, &ours, usize::MAX).unwrap(),
+            pc.to_vec(),
+            "{name}: broker body"
+        );
         let header = if msg_type == t::ACTIVEMQ_BYTES_MESSAGE { 4 } else { 0 };
         assert_eq!(&ours[..header], &zc[..header], "{name}: length prefix");
         assert_eq!(ours[header], 0x78, "{name}: zlib header");
         assert_eq!(zc[header], 0x78, "{name}: zlib header of the client");
         // Broker-side compression of the plain message produces the client's message shape.
         let mut m = plain.clone();
-        assert_eq!(compress::maybe_compress(&mut m, 1024, 10), Outcome::Compressed, "{name}");
+        assert_eq!(
+            compress::maybe_compress(&mut m, 1024, 10),
+            Outcome::Compressed,
+            "{name}"
+        );
         assert_eq!(m.compressed, zipped.compressed);
         assert_eq!(m.marshalled_properties, plain.marshalled_properties);
         assert_eq!(m.message_id, plain.message_id);
@@ -97,7 +118,11 @@ fn golden_vectors_of_the_five_types() {
         let handle = Arc::new(ConnHandle::new(1, "127.0.0.1:1".parse().unwrap(), tx));
         b.get_or_create(&q, None).add_sub(
             SubSpec {
-                id: ConsumerId { connection_id: Arc::from("golden"), session_id: 1, value: 1 },
+                id: ConsumerId {
+                    connection_id: Arc::from("golden"),
+                    session_id: 1,
+                    value: 1,
+                },
                 conn: handle,
                 prefetch: 10,
                 selector: None,
@@ -107,9 +132,15 @@ fn golden_vectors_of_the_five_types() {
             now_ms(),
         );
         let mut incoming = zipped.clone();
-        assert_eq!(b.compress(&mut incoming), Outcome::Skipped, "{name}: never compressed twice");
+        assert_eq!(
+            b.compress(&mut incoming),
+            Outcome::Skipped,
+            "{name}: never compressed twice"
+        );
         b.deliver(incoming, true, now_ms()).unwrap();
-        let Ok(Out::Cmd(cmd)) = rx.try_recv() else { panic!("{name}: no dispatch") };
+        let Ok(Out::Cmd(cmd)) = rx.try_recv() else {
+            panic!("{name}: no dispatch")
+        };
         let mut cb = ChunkBuf::new();
         LooseCodec::new(12).encode(&cmd, &mut cb);
         let wire: Vec<u8> = cb.take().into_iter().flat_map(|x| x.to_vec()).collect();
@@ -117,7 +148,11 @@ fn golden_vectors_of_the_five_types() {
             Some(Command::MessageDispatch(md)) => {
                 let m = md.message.unwrap();
                 assert!(m.compressed, "{name}");
-                assert_eq!(m.content.as_ref().unwrap(), &zc, "{name}: content changed by the broker");
+                assert_eq!(
+                    m.content.as_ref().unwrap(),
+                    &zc,
+                    "{name}: content changed by the broker"
+                );
             }
             other => panic!("{name}: unexpected {other:?}"),
         }
@@ -151,8 +186,15 @@ fn level_is_the_lowest_with_a_real_saving_on_xml_base64() {
             chosen = Some(level);
         }
     }
-    assert_eq!(chosen, Some(compress::LEVEL), "the lowest level saving 15% on xml+base64");
-    assert!(zlib_size(&text, compress::LEVEL) < zlib_size(&text, 1), "the level also helps plain text");
+    assert_eq!(
+        chosen,
+        Some(compress::LEVEL),
+        "the lowest level saving 15% on xml+base64"
+    );
+    assert!(
+        zlib_size(&text, compress::LEVEL) < zlib_size(&text, 1),
+        "the level also helps plain text"
+    );
 }
 
 #[test]

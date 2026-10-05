@@ -53,8 +53,15 @@ pub struct MessageId {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum TransactionId {
-    Local { value: i64, connection_id: Option<ConnectionId> },
-    Xa { format_id: i32, global_transaction_id: Option<Bytes>, branch_qualifier: Option<Bytes> },
+    Local {
+        value: i64,
+        connection_id: Option<ConnectionId>,
+    },
+    Xa {
+        format_id: i32,
+        global_transaction_id: Option<Bytes>,
+        branch_qualifier: Option<Bytes>,
+    },
 }
 
 impl fmt::Display for ConnectionId {
@@ -101,10 +108,16 @@ impl fmt::Display for MessageId {
 
 impl SessionId {
     pub fn of_consumer(c: &ConsumerId) -> SessionId {
-        SessionId { connection_id: c.connection_id.clone(), value: c.session_id }
+        SessionId {
+            connection_id: c.connection_id.clone(),
+            value: c.session_id,
+        }
     }
     pub fn of_producer(p: &ProducerId) -> SessionId {
-        SessionId { connection_id: p.connection_id.clone(), value: p.session_id }
+        SessionId {
+            connection_id: p.connection_id.clone(),
+            value: p.session_id,
+        }
     }
 }
 
@@ -170,7 +183,10 @@ pub struct Destination {
 
 impl Destination {
     pub fn new(kind: DestKind, name: &str) -> Destination {
-        Destination { kind, name: Arc::from(name) }
+        Destination {
+            kind,
+            name: Arc::from(name),
+        }
     }
 
     pub fn queue(name: &str) -> Destination {
@@ -225,7 +241,10 @@ pub struct Throwable {
 
 impl Throwable {
     pub fn new(class_name: &str, message: impl Into<String>) -> Throwable {
-        Throwable { class_name: class_name.to_string(), message: Some(message.into()) }
+        Throwable {
+            class_name: class_name.to_string(),
+            message: Some(message.into()),
+        }
     }
 }
 
@@ -581,11 +600,25 @@ pub enum Command {
     MessageDispatch(MessageDispatch),
     MessageAck(MessageAck),
     Message(Box<Message>),
-    Response { header: Header, correlation_id: i32 },
-    ExceptionResponse { header: Header, correlation_id: i32, exception: Option<Throwable> },
-    IntegerResponse { header: Header, correlation_id: i32, result: i32 },
+    Response {
+        header: Header,
+        correlation_id: i32,
+    },
+    ExceptionResponse {
+        header: Header,
+        correlation_id: i32,
+        exception: Option<Throwable>,
+    },
+    IntegerResponse {
+        header: Header,
+        correlation_id: i32,
+        result: i32,
+    },
     /// A command the broker decodes only to answer it (type code and header).
-    Unsupported { type_code: u8, header: Header },
+    Unsupported {
+        type_code: u8,
+        header: Header,
+    },
 }
 
 impl Command {
@@ -652,7 +685,10 @@ impl Command {
     }
 
     pub fn response(correlation_id: i32) -> Command {
-        Command::Response { header: Header::default(), correlation_id }
+        Command::Response {
+            header: Header::default(),
+            correlation_id,
+        }
     }
 
     pub fn exception(correlation_id: i32, class_name: &str, message: impl Into<String>) -> Command {

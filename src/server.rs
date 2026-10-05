@@ -75,17 +75,25 @@ fn startup_messages(cfg: &Config) {
     use std::io::IsTerminal;
     match &cfg.source {
         ConfigSource::File(p) => tracing::info!("configuration: {}", p.display()),
-        ConfigSource::Defaults => tracing::info!("configuration: built-in defaults (no mqrust.toml found)"),
+        ConfigSource::Defaults => {
+            tracing::info!("configuration: built-in defaults (no mqrust.toml found)")
+        }
     }
     let console = std::net::SocketAddr::new(cfg.admin_bind, cfg.admin_port);
-    tracing::info!("admin console on http://{console} (login with the [admin] user {})", cfg.admin_user.username);
+    tracing::info!(
+        "admin console on http://{console} (login with the [admin] user {})",
+        cfg.admin_user.username
+    );
     let n = cfg.users.len();
-    let anonymous = if cfg.allow_anonymous { ", anonymous access allowed" } else { "" };
+    let anonymous = if cfg.allow_anonymous {
+        ", anonymous access allowed"
+    } else {
+        ""
+    };
     tracing::info!("{n} messaging user{}{anonymous}", if n == 1 { "" } else { "s" });
 
-    let is_default = |u: &User| {
-        u.username == DEFAULT_USER && matches!(&u.secret, Secret::Plain(p) if p == DEFAULT_PASSWORD)
-    };
+    let is_default =
+        |u: &User| u.username == DEFAULT_USER && matches!(&u.secret, Secret::Plain(p) if p == DEFAULT_PASSWORD);
     if cfg.default_credentials {
         tracing::warn!(
             "default credentials admin/admin in use for the admin console and the messaging clients: \
@@ -140,7 +148,11 @@ pub fn console_stop_signal() -> StopSignal {
 /// Opens the OpenWire listener. Accepted sockets inherit its buffer sizes: with the small
 /// Windows default, large dispatches stall between socket writes and consumers wait.
 fn listen(addr: std::net::SocketAddr, buffer: u32) -> std::io::Result<TcpListener> {
-    let socket = if addr.is_ipv4() { tokio::net::TcpSocket::new_v4()? } else { tokio::net::TcpSocket::new_v6()? };
+    let socket = if addr.is_ipv4() {
+        tokio::net::TcpSocket::new_v4()?
+    } else {
+        tokio::net::TcpSocket::new_v6()?
+    };
     if buffer > 0 {
         socket.set_send_buffer_size(buffer)?;
         socket.set_recv_buffer_size(buffer)?;
