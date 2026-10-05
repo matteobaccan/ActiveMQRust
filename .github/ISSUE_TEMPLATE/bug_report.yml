@@ -1,0 +1,48 @@
+# ActiveMQRust by Matteo Baccan
+# SPDX-License-Identifier: MIT
+
+name: Bug report
+description: Something does not work as expected. Describe how to reproduce it; the fix is written by the project's agent.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. Code contributions are not accepted: the more precise the description, the faster the agent can reproduce the problem with a test and fix it.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you saw, including error messages and the broker log lines around the problem.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+      description: The expected behaviour; if ActiveMQ behaves differently in the same situation, say how.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Configuration (`mqrust.toml`, without passwords), client code or connection URL, message types and sizes, number of producers and consumers.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: ActiveMQRust version
+      description: Output of `mqrust.exe --version`.
+    validations:
+      required: true
+  - type: input
+    id: client
+    attributes:
+      label: Java client version
+      description: The `activemq-client` version (for example 5.18.7 or 6.3.2) and the JDK.
+  - type: input
+    id: os
+    attributes:
+      label: Operating system

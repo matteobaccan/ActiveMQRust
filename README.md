@@ -409,6 +409,12 @@ pwsh scripts\soak-compare.ps1 -ActiveMQ5 ... -ActiveMQ6 ... -Duration 60 -Produc
 
 Defaults: 10 producers at 10 messages per second each, 10 consumers on one shared queue (`-Queues` for more), 1 KB messages, 300 s, results in `docs\benchmarks\soak-results.csv`. Other options: `-Rate 0` (producers send as fast as they can for the duration; the result adds throughput), `-ClientCompression` (`useCompression=true` in the client), `-MqrustConfig <file>` (configuration for ActiveMQRust, e.g. with `compress_threshold_kb`), `-AmqHeap 8g` and `-AmqMemoryLimitGB 7` (ActiveMQ heap and memory limit; defaults 4g and 3), `-ClientProfile amq5|amq6` (the client build used for every broker; default `amq5`) and `-Only <name>` (run one broker). After each ActiveMQ run the script checks its log for memory-limit, flow-control or spooling lines, which would mean it did not keep everything in RAM. The same scenario can be run directly: `java -jar tests\java-it\target\amq5\mqrust-acceptance.jar bench --scenario soak --producers 10 --consumers 10 --rate 10 --duration-seconds 300`.
 
+## Contributing
+
+> [!IMPORTANT]
+> **Please don't contribute code to this project: contribute requests.**
+> ActiveMQRust is developed by an AI coding agent working from specifications, and pull requests with code are not merged. Instead, [open an issue](https://github.com/matteobaccan/ActiveMQRust/issues/new/choose) and explain what you need: the problem, the behaviour you expect, the ActiveMQ feature or client usage you rely on, or how to reproduce a bug. Your request becomes a specification, and the agent writes the code and the tests.
+
 ## License
 
 Released under the [MIT](LICENSE) license.

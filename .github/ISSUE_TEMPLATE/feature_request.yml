@@ -1,0 +1,40 @@
+# ActiveMQRust by Matteo Baccan
+# SPDX-License-Identifier: MIT
+
+name: Feature request
+description: Ask for a feature or a change. Describe what you need; the code is written by the project's agent.
+labels: ["request"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the request. Code contributions are not accepted: explain what you need and it becomes a specification that the agent implements, with tests.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What do you need?
+      description: The problem you want to solve or the situation you are in, in your own words.
+    validations:
+      required: true
+  - type: textarea
+    id: behaviour
+    attributes:
+      label: Expected behaviour
+      description: What the broker, the admin console or the command line should do. Examples of messages, configuration or commands help.
+    validations:
+      required: true
+  - type: textarea
+    id: activemq
+    attributes:
+      label: ActiveMQ feature or client usage
+      description: If you rely on an ActiveMQ feature or a specific way of using the Java client, describe it (version of `activemq-client`, connection URL options, JMS API calls).
+  - type: textarea
+    id: scale
+    attributes:
+      label: Scale and environment
+      description: Message sizes and rates, number of producers and consumers, operating system.
+  - type: textarea
+    id: priority
+    attributes:
+      label: How important is it?
+      description: Blocking a migration from ActiveMQ, nice to have, ...
