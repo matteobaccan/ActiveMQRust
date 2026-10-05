@@ -7,7 +7,7 @@ Java applications that use the ActiveMQ driver (`activemq-client`) connect witho
 
 The goal is a broker that is **compatible** with ActiveMQ, **uses less RAM** and is **faster** than ActiveMQ, shipped as a single Windows executable with no dependencies.
 
-> **Project status:** design phase. The specifications are written as [OpenSpec](https://github.com/Fission-AI/OpenSpec) changes in [`openspec/changes/`](openspec/changes/), one per feature area; implementation has not started yet. The features below are **planned**.
+> **Project status:** the broker is implemented; the specifications are written as [OpenSpec](https://github.com/Fission-AI/OpenSpec) changes in [`openspec/changes/`](openspec/changes/), one per feature area. The performance benchmarks and the comparison with ActiveMQ are pending: no results are published yet.
 
 ## What it is good at
 
@@ -231,7 +231,8 @@ tests\java-it\run-acceptance.cmd amq6 --url tcp://127.0.0.1:61616 --user admin -
 - memory at idle, and the start-up time of each broker;
 - memory while holding **100,000 messages of 10 KB** each, and while holding **10,000 messages of 50 KB** each;
 - time to **produce** and time to **consume** those messages;
-- throughput with 1 KB messages and with 3,600 messages of 12 KB, with async and sync send.
+- throughput with 1 KB messages and with 3,600 messages of 12 KB, with async and sync send;
+- for every phase (start-up, idle, produce, hold, consume), the CPU and memory used by the broker, by the benchmark client and by the rest of the machine, and the broker's CPU time per 1,000 messages and per MB.
 
 Every test message is an XML `TextMessage` with 20 fields holding random values, plus a base64 buffer that pads the document to the exact target size. Payloads are generated from a fixed seed, so both brokers receive identical messages.
 
@@ -243,7 +244,7 @@ You need PowerShell 7, JDK 17 or later, the release build (`cargo build --releas
 pwsh scripts\compare-activemq.ps1 -ActiveMQ5 C:\tools\apache-activemq-5.18.7 -ActiveMQ6 C:\tools\apache-activemq-6.3.2
 ```
 
-The full comparison takes a few hours. Useful options: `-Quick` (one short run of everything, to check the setup; not a valid comparison), `-OutDir <dir>` (default `docs\benchmarks`), `-Port` / `-AdminPort` (default 61616 / 8161, used for every broker), `-SkipActiveMQ5`, `-SkipActiveMQ6`, `-SkipDefault` (skip ActiveMQ with its default configuration), `-Runs <n>` and `-Force` (only warn about CPU load and free memory). The fair ActiveMQ configuration and the ActiveMQRust configuration files are in [`scripts/activemq-bench/`](scripts/activemq-bench/).
+The full comparison takes a few hours. Run it first with `-DryRun`: it only checks the paths, the ports, free RAM and CPU load and prints what would run, without starting anything. Other options: `-Quick` (one short run of everything, to check the setup; not a valid comparison), `-OutDir <dir>` (default `docs\benchmarks`), `-Port` / `-AdminPort` (default 61616 / 8161, used for every broker), `-SkipActiveMQ5`, `-SkipActiveMQ6`, `-SkipDefault` (skip ActiveMQ with its default configuration), `-Runs <n>` and `-Force` (only warn about CPU load and free memory). The fair ActiveMQ configuration and the ActiveMQRust configuration files are in [`scripts/activemq-bench/`](scripts/activemq-bench/).
 
 The script writes `activemq-comparison-<date>.md` (machine details, every run, medians, ratios and a met / not met verdict for every criterion) and `activemq-comparison-<date>.csv` (one row per run). Reports are published in [`docs/benchmarks/`](docs/benchmarks/).
 

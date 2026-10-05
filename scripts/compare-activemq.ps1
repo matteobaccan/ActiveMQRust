@@ -9,6 +9,7 @@
 # Examples:
 #   pwsh scripts\compare-activemq.ps1 -ActiveMQ5 C:\tools\apache-activemq-5.18.7 -ActiveMQ6 C:\tools\apache-activemq-6.3.2
 #   pwsh scripts\compare-activemq.ps1 -ActiveMQ6 C:\tools\apache-activemq-6.3.2 -SkipActiveMQ5 -Quick -OutDir $env:TEMP\bench
+#   pwsh scripts\compare-activemq.ps1 -ActiveMQ5 ... -ActiveMQ6 ... -DryRun     (checks and plan only, starts nothing)
 #
 # Exit code: 0 when every run completed (whether or not the criteria are met), 1 when a broker
 # failed to start or a bench run failed, 2 when the pre-flight checks failed.
@@ -35,7 +36,8 @@ param(
     [string]$OutDir = (Join-Path $PSScriptRoot '..\docs\benchmarks'),
     [switch]$Quick,
     [switch]$Force,
-    [switch]$KeepData
+    [switch]$KeepData,
+    [switch]$DryRun
 )
 
 $ErrorActionPreference = 'Stop'
@@ -155,7 +157,7 @@ function Get-MachineDetails {
     $cv = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' -ErrorAction SilentlyContinue
     $plan = (& powercfg /getactivescheme 2>$null | Out-String).Trim()
     if ($plan -match '\(([^)]+)\)') { $plan = $Matches[1] }
-    $jdk = (& $Java -version 2>&1 | ForEach-Object { "$_" }) -join '; '
+    $jdk = try { (& $Java -version 2>&1 | ForEach-Object { "$_" }) -join '; ' } catch { 'not found' }
     return [ordered]@{
         'CPU'             = ($cpu[0].Name).Trim()
         'Physical cores'  = ($cpu | Measure-Object -Property NumberOfCores -Sum).Sum
@@ -188,19 +190,68 @@ foreach ($pair in @(@{ Profile = 'amq5'; Home = $ActiveMQ5; Skip = $SkipActiveMQ
 if ($amqHomes.Count -eq 0 -and $problems.Count -eq 0) { $problems += 'nothing to compare: pass -ActiveMQ5 and/or -ActiveMQ6' }
 foreach ($m in $Measurements) { if (-not $measureDefs.Contains($m)) { $problems += "unknown measurement: $m" } }
 foreach ($p in @($Port, $AdminPort)) { if (-not (Test-PortFree $p)) { $problems += "port $p is already in use" } }
-if ($problems.Count -gt 0) { Fail-Preflight ($problems -join '; ') }
+if ($problems.Count -gt 0 -and -not $DryRun) { Fail-Preflight ($problems -join '; ') }
 
 $free = Free-MemoryGB
 if ($free -lt $MinFreeMemoryGB) { $warnings += "only $free GB of physical memory is free ($MinFreeMemoryGB GB required)" }
 Log 'measuring machine CPU load (5 s)'
 $load = Measure-MachineCpu 5
 if ($load -gt $MaxCpuPercent) { $warnings += ('machine CPU load is {0:N0}% (at most {1}% allowed)' -f $load, $MaxCpuPercent) }
-if ($warnings.Count -gt 0) {
+if ($warnings.Count -gt 0 -and -not $DryRun) {
     if (-not $Force) { Fail-Preflight (($warnings -join '; ') + '. Close other programs, or pass -Force to continue anyway.') }
     foreach ($w in $warnings) { Log "warning: $w (continuing because of -Force)" }
 }
 $machine = Get-MachineDetails
 $preflight = ('free memory {0} GB, machine CPU load {1:N1}%' -f $free, $load)
+$mqrustVersion = if (Test-Path $Mqrust -PathType Leaf) { (& $Mqrust --version | Out-String).Trim() } else { 'not found' }
+
+# -- broker setups --------------------------------------------------------------------------
+$setups = @()
+foreach ($a in $amqHomes) {
+    $ver = Get-AmqVersion $a.Home
+    $setups += [pscustomobject]@{ Name = "activemq-$($a.Profile)-tuned"; Broker = 'ActiveMQ'; Version = $ver; Config = 'tuned'; Profile = $a.Profile; Home = $a.Home; Reference = $false }
+    if (-not $SkipDefault) {
+        $setups += [pscustomobject]@{ Name = "activemq-$($a.Profile)-default"; Broker = 'ActiveMQ'; Version = $ver; Config = 'default'; Profile = $a.Profile; Home = $a.Home; Reference = $true }
+    }
+    $setups += [pscustomobject]@{ Name = "mqrust-$($a.Profile)"; Broker = 'ActiveMQRust'; Version = $mqrustVersion; Config = 'mqrust-default'; Profile = $a.Profile; Home = $null; Reference = $false }
+    $setups += [pscustomobject]@{ Name = "mqrust-$($a.Profile)-nocompress"; Broker = 'ActiveMQRust'; Version = $mqrustVersion; Config = 'mqrust-nocompress'; Profile = $a.Profile; Home = $null; Reference = $false }
+}
+
+# -DryRun: report the checks and the plan, start nothing.
+if ($DryRun) {
+    Write-Host ''
+    Write-Host 'Pre-flight checks:'
+    foreach ($x in $problems) { Write-Host "  FAIL  $x" -ForegroundColor Red }
+    foreach ($x in $warnings) { Write-Host "  $(if ($Force) { 'WARN' } else { 'FAIL' })  $x" -ForegroundColor Yellow }
+    Write-Host "  ok    paths: mqrust.exe $(if (Test-Path $Mqrust -PathType Leaf) { 'found' } else { 'MISSING' }), Java $(if ($javaCmd) { $Java } else { 'MISSING' })"
+    Write-Host "  info  $preflight; ports $Port / $AdminPort $(if ((Test-PortFree $Port) -and (Test-PortFree $AdminPort)) { 'free' } else { 'IN USE' })"
+    Write-Host ''
+    Write-Host "Plan$(if ($Quick) { ' (-Quick smoke test)' }):"
+    Write-Host "  ActiveMQRust: $mqrustVersion ($Mqrust)"
+    foreach ($a in $amqHomes) {
+        $jar = Join-Path $jarDir "$($a.Profile)\mqrust-acceptance.jar"
+        Write-Host "  ActiveMQ $(Get-AmqVersion $a.Home) ($($a.Home)); client jar $($a.Profile): $(if (Test-Path $jar) { 'built' } else { 'will be built' })"
+    }
+    $total = 0
+    foreach ($setup in $setups) {
+        $ms = @($Measurements | Where-Object { $setup.Config -ne 'mqrust-nocompress' -or $_ -eq 'e' })
+        $n = $ms.Count * ($Runs + $(if ($Quick) { 0 } else { 1 }))
+        $total += $n
+        Write-Host ("  {0,-30} measurements {1}; {2} run(s)" -f $setup.Name, ($ms -join ', '), $n)
+    }
+    foreach ($m in $Measurements) {
+        $d = $measureDefs[$m]
+        if (-not $d) { continue }
+        Write-Host ("  {0,-8} {1}: {2} message(s) of {3} bytes, send {4}" -f $m, $d.Title, $d.Messages, $d.Size, $d.Send)
+    }
+    Write-Host "  runs: $total in total ($Runs measured per setup and measurement$(if (-not $Quick) { ' + 1 discarded warm-up' }), up to $MaxRetries retries each); warm-up messages $WarmupMessages, idle $IdleSeconds s, hold $HoldSeconds s, run timeout $TimeoutMinutes min"
+    Write-Host "  ports: OpenWire $Port, admin $AdminPort"
+    Write-Host "  output: $(Join-Path $OutDir "activemq-comparison-$date.md") and .csv (written at the end only)"
+    Write-Host ''
+    if ($problems.Count -gt 0 -or ($warnings.Count -gt 0 -and -not $Force)) { Write-Host 'dry run: the pre-flight checks would stop the comparison' -ForegroundColor Red; exit 2 }
+    Write-Host 'dry run: pre-flight ok, nothing was started'
+    exit 0
+}
 Log "pre-flight ok: $preflight"
 
 # -- build the client jars ------------------------------------------------------------------
@@ -212,7 +263,6 @@ foreach ($a in $amqHomes) {
         if ($LASTEXITCODE -ne 0) { Write-Host "client build failed ($($a.Profile))" -ForegroundColor Red; exit 1 }
     }
 }
-$mqrustVersion = (& $Mqrust --version | Out-String).Trim()
 
 $work = Join-Path ([System.IO.Path]::GetTempPath()) ("mqrust-compare-" + (Get-Date -Format 'yyyyMMdd-HHmmss'))
 New-Item -ItemType Directory -Force $work | Out-Null
@@ -301,11 +351,79 @@ function Median([double[]]$v) {
     return ($s[$n / 2 - 1] + $s[$n / 2]) / 2
 }
 
+# One sample: broker memory and CPU time, client CPU time and Working Set (when the client runs),
+# and the machine's CPU counters. CPU times are in 100 ns ticks.
 function Sample($proc, $samples) {
     try {
-        $p = Get-Process -Id $proc.Id -ErrorAction Stop
-        $samples.Add([pscustomobject]@{ T = [DateTimeOffset]::Now.ToUnixTimeMilliseconds(); WS = [double]$p.WorkingSet64; PB = [double]$p.PrivateMemorySize64 }) | Out-Null
+        $proc.Refresh()
+        $m = Get-CpuTimes
+        $c = $null; $cws = $null
+        if ($script:bench) {
+            try { $script:bench.Refresh(); $c = $script:bench.TotalProcessorTime.Ticks; if (-not $script:bench.HasExited) { $cws = [double]$script:bench.WorkingSet64 } } catch {}
+        }
+        $samples.Add([pscustomobject]@{
+                T = [DateTimeOffset]::Now.ToUnixTimeMilliseconds(); WS = [double]$proc.WorkingSet64; PB = [double]$proc.PrivateMemorySize64
+                BCpu = $proc.TotalProcessorTime.Ticks; CCpu = $c; CWS = $cws; MBusy = $m.Busy; MTotal = $m.Total
+            }) | Out-Null
     } catch {}
+}
+
+$logical = [Environment]::ProcessorCount
+$phaseNames = @('startup', 'idle', 'warmup', 'produce', 'hold', 'consume', 'throughput')
+$phaseMetrics = [ordered]@{
+    'broker_cpu_core_pct' = @('Broker CPU, % of one core', 'x'); 'broker_cpu_machine_pct' = @('Broker CPU, % of the machine', 'x')
+    'broker_cpu_ms_per_1k_msgs' = @('Broker CPU ms per 1,000 messages', 'x'); 'broker_cpu_ms_per_mb' = @('Broker CPU ms per MB', 'x')
+    'client_cpu_core_pct' = @('Client CPU, % of one core', 'x'); 'client_cpu_machine_pct' = @('Client CPU, % of the machine', 'x')
+    'client_peak_ws' = @('Client peak Working Set', 'MB')
+    'machine_cpu_pct' = @('Machine CPU, %', 'x'); 'other_cpu_pct' = @('Other processes CPU, % of the machine', 'x')
+    'ws_avg' = @('Broker Working Set, average', 'MB'); 'ws_peak' = @('Broker Working Set, peak', 'MB')
+    'pb_avg' = @('Broker Private Bytes, average', 'MB'); 'pb_peak' = @('Broker Private Bytes, peak', 'MB')
+    'broker_cpu_ms' = @('Broker CPU time', 'ms'); 'client_cpu_ms' = @('Client CPU time', 'ms'); 'ms' = @('Phase duration', 'ms')
+}
+
+# Resource usage of one phase [from, to] (ms since the epoch). CPU deltas use the last sample at or
+# before the start and the first sample at or after the end (250 ms resolution); memory averages and
+# peaks use the samples inside the phase. $a can be given explicitly (start-up phase).
+function Get-PhaseUsage($samples, [long]$from, [long]$to, [long]$messages, [int]$size, $a = $null) {
+    $r = [ordered]@{}
+    foreach ($k in $phaseMetrics.Keys) { $r[$k] = $null }
+    if (-not $a) { $a = @($samples | Where-Object { $_.T -le $from }) | Select-Object -Last 1 }
+    if (-not $a) { $a = $samples | Select-Object -First 1 }
+    $b = @($samples | Where-Object { $_.T -ge $to }) | Select-Object -First 1
+    if (-not $b) { $b = $samples | Select-Object -Last 1 }
+    if (-not $a -or -not $b -or $b.T -le $a.T) { return $r }
+    $dt = [double]($b.T - $a.T)
+    $r.ms = $to - $from
+    $bcpu = ($b.BCpu - $a.BCpu) / 10000.0
+    $r.broker_cpu_ms = [math]::Round($bcpu, 1)
+    $r.broker_cpu_core_pct = [math]::Round(100.0 * $bcpu / $dt, 2)
+    $r.broker_cpu_machine_pct = [math]::Round(100.0 * $bcpu / $dt / $logical, 2)
+    $cmach = 0.0
+    if ($null -ne $b.CCpu) {
+        $ccpu = ($b.CCpu - $(if ($null -ne $a.CCpu) { $a.CCpu } else { 0 })) / 10000.0
+        $r.client_cpu_ms = [math]::Round($ccpu, 1)
+        $r.client_cpu_core_pct = [math]::Round(100.0 * $ccpu / $dt, 2)
+        $cmach = 100.0 * $ccpu / $dt / $logical
+        $r.client_cpu_machine_pct = [math]::Round($cmach, 2)
+    }
+    if ($b.MTotal -gt $a.MTotal) {
+        $mach = 100.0 * ($b.MBusy - $a.MBusy) / ($b.MTotal - $a.MTotal)
+        $r.machine_cpu_pct = [math]::Round($mach, 2)
+        $r.other_cpu_pct = [math]::Round([math]::Max(0.0, $mach - 100.0 * $bcpu / $dt / $logical - $cmach), 2)
+    }
+    $in = @($samples | Where-Object { $_.T -ge $from -and $_.T -le $to })
+    if ($in.Count -eq 0) { $in = @($b) }
+    $r.ws_avg = ($in | Measure-Object -Property WS -Average).Average
+    $r.ws_peak = ($in | Measure-Object -Property WS -Maximum).Maximum
+    $r.pb_avg = ($in | Measure-Object -Property PB -Average).Average
+    $r.pb_peak = ($in | Measure-Object -Property PB -Maximum).Maximum
+    $cws = @($in | Where-Object { $null -ne $_.CWS } | ForEach-Object { $_.CWS })
+    if ($cws.Count -gt 0) { $r.client_peak_ws = ($cws | Measure-Object -Maximum).Maximum }
+    if ($messages -gt 0) {
+        $r.broker_cpu_ms_per_1k_msgs = [math]::Round($bcpu * 1000.0 / $messages, 3)
+        if ($size -gt 0) { $r.broker_cpu_ms_per_mb = [math]::Round($bcpu / ($messages * [double]$size / 1MB), 3) }
+    }
+    return $r
 }
 
 function Window($samples, [long]$from, [long]$to, [string]$field) {
@@ -368,6 +486,7 @@ function Run-One($setup, [string]$m, [int]$run, [bool]$warm, [int]$attempt) {
     $samples = New-Object System.Collections.ArrayList
     $idleWS = $null; $idlePB = $null; $holdWS = $null; $holdPB = $null; $peakWS = $null; $peakPB = $null
     $startupMs = $null; $otherCpu = $null; $comp = $null; $spool = @()
+    $usage = @{}; $t0 = $null; $startSnap = $null
     try {
         if (-not (Wait-PortFree $Port 30)) { throw "port $Port is still in use" }
         if (-not (Wait-PortFree $AdminPort 30)) { throw "port $AdminPort is still in use" }
@@ -381,6 +500,8 @@ function Run-One($setup, [string]$m, [int]$run, [bool]$warm, [int]$attempt) {
         $cpu0 = Get-CpuTimes
         $self = [System.Diagnostics.Process]::GetCurrentProcess()
         $selfCpu0 = Get-ProcessCpuTicks @($self)
+        $m0 = Get-CpuTimes
+        $startSnap = [pscustomobject]@{ T = [DateTimeOffset]::Now.ToUnixTimeMilliseconds(); WS = 0.0; PB = 0.0; BCpu = 0L; CCpu = $null; CWS = $null; MBusy = $m0.Busy; MTotal = $m0.Total }
         $sw = [System.Diagnostics.Stopwatch]::StartNew()
         $script:broker = Start-Process -FilePath $cmd.File -ArgumentList ($cmd.Args | ForEach-Object { Quote-Arg $_ }) -WorkingDirectory $cmd.Dir -PassThru -WindowStyle Hidden -RedirectStandardOutput $log -RedirectStandardError "$log.err"
         while ($true) {
@@ -390,6 +511,7 @@ function Run-One($setup, [string]$m, [int]$run, [bool]$warm, [int]$attempt) {
             Start-Sleep -Milliseconds 5
         }
         $startupMs = [math]::Round($sw.Elapsed.TotalMilliseconds, 0)
+        Sample $script:broker $samples
         $t0 = [DateTimeOffset]::Now.ToUnixTimeMilliseconds()
         $end = (Get-Date).AddSeconds($IdleSeconds)
         while ((Get-Date) -lt $end) { Sample $script:broker $samples; Start-Sleep -Milliseconds 250 }
@@ -420,6 +542,7 @@ function Run-One($setup, [string]$m, [int]$run, [bool]$warm, [int]$attempt) {
                 if ((Get-Date) -gt $deadline) { Stop-Proc $script:bench; $status = 'timeout'; $reason = "run timed out after $TimeoutMinutes min"; break }
                 Start-Sleep -Milliseconds 250
             }
+            Sample $script:broker $samples
             foreach ($line in Get-Content $out) {
                 if ($line -match '^PHASE (\S+) (\d+)') { $phase[$Matches[1]] = [long]$Matches[2] }
                 if ($line -match '^RESULT ') {
@@ -437,11 +560,27 @@ function Run-One($setup, [string]$m, [int]$run, [bool]$warm, [int]$attempt) {
             $holdWS = Window $samples ($he - 5000) $he 'WS'
             $holdPB = Window $samples ($he - 5000) $he 'PB'
         }
+        # Resource usage per phase.
+        $n = [long]$def.Messages; $sz = [int]$def.Size
+        if ($samples.Count -gt 0) {
+            $usage['startup'] = Get-PhaseUsage $samples $startSnap.T $samples[0].T 0 0 $startSnap
+            $usage['idle'] = Get-PhaseUsage $samples $t0 ($t0 + $IdleSeconds * 1000) 0 0
+        }
+        if ($phase.ContainsKey('warmup-start') -and $phase.ContainsKey('warmup-end')) {
+            $usage['warmup'] = Get-PhaseUsage $samples $phase['warmup-start'] $phase['warmup-end'] $WarmupMessages $sz
+        }
+        if ($def.Scenario -eq 'hold') {
+            if ($phase.ContainsKey('produce-end')) { $usage['produce'] = Get-PhaseUsage $samples $phase['produce-start'] $phase['produce-end'] $n $sz }
+            if ($phase.ContainsKey('hold-end')) { $usage['hold'] = Get-PhaseUsage $samples $phase['produce-end'] $phase['hold-end'] 0 0 }
+            if ($phase.ContainsKey('consume-end')) { $usage['consume'] = Get-PhaseUsage $samples $phase['consume-start'] $phase['consume-end'] $n $sz }
+        } elseif ($def.Scenario -and $phase.ContainsKey('consume-end')) {
+            $usage['throughput'] = Get-PhaseUsage $samples $phase['produce-start'] $phase['consume-end'] $n $sz
+        }
         $peakWS = ($samples | Measure-Object -Property WS -Maximum).Maximum
         $peakPB = ($samples | Measure-Object -Property PB -Maximum).Maximum
         $cpu1 = Get-CpuTimes
         $ours = (Get-ProcessCpuTicks @($script:broker, $script:bench, $self)) - $selfCpu0
-        if ($cpu1.Total -gt $cpu0.Total) { $otherCpu = [math]::Max(0, 100.0 * (($cpu1.Busy - $cpu0.Busy) - $ours) / ($cpu1.Total - $cpu0.Total)) }
+        if ($cpu1.Total -gt $cpu0.Total) { $otherCpu = [math]::Max(0.0, 100.0 * (($cpu1.Busy - $cpu0.Busy) - $ours) / ($cpu1.Total - $cpu0.Total)) }
     } catch {
         $status = 'failed'
         $reason = "$_"
@@ -463,7 +602,7 @@ function Run-One($setup, [string]$m, [int]$run, [bool]$warm, [int]$attempt) {
         if ($comp -and $null -ne $comp.Compressed) { $compressionLabel = $(if ($comp.Compressed -gt 0) { 'active' } else { 'off' }) }
         else { $compressionLabel = 'unknown' }
     }
-    $row = [pscustomobject]@{
+    $h = [ordered]@{
         date = $date; broker = $setup.Broker; broker_version = $setup.Version; configuration = $setup.Config; client_profile = $setup.Profile
         measurement = $m; message_size = $def.Size; message_count = $def.Messages; send_mode = $def.Send; broker_compression = $compressionLabel
         run = $run; attempt = $attempt; warmup = $warm; valid = ($status -eq 'ok'); status = $status; reason = $reason
@@ -478,6 +617,11 @@ function Run-One($setup, [string]$m, [int]$run, [bool]$warm, [int]$attempt) {
         deflate_ratio = $result['deflate_ratio']; samples_verified = $result['samples']
         spooling = ($spool -join ' / ')
     }
+    $h['memory_per_held_msg'] = $(if ($null -ne $holdWS -and $null -ne $idleWS -and $def.Scenario -eq 'hold') { [math]::Round(($holdWS - $idleWS) / $def.Messages, 1) } else { $null })
+    foreach ($ph in $phaseNames) {
+        foreach ($k in $phaseMetrics.Keys) { $h["${ph}_$k"] = $(if ($usage[$ph]) { $usage[$ph][$k] } else { $null }) }
+    }
+    $row = [pscustomobject]$h
     $rows.Add($row) | Out-Null
     $row | Export-Csv -Path $csvTmp -NoTypeInformation -Append -Encoding UTF8
     Log ("{0} {1} run {2}{3}{4}: {5} startup={6}ms produce_ms={7} consume_ms={8} idleWS={9:N1}MB holdWS={10:N1}MB compression={11} otherCPU={12}% {13}" -f `
@@ -540,6 +684,11 @@ function StatsCells($v, [string]$unit) {
     $all = ($v | ForEach-Object { Fmt $_ $unit }) -join ', '
     $mean = ($v | Measure-Object -Average).Average
     return "$all | $(Fmt $mean $unit) | $(Fmt (Median $v) $unit) | $(Fmt ($v | Measure-Object -Minimum).Minimum $unit) | $(Fmt ($v | Measure-Object -Maximum).Maximum $unit)"
+}
+function Compact($v, [string]$unit) {
+    if (-not $v -or $v.Count -eq 0) { return 'n/a' }
+    $mean = ($v | Measure-Object -Average).Average
+    return "$(Fmt (Median $v) $unit) ($(Fmt $mean $unit); $(Fmt ($v | Measure-Object -Minimum).Minimum $unit) - $(Fmt ($v | Measure-Object -Maximum).Maximum $unit))"
 }
 function Verdict-Lower($rust, $amq) {
     if ($null -eq $rust -or $null -eq $amq) { return 'n/a' }
@@ -611,6 +760,7 @@ W
 W "- Runs per broker setup and measurement: $(if ($Quick) { 'no warm-up run,' } else { '1 warm-up run (discarded) +' }) $Runs measured; the broker is restarted with a fresh data directory for every run. Tables list every measured value, then mean, median, min and max."
 W "- Inside each run: $IdleSeconds s idle sampling, then $WarmupMessages warm-up messages on a separate queue (1,000 distinct documents cycled), excluded from timing."
 W "- Memory sampled every 250 ms with Get-Process (Working Set, Private Bytes). Steady values are medians over the last 5 s of the idle period and of the $HoldSeconds s hold window."
+W "- Resource usage per phase (start-up, idle, warm-up, produce, hold, consume or throughput): broker and client CPU time from TotalProcessorTime, shown as % of one core and of the machine ($logical logical processors), machine CPU from GetSystemTimes, other processes = machine - broker - client, broker Working Set and Private Bytes average and peak, broker CPU ms per 1,000 messages and per MB. CPU deltas use the 250 ms samples around each phase."
 W "- A run is invalid and repeated (at most $MaxRetries times) when other processes used more than $MaxCpuPercent% of the machine's CPU during it, or when a tuned ActiveMQ run shows spooling or memory-limit messages. Invalid runs are excluded from the medians."
 W '- Messages: XML TextMessage, an `id`, 20 random fields and a base64 buffer of random bytes padded to the exact size; NON_PERSISTENT, AUTO_ACKNOWLEDGE, prefetch 1000, client compression off, same fixed seeds for every broker.'
 W '- 1 KB, 10 KB and 12 KB documents are below the 32 KB ActiveMQRust compression threshold. The `broker compression` label of every ActiveMQRust run is read from the broker (admin JSON API) at the end of the hold window, not inferred from the size.'
@@ -643,6 +793,20 @@ foreach ($p in $profilesDone) {
             }
         }
         W
+        # Resource usage per phase: median (mean; min - max) of the measured runs, every value in the CSV.
+        $phases = if ($m -eq 'a') { @('startup', 'idle') } elseif ($def.Scenario -eq 'hold') { @('startup', 'idle', 'warmup', 'produce', 'hold', 'consume') } else { @('startup', 'idle', 'warmup', 'throughput') }
+        W "Resource usage per phase, median (mean; min - max):"
+        W
+        W "| Phase | Metric | $(($list | ForEach-Object { Label $_ }) -join ' | ') |"
+        W "|---|---|$(($list | ForEach-Object { '---' }) -join '|')|"
+        foreach ($ph in $phases) {
+            foreach ($k in $phaseMetrics.Keys) {
+                $cells = foreach ($s in $list) { Compact (Values $s $m "${ph}_$k") $phaseMetrics[$k][1] }
+                if (@($cells | Where-Object { $_ -ne 'n/a' }).Count -eq 0) { continue }
+                W "| $ph | $($phaseMetrics[$k][0]) | $($cells -join ' | ') |"
+            }
+        }
+        W
     }
 
     # Start-up time across every run of each setup.
@@ -670,8 +834,8 @@ foreach ($p in $profilesDone) {
     # Per-message overhead above payload for (b) and (e).
     W '### Memory overhead per message above payload'
     W
-    W '| Measurement | Setup | Hold WS - idle WS - payload, per message |'
-    W '|---|---|---|'
+    W '| Measurement | Setup | Memory per held message (hold WS - idle WS) / messages | Overhead above payload per message |'
+    W '|---|---|---|---|'
     foreach ($pair in @(@('bc', @($amq, $rust)), @('e', @($amq, $rustNc, $rust)))) {
         $m = $pair[0]
         if ($Measurements -notcontains $m) { continue }
@@ -680,7 +844,8 @@ foreach ($p in $profilesDone) {
             if ($null -eq $i) { $i = Med $s $m 'idle_ws' }
             $n = $measureDefs[$m].Messages; $sz = $measureDefs[$m].Size
             $o = if ($null -ne $h -and $null -ne $i) { (($h - $i - [double]$n * $sz) / $n).ToString('N0', $inv) + ' bytes' } else { 'n/a' }
-            W "| $($measureDefs[$m].Title) | $(Label $s) | $o |"
+            $per = Values $s $m 'memory_per_held_msg'
+            W "| $($measureDefs[$m].Title) | $(Label $s) | $(if ($per.Count -gt 0) { (Compact $per 'n') + ' bytes' } else { 'n/a' }) | $o |"
         }
     }
     W

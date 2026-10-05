@@ -185,7 +185,7 @@ For each broker setup and each measurement, the script SHALL perform one warm-up
 - **THEN** the report shows 9.1 s as the median and lists all three values
 
 ### Requirement: Comparison script
-`scripts\compare-activemq.ps1` SHALL run the whole comparison unattended. It SHALL accept the paths of `mqrust.exe`, the ActiveMQ 5.18.x and 6.x installations and the JDK, the OpenWire and admin ports (`-Port`, default 61616, and `-AdminPort`, default 8161, used for every broker), the number of measured runs (default 3), the output directory (`-OutDir`, default `docs\benchmarks`), switches to skip the default-configuration runs or a broker, and a `-Quick` switch for smoke tests (1 measured run, no discarded warm-up run, smaller message counts, shorter idle and hold windows; the report says so).
+`scripts\compare-activemq.ps1` SHALL run the whole comparison unattended. It SHALL accept the paths of `mqrust.exe`, the ActiveMQ 5.18.x and 6.x installations and the JDK, the OpenWire and admin ports (`-Port`, default 61616, and `-AdminPort`, default 8161, used for every broker), the number of measured runs (default 3), the output directory (`-OutDir`, default `docs\benchmarks`), switches to skip the default-configuration runs or a broker, a `-Quick` switch for smoke tests (1 measured run, no discarded warm-up run, smaller message counts, shorter idle and hold windows; the report says so), and a `-DryRun` switch that runs only the pre-flight checks and prints the plan (broker setups, measurements with message counts and sizes, number of runs, ports and output paths) without building anything or starting a broker or the client.
 
 Before building or starting anything it SHALL run pre-flight checks and stop with a clear message naming the problem if one fails: the paths of `mqrust.exe`, of each ActiveMQ installation and of Java exist; both ports are free; at least 8 GB of physical memory is free; and the machine's CPU load, measured over 5 s, is at most 20%. With `-Force` the memory and CPU checks only print a warning.
 
@@ -210,6 +210,10 @@ For each run it SHALL: check that the ports are free and that at least 8 GB of p
 #### Scenario: Interrupted comparison
 - **WHEN** the comparison is interrupted before it finishes
 - **THEN** the existing report and CSV in the output directory are unchanged, and the broker it had started is stopped
+
+#### Scenario: Dry run
+- **WHEN** the script is run with `-DryRun`
+- **THEN** it prints the result of every pre-flight check and the plan, starts no process other than `mqrust.exe --version` and `java -version`, writes nothing, and exits with code 0 if the checks pass and 2 otherwise
 
 #### Scenario: Smoke test
 - **WHEN** the script is run with `-Quick -OutDir <dir>`
