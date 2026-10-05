@@ -52,6 +52,32 @@ The connection writer SHALL write everything already queued for the connection, 
 - **WHEN** a client connects
 - **THEN** the accepted socket has `TCP_NODELAY` enabled
 
+### Requirement: Socket buffers sized for large dispatches
+The OpenWire listener SHALL set the TCP send and receive buffers of every accepted socket to `broker.socket_buffer_kb` (default 1024; 0 keeps the operating system default; at most 65536). With the small Windows default, writes of large messages stall between socket writes and consumers wait for data while the broker is idle.
+
+#### Scenario: Default buffer
+- **WHEN** the broker starts without `socket_buffer_kb`
+- **THEN** accepted OpenWire sockets have 1 MB send and receive buffers
+
+#### Scenario: Large messages are not throttled
+- **WHEN** 10,000 messages of 50 KB held in a queue are consumed with prefetch 1000 on loopback
+- **THEN** the consume time is not worse than ActiveMQ 5.18 tuned on the same machine
+
+#### Scenario: Invalid value
+- **WHEN** `socket_buffer_kb` is negative or above 65536
+- **THEN** the configuration is rejected with an error that names the key
+
+### Requirement: Processor count like the JVM
+The broker SHALL compute the processors it may use like the JVM's `Runtime.availableProcessors()`: on Windows, the processors in the process affinity mask (falling back to the system count with more than 64 processors). `broker.processors` or `--processors` SHALL override it, like `-XX:ActiveProcessorCount` (0 = automatic, at most 1024). The runtime SHALL use one I/O worker per processor and run CPU-heavy work (compression) on at most `processors - 1` threads (at least 1), like the `ForkJoinPool.commonPool()` parallelism. The count in use SHALL be logged at start-up.
+
+#### Scenario: Affinity is honoured
+- **WHEN** the broker is started with `start /affinity 3` on a machine with 8 logical processors
+- **THEN** it logs 2 processors and starts 2 I/O workers
+
+#### Scenario: Override
+- **WHEN** the broker is started with `--processors 3`
+- **THEN** it uses 3 I/O workers and at most 2 compression threads, whatever the affinity
+
 ### Requirement: Short and partitioned locks
 The destination registry SHALL be a partitioned concurrent map, so lookups of different destinations do not contend on a single lock. Each destination SHALL have its own lock, held only for in-memory operations of O(1) or O(log n), and never during network I/O, encoding or compression. Operations on two different queues SHALL never wait for the same lock.
 

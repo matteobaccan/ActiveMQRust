@@ -37,8 +37,9 @@ After a restart the broker starts empty. Clients that use a `failover:` URL reco
 
 ## Planned features
 
-- **OpenWire compatible**: transparently recognized by the ActiveMQ Java driver 5.18.x and 6.x (protocol versions 6–12).
+- **OpenWire compatible**: transparently recognized by the ActiveMQ Java driver 5.18.x and 6.x (protocol versions 9–12).
 - **A single `mqrust.exe`** for Windows x64, with no runtime to install (no Visual C++, .NET or Java).
+- **Command-line program** that can **install and uninstall itself as a Windows service**.
 - **Port 61616 by default**, works even without a configuration file.
 - **Everything in RAM**: no persistence; messages are lost on restart.
 - **Queues created automatically** on first use; unlimited producers and consumers.
@@ -80,6 +81,9 @@ mqrust.exe init-config                         write a commented mqrust.toml
 mqrust.exe check-config                        validate the configuration
 mqrust.exe hash-password                       generate the Argon2 hash of a password
 mqrust.exe --version                           print "ActiveMQRust <version>"
+mqrust.exe service install [--config <file>]   install as a Windows service (administrator)
+mqrust.exe service uninstall                   stop and remove the Windows service
+mqrust.exe service start | stop | status       control the installed service
 ```
 
 ### Configuration

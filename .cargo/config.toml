@@ -1,0 +1,6 @@
+# ActiveMQRust by Matteo Baccan
+# SPDX-License-Identifier: MIT
+
+# Link the C runtime statically so mqrust.exe needs no Visual C++ Redistributable.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

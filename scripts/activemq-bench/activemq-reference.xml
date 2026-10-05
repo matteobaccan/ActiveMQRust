@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  ActiveMQRust by Matteo Baccan
+  SPDX-License-Identifier: MIT
+
+  ActiveMQ configuration for the reference run of the Java acceptance and integration suites:
+  same as activemq-tuned.xml, but with advisory support enabled (needed by temporary destinations
+  across connections) and the broker name "reference".
+-->
+<beans xmlns="http://www.springframework.org/schema/beans"
+       xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+       xsi:schemaLocation="http://www.springframework.org/schema/beans http://www.springframework.org/schema/beans/spring-beans.xsd
+                           http://activemq.apache.org/schema/core http://activemq.apache.org/schema/core/activemq-core.xsd">
+
+  <broker xmlns="http://activemq.apache.org/schema/core"
+          brokerName="reference"
+          persistent="false"
+          useJmx="false"
+          advisorySupport="true"
+          schedulerSupport="false"
+          dataDirectory="${activemq.data}">
+
+    <destinationPolicy>
+      <policyMap>
+        <policyEntries>
+          <policyEntry queue=">" producerFlowControl="false">
+            <pendingQueuePolicy>
+              <vmQueueCursor/>
+            </pendingQueuePolicy>
+          </policyEntry>
+          <policyEntry topic=">" producerFlowControl="false"/>
+        </policyEntries>
+      </policyMap>
+    </destinationPolicy>
+
+    <systemUsage>
+      <systemUsage>
+        <memoryUsage><memoryUsage limit="3 gb"/></memoryUsage>
+        <storeUsage><storeUsage limit="3 gb"/></storeUsage>
+        <tempUsage><tempUsage limit="3 gb"/></tempUsage>
+      </systemUsage>
+    </systemUsage>
+
+    <plugins>
+      <simpleAuthenticationPlugin>
+        <users>
+          <authenticationUser username="admin" password="admin" groups="admins,users"/>
+        </users>
+      </simpleAuthenticationPlugin>
+    </plugins>
+
+    <transportConnectors>
+      <transportConnector name="openwire" uri="tcp://127.0.0.1:61616?maximumConnections=1000&amp;wireFormat.maxFrameSize=104857600"/>
+    </transportConnectors>
+  </broker>
+</beans>

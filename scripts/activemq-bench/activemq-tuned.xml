@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  ActiveMQRust by Matteo Baccan
+  SPDX-License-Identifier: MIT
+
+  ActiveMQ configuration for a fair in-RAM comparison with ActiveMQRust:
+  no persistence, VM queue cursor (no spooling to temp storage), no producer flow control,
+  3 GB memory limits, no JMX, advisories or scheduler, only OpenWire on 127.0.0.1:61616,
+  simple authentication with the benchmark user.
+-->
+<beans xmlns="http://www.springframework.org/schema/beans"
+       xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+       xsi:schemaLocation="http://www.springframework.org/schema/beans http://www.springframework.org/schema/beans/spring-beans.xsd
+                           http://activemq.apache.org/schema/core http://activemq.apache.org/schema/core/activemq-core.xsd">
+
+  <broker xmlns="http://activemq.apache.org/schema/core"
+          brokerName="bench"
+          persistent="false"
+          useJmx="false"
+          advisorySupport="false"
+          schedulerSupport="false"
+          dataDirectory="${activemq.data}">
+
+    <destinationPolicy>
+      <policyMap>
+        <policyEntries>
+          <policyEntry queue=">" producerFlowControl="false">
+            <pendingQueuePolicy>
+              <vmQueueCursor/>
+            </pendingQueuePolicy>
+          </policyEntry>
+          <policyEntry topic=">" producerFlowControl="false"/>
+        </policyEntries>
+      </policyMap>
+    </destinationPolicy>
+
+    <systemUsage>
+      <systemUsage>
+        <memoryUsage><memoryUsage limit="3 gb"/></memoryUsage>
+        <storeUsage><storeUsage limit="3 gb"/></storeUsage>
+        <tempUsage><tempUsage limit="3 gb"/></tempUsage>
+      </systemUsage>
+    </systemUsage>
+
+    <plugins>
+      <simpleAuthenticationPlugin>
+        <users>
+          <authenticationUser username="admin" password="admin" groups="admins,users"/>
+        </users>
+      </simpleAuthenticationPlugin>
+    </plugins>
+
+    <transportConnectors>
+      <transportConnector name="openwire" uri="tcp://127.0.0.1:61616?maximumConnections=1000&amp;wireFormat.maxFrameSize=104857600"/>
+    </transportConnectors>
+  </broker>
+</beans>

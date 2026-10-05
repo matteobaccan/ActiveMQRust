@@ -11,7 +11,7 @@ ActiveMQRust replaces ActiveMQ Classic for Java applications using `activemq-cli
 
 **Non-Goals:**
 - Sending or receiving messages (`add-queue-messaging`), topics, transactions, selectors, expiration, compression, admin console, performance tuning: each has its own change.
-- TLS (`ssl://`), Windows service installation, Linux/macOS builds.
+- TLS (`ssl://`), Linux/macOS builds.
 - Tight encoding and marshalling cache.
 
 ## Decisions
@@ -21,8 +21,8 @@ The broker's `WireFormatInfo` advertises `TightEncodingEnabled=false` and `Cache
 - *Alternatives:* tight + loose with cache (about 3× the codec code and more compatibility risk, for a few bytes saved per command); generating the codec from Java definitions (`openwire-generator`, which adds Java/Groovy tooling and hard-to-maintain generated code).
 - The codec sits behind a `WireCodec` trait, so tight encoding can be added later if benchmarks justify it.
 
-### D2. Version range 6–12 with per-field version guards
-The broker advertises version 12; the effective version is `min(client, 12)`. Clients below 6 are refused. Fields that differ between versions are handled with `if version >= N` guards, derived from the Java marshallers.
+### D2. Version range 9–12 with per-field version guards
+The broker advertises version 12; the effective version is `min(client, 12)`. Clients below 9 are refused. Fields that differ between versions are handled with `if version >= N` guards, derived from the Java marshallers.
 
 ### D3. Tokio, one reader task and one writer task per connection
 The reader decodes frames and handles commands; the writer drains an mpsc channel into the socket and batches writes. No lock is ever held during I/O.
@@ -39,6 +39,10 @@ Passwords are either plain text (compared in constant time, with a warning) or A
 
 ### D7. Dependency-free executable
 `.cargo/config.toml` sets `+crt-static` for `x86_64-pc-windows-msvc`. Assets are embedded with `include_str!`, and no TLS means no OpenSSL. `scripts/check-deps.cmd` runs `dumpbin /dependents` against an allow-list of system DLLs. A version resource is embedded through `build.rs` with `embed-resource`.
+
+### D9. Windows service through the `windows-service` crate
+`mqrust.exe service install|uninstall|start|stop|status` talks to the Service Control Manager (advapi32, a system DLL, so no new runtime dependency). The registered command is `<abs exe> service run [--config <abs path>]`; in service mode the log goes to `mqrust.log` next to the executable because there is no console. Stop and Shutdown map to the same graceful shutdown as Ctrl+C.
+- *Alternatives:* external wrappers such as NSSM or `sc.exe create` (an extra tool to install and document); logging to the Windows Event Log (needs a registered message source and is harder to read than a text file).
 
 ### D8. Acceptance program first
 `tests/java-it/` is a Maven project (Java 17 target, `maven-shade-plugin` fat jar, Maven Wrapper because Maven is not installed). Profiles `amq5` (5.18.x, `javax.jms`) and `amq6` (6.x, `jakarta.jms`) select the driver. All scenarios are written in this change and validated against a real ActiveMQ, so later changes have a fixed target.

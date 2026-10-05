@@ -19,10 +19,10 @@ After the client's `WireFormatInfo` (type 1), the broker SHALL send its own `Wir
 - **THEN** the broker encodes and decodes every later command for version 9
 
 ### Requirement: Supported protocol versions
-The broker SHALL support OpenWire versions 6 to 12. A client announcing a version below 6 SHALL be refused: the broker logs the reason and closes the connection.
+The broker SHALL support OpenWire versions 9 to 12, the versions whose marshallers ActiveMQ 5.18 and 6.x still ship (`openwire.v9` … `v12`). A client announcing a version below 9 SHALL be refused: the broker logs the reason and closes the connection.
 
 #### Scenario: Version too old
-- **WHEN** a client announces version 5
+- **WHEN** a client announces version 8
 - **THEN** the broker logs a warning with the version and closes the connection
 
 ### Requirement: Broker identity

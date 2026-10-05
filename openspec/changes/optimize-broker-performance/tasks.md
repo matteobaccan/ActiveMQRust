@@ -12,22 +12,24 @@
 
 ## 3. Shared storage and send path
 
-- [ ] 3.1 Store messages as one `Arc<StoredMessage>` shared by browsers (and topic subscribers when present); count shared bodies once in memory accounting
-- [ ] 3.2 Send the `Response` for synchronous sends right after enqueue
-- [ ] 3.3 Share connection, session, producer and consumer IDs as `Arc<str>`
+- [x] 3.1 Store messages as one `Arc<StoredMessage>` shared by browsers (and topic subscribers when present); count shared bodies once in memory accounting
+- [x] 3.2 Send the `Response` for synchronous sends right after enqueue
+- [x] 3.3 Share connection, session, producer and consumer IDs as `Arc<str>`
 - [ ] 3.4 Add the counting-allocator test (≤ 3 allocations per message, same for 1 KB and 100 KB)
 
 ## 4. Write path
 
-- [ ] 4.1 Encode only `MessageDispatch` headers per connection version into a reusable buffer
+- [x] 4.1 Encode only `MessageDispatch` headers per connection version into a reusable buffer
 - [ ] 4.2 Write header and body slices with `write_vectored`; batch queued frames up to 64 frames or 256 KB per write, with no timer
-- [ ] 4.3 Enable `TCP_NODELAY` on accepted sockets
+- [x] 4.3 Enable `TCP_NODELAY` on accepted sockets
 - [ ] 4.4 Tests with a recording writer: separate body slice, ≤ 16 writes for 1,000 queued dispatches, immediate write for a single frame; cross-version test (producer v12, consumer v9)
+- [x] 4.5 Set accepted socket buffers from `broker.socket_buffer_kb` (default 1 MB); validate the key
+- [x] 4.6 Size the runtime like the JVM: processors from the process affinity, `broker.processors` / `--processors` override, `processors - 1` compression threads; log the count
 
 ## 5. Locking
 
 - [ ] 5.1 Replace the destination registry with a 64-shard `RwLock<HashMap>` map
-- [ ] 5.2 Audit every destination lock scope: no I/O, encoding or compression while held; move work outside where needed
+- [x] 5.2 Audit every destination lock scope: no I/O, encoding or compression while held; move work outside where needed
 - [ ] 5.3 Tests: a held lock on queue A does not block sends to queue B; a blocked consumer socket does not stall the queue
 
 ## 6. Codec and build settings
@@ -45,7 +47,7 @@
 
 ## 8. Verification
 
-- [ ] 8.1 All unit, semantics and Java acceptance tests still pass
+- [x] 8.1 All unit, semantics and Java acceptance tests still pass
 - [ ] 8.2 `cargo bench` runs every benchmark; criterion shows no regression against `pre-optimization`
 - [ ] 8.3 The async throughput, latency and idle-memory targets are met, or reported as not met with a follow-up task
-- [ ] 8.4 `openspec validate optimize-broker-performance` passes
+- [x] 8.4 `openspec validate optimize-broker-performance` passes

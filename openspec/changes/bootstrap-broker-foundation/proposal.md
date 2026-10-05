@@ -7,8 +7,9 @@ ActiveMQRust aims to be a broker that is **compatible** with ActiveMQ Classic, *
 - New Rust crate `mqrust` producing one dependency-free Windows x64 executable `mqrust.exe` (static C runtime, embedded assets, Windows version resource `ActiveMQRust <version>`).
 - Optional TOML configuration with built-in defaults: OpenWire on `0.0.0.0:61616`, admin on `127.0.0.1:8161`, default credentials `admin`/`admin` with a warning. Command-line overrides and helper commands (`init-config`, `check-config`, `hash-password`, `--version`).
 - Essential logging: startup summary, connection events, failed logins, protocol errors; graceful shutdown on Ctrl+C or console close.
-- OpenWire transport: TCP listener, framing, `WireFormatInfo` negotiation (versions 6–12, loose encoding, tight encoding and cache disabled), `BrokerInfo`, keep-alive, command/response rules, connection and session lifecycle, advisory consumers accepted silently. The broker advertises `ProviderName=ActiveMQRust`.
+- OpenWire transport: TCP listener, framing, `WireFormatInfo` negotiation (versions 9–12, loose encoding, tight encoding and cache disabled), `BrokerInfo`, keep-alive, command/response rules, connection and session lifecycle, advisory consumers accepted silently. The broker advertises `ProviderName=ActiveMQRust`.
 - Client authentication: username/password from `ConnectionInfo`, checked against plain-text or Argon2 credentials; anonymous access off by default.
+- Command-line program that can install, uninstall, start, stop and query itself as a Windows service (`mqrust.exe service install|uninstall|start|stop|status`), logging to `mqrust.log` when it runs as a service.
 - Java acceptance program (Maven, with wrapper) that uses the real ActiveMQ driver. All scenarios are written now and validated against a real ActiveMQ. Only the authentication scenario must pass against ActiveMQRust at the end of this change.
 
 ## Capabilities
@@ -20,6 +21,7 @@ ActiveMQRust aims to be a broker that is **compatible** with ActiveMQ Classic, *
 - `broker-logging`: startup log, runtime events, log level, graceful shutdown.
 - `openwire-transport`: framing, wire-format negotiation, protocol versions, broker identity, command/response rules, keep-alive, connection/session lifecycle, advisory topics.
 - `client-authentication`: OpenWire login, credential formats, anonymous policy, failed-login handling.
+- `windows-service`: CLI foreground mode and Windows service install, uninstall, control and service-mode execution.
 - `java-acceptance-suite`: Java program using the ActiveMQ driver, its scenarios, output and reference run against ActiveMQ.
 
 ### Modified Capabilities
@@ -30,5 +32,5 @@ None.
 
 - New Rust project: `Cargo.toml`, `build.rs`, `.cargo/config.toml`, `src/` (main, config, auth, openwire codec, connection handling), `scripts/check-deps.cmd`.
 - New Maven project in `tests/java-it/` with Maven Wrapper; needs JDK 17+ on the development machine only.
-- Dependencies compiled into the executable: `tokio`, `bytes`, `serde`, `toml`, `clap`, `tracing`, `tracing-subscriber`, `argon2`, `rpassword`, `parking_lot`, `mimalloc`; build-only: `embed-resource`.
+- Dependencies compiled into the executable: `tokio`, `bytes`, `serde`, `toml`, `clap`, `tracing`, `tracing-subscriber`, `argon2`, `rpassword`, `parking_lot`, `mimalloc`, `windows-service`; build-only: `embed-resource`.
 - Later changes depend on this one: `add-queue-messaging`, `add-topic-messaging`, `add-local-transactions`, `add-message-selectors`, `add-message-expiration`, `add-message-compression`, `add-admin-console`, `optimize-broker-performance`.

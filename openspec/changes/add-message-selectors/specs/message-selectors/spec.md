@@ -132,14 +132,20 @@ The selector language SHALL support:
 - **THEN** only the `ORD-A` and `ORD-C` messages are selected
 
 ### Requirement: Type rules
-Evaluation SHALL follow ActiveMQ's type rules:
-- a comparison between incompatible types, for example a string with a number, SHALL be UNKNOWN, so the message is not selected;
-- arithmetic with a NULL operand SHALL give NULL, and a comparison with NULL SHALL be UNKNOWN;
-- a property whose value is a byte array, map or list SHALL be NULL-safe for `IS [NOT] NULL` and UNKNOWN in any other expression.
+Evaluation SHALL follow ActiveMQ's type rules (`org.apache.activemq.filter.ComparisonExpression`, verified in the 5.18 sources):
+- a comparison between non-null values of incompatible types, for example a string with a number, SHALL be FALSE (not UNKNOWN), so `x = 5` does not select a message whose `x` is the string `'5'`, while `NOT (x = 5)` does;
+- `x = y` with `x` NULL SHALL be UNKNOWN; with `x` non-null and `y` NULL it SHALL be FALSE; ordering comparisons (`<`, `<=`, `>`, `>=`) with a NULL operand SHALL be UNKNOWN;
+- `LIKE` on a non-string value SHALL be FALSE (TRUE for `NOT LIKE`); `IN` on a non-string value SHALL be UNKNOWN;
+- arithmetic with a NULL operand SHALL give NULL; `+` with a string left operand SHALL concatenate;
+- a property whose value is a byte array, map or list SHALL be a non-null value that compares unequal to everything.
 
 #### Scenario: String compared with number
 - **WHEN** a message has string property `qty = '5'` and the selector is `qty = 5`
 - **THEN** the message is not selected
+
+#### Scenario: Negated type mismatch
+- **WHEN** a message has string property `qty = '5'` and the selector is `NOT (qty = 5)`
+- **THEN** the message is selected, as in ActiveMQ
 
 #### Scenario: Arithmetic with NULL
 - **WHEN** a message has no property `a` and the selector is `a + 1 > 0`
