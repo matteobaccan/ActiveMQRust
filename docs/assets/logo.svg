@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" role="img" aria-labelledby="title desc">
+  <title id="title">ActiveMQRust</title>
+  <desc id="desc">A rust-coloured hexagon holding a FIFO queue of three messages flowing to the right.</desc>
+  <defs>
+    <linearGradient id="hex" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#E8703A"/>
+      <stop offset="1" stop-color="#A3361A"/>
+    </linearGradient>
+  </defs>
+  <!-- broker node -->
+  <path d="M64 6 L114 35 L114 93 L64 122 L14 93 L14 35 Z" fill="url(#hex)" stroke="#7A2812" stroke-width="4" stroke-linejoin="round"/>
+  <!-- queue rail -->
+  <rect x="24" y="61" width="80" height="6" rx="3" fill="#7A2812" opacity="0.45"/>
+  <!-- messages, oldest on the right -->
+  <g stroke="#7A2812" stroke-width="3" stroke-linejoin="round">
+    <rect x="22" y="48" width="22" height="32" rx="4" fill="#FFFFFF" opacity="0.55"/>
+    <rect x="47" y="48" width="22" height="32" rx="4" fill="#FFFFFF" opacity="0.8"/>
+    <rect x="72" y="48" width="22" height="32" rx="4" fill="#FFFFFF"/>
+  </g>
+  <!-- envelope flap on the head message -->
+  <path d="M72 52 L83 62 L94 52" fill="none" stroke="#7A2812" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- flow arrow -->
+  <path d="M98 64 L108 64 M103 58 L109 64 L103 70" fill="none" stroke="#FFFFFF" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

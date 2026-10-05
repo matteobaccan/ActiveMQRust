@@ -1,0 +1,31 @@
+schema: spec-driven
+
+context: |
+  Product: ActiveMQRust (repository MQRust), an in-memory message broker written in Rust
+  that speaks Apache ActiveMQ's OpenWire protocol. Goal: be compatible with ActiveMQ Classic
+  for Java clients (activemq-client 5.18.x / 6.x), use far less RAM and be faster than ActiveMQ.
+
+  Primary use case: in-RAM message processing with no storage. Messages live only in memory
+  and are lost on broker restart, by design. The broker is built for transient, high-rate
+  messaging between Java applications: work queues where producers can resend, request/reply
+  over temporary queues, event and notification fan-out on topics, cache invalidation,
+  telemetry and status updates. It is not meant for messages that must survive a restart or
+  crash, for durable subscriptions, for XA, or for backlogs larger than available RAM.
+
+  Hard constraints:
+  - Windows x64 only; deliverable is a single dependency-free mqrust.exe (static CRT).
+  - Default OpenWire port 61616; works with no configuration file.
+  - Strict FIFO delivery; message IDs structurally identical to ActiveMQ's.
+  - Expired messages are deleted, never moved to a DLQ.
+  - Identifies itself as "ActiveMQRust <version>".
+  - Build only Windows release binaries: always `cargo build --release` and `cargo test --release`;
+    no debug builds, no debug artifacts. Every acceptance and benchmark run uses the release mqrust.exe.
+  - All project documentation in English.
+  - Commits carry only the user's name; never mention AI tools.
+
+rules:
+  specs:
+    - Use SHALL/MUST and WHEN/THEN scenarios that a test can check.
+    - Note deliberate behavioural differences from ActiveMQ explicitly.
+  design:
+    - State the alternatives considered for every decision.
