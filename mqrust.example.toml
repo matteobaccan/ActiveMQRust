@@ -34,6 +34,10 @@
 # port = 8161
 username = "admin"
 password = "admin"                     # replace with password_hash = "..." (mqrust.exe hash-password)
+# session_idle_minutes = 30            # console session ends after this idle time (1-1440)
+# session_max_hours = 8                # and in any case this long after login (1-168)
+# login_max_failures = 5               # failed logins per IP in 15 minutes before a lockout; 0 = off
+# login_lockout_seconds = 60           # lockout length (1-86400)
 
 [log]
 # level = "info"                       # error | warn | info | debug | trace

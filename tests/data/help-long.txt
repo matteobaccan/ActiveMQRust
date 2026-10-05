@@ -45,10 +45,10 @@ Network:
 
 Performance:
       --processors <N>
-          Processors to use [default: 0 = all available to the process], like the JVM's                      -XX:ActiveProcessorCount
+          Processors to use [default: 0 = all available to the process], like -XX:ActiveProcessorCount
 
 Two kinds of users:
-  admin console user  [admin], one user, for the web console at http://127.0.0.1:8161
+  admin console user  [admin], one user, the login of the web console at http://127.0.0.1:8161
                       set it with: mqrust.exe set-admin
   messaging users     [[users]], one or more, for JMS/OpenWire clients (tcp://host:61616)
                       manage them with: mqrust.exe user add | passwd | remove | list

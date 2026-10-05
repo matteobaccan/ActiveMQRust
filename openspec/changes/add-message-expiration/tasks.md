@@ -1,7 +1,7 @@
 ## 1. Configuration
 
 - [x] 1.1 Add the `[expiry]` section to the configuration model with defaults `check_interval_ms = 1000`, `use_broker_clock = false`, `ttl_ceiling_ms = 0`, `default_ttl_ms = 0`
-- [ ] 1.2 Validate the section (non-negative values, `check_interval_ms >= 1`, field-named errors, exit code 2) and add it to `init-config` and `mqrust.example.toml`
+- [x] 1.2 Validate the section (non-negative values, `check_interval_ms >= 1`, field-named errors, exit code 2) and add it to `init-config` and `mqrust.example.toml`
 - [x] 1.3 Unit tests for defaults, partial section and invalid values
 
 ## 2. Expiration on arrival

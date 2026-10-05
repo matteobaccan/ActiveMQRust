@@ -365,7 +365,7 @@ pub fn set_admin(path: &Path, username: Option<String>, password_stdin: bool) ->
     let cfg = file.save()?;
     print_created(&file);
     println!("Admin console user \"{username}\" written to {}", file.path.display());
-    println!("Console: {}", console_url(&cfg));
+    println!("Console: {} (log in as {username})", console_url(&cfg));
     if file.has_default_user() {
         println!("Next: create a messaging user with `mqrust.exe user add <name>`, then `mqrust.exe user remove admin`.");
     }

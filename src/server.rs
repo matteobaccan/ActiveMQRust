@@ -78,7 +78,7 @@ fn startup_messages(cfg: &Config) {
         ConfigSource::Defaults => tracing::info!("configuration: built-in defaults (no mqrust.toml found)"),
     }
     let console = std::net::SocketAddr::new(cfg.admin_bind, cfg.admin_port);
-    tracing::info!("admin console on http://{console} (user {})", cfg.admin_user.username);
+    tracing::info!("admin console on http://{console} (login with the [admin] user {})", cfg.admin_user.username);
     let n = cfg.users.len();
     let anonymous = if cfg.allow_anonymous { ", anonymous access allowed" } else { "" };
     tracing::info!("{n} messaging user{}{anonymous}", if n == 1 { "" } else { "s" });

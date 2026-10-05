@@ -41,7 +41,7 @@ const AFTER_HELP: &str = "Run 'mqrust.exe --help' for details, examples and exit
 
 const AFTER_LONG_HELP: &str = "\
 Two kinds of users:
-  admin console user  [admin], one user, for the web console at http://127.0.0.1:8161
+  admin console user  [admin], one user, the login of the web console at http://127.0.0.1:8161
                       set it with: mqrust.exe set-admin
   messaging users     [[users]], one or more, for JMS/OpenWire clients (tcp://host:61616)
                       manage them with: mqrust.exe user add | passwd | remove | list

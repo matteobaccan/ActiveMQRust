@@ -15,11 +15,9 @@ const EXE: &str = env!("CARGO_BIN_EXE_mqrust");
 const ADMIN_PORT: u16 = 8714;
 const PASSWORD: &str = "S3cure-pass";
 
-/// OpenWire port of the brokers started here: 61714, or 61614 when Windows reserves 61714
-/// (`netsh int ipv4 show excludedportrange protocol=tcp`).
+/// OpenWire port of the brokers started here (61714 falls in a Windows excluded port range).
 fn port() -> u16 {
-    static PORT: std::sync::OnceLock<u16> = std::sync::OnceLock::new();
-    *PORT.get_or_init(|| if std::net::TcpListener::bind(("0.0.0.0", 61714)).is_ok() { 61714 } else { 61614 })
+    62714
 }
 
 /// Brokers started by these tests share the same ports: one at a time.
@@ -371,7 +369,7 @@ fn startup_log_with_defaults() {
     let log = b.log();
     assert!(log.contains("configuration: built-in defaults"), "{log}");
     assert!(log.contains(&format!("OpenWire listening on 0.0.0.0:{}", port())), "{log}");
-    assert!(log.contains(&format!("admin console on http://127.0.0.1:{ADMIN_PORT} (user admin)")), "{log}");
+    assert!(log.contains(&format!("admin console on http://127.0.0.1:{ADMIN_PORT} (login with the [admin] user admin)")), "{log}");
     assert!(log.contains("1 messaging user"), "{log}");
     let warn = log.lines().find(|l| l.contains("WARN") && l.contains("admin/admin")).unwrap_or_else(|| panic!("{log}"));
     assert!(warn.contains("mqrust.exe set-admin") && warn.contains("mqrust.exe user add <name>"), "{warn}");
@@ -396,7 +394,7 @@ fn startup_log_with_configured_file() {
     let log = b.log();
     assert!(log.contains(&format!("configuration: {}", path.display())), "{log}");
     assert!(log.contains(&format!("OpenWire listening on 0.0.0.0:{}", port())), "{log}");
-    assert!(log.contains(&format!("admin console on http://127.0.0.1:{ADMIN_PORT} (user ops)")), "{log}");
+    assert!(log.contains(&format!("admin console on http://127.0.0.1:{ADMIN_PORT} (login with the [admin] user ops)")), "{log}");
     assert!(log.contains("2 messaging users"), "{log}");
     assert!(!log.contains("WARN"), "{log}");
 }
@@ -423,17 +421,17 @@ fn end_to_end_with_configured_users() {
     assert_eq!(http_status("/api/overview", "ops", PASSWORD), 200);
     assert_eq!(http_status("/api/overview", "admin", "admin"), 401);
 
-    let jar = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/java-it/target/amq5/mqrust-acceptance.jar");
-    if !jar.exists() {
-        eprintln!("Java client part skipped: build {} first", jar.display());
-        return;
-    }
     let url = format!("tcp://127.0.0.1:{}", port());
-    let o = Command::new("java")
-        .args(["-jar", jar.to_str().unwrap(), "accept", "--url", &url, "--user", "app1", "--password", "app1-Secret", "--only", "1"])
-        .output();
-    match o {
-        Ok(o) => assert!(o.status.success(), "{}", text(&o)),
-        Err(e) => eprintln!("Java client part skipped: {e}"),
+    for profile in ["amq5", "amq6"] {
+        let jar = Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("tests/java-it/target/{profile}/mqrust-acceptance.jar"));
+        if !jar.exists() {
+            eprintln!("Java client part skipped: build {} first", jar.display());
+            continue;
+        }
+        let args = ["-jar", jar.to_str().unwrap(), "accept", "--url", &url, "--user", "app1", "--password", "app1-Secret", "--only", "1"];
+        match Command::new("java").args(args).output() {
+            Ok(o) => assert!(o.status.success(), "{profile}: {}", text(&o)),
+            Err(e) => eprintln!("Java client part skipped: {e}"),
+        }
     }
 }
