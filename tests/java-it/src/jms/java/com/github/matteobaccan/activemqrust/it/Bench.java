@@ -5,6 +5,7 @@ package com.github.matteobaccan.activemqrust.it;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.BitSet;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
@@ -58,6 +59,7 @@ public final class Bench {
     private final int warmup;
     private final int holdSeconds;
     private final long timeoutMs;
+    private final int durationSeconds;
 
     public Bench(String url, String user, String password, Map<String, String> o) {
         this.baseUrl = url;
@@ -67,13 +69,14 @@ public final class Bench {
         this.messages = Integer.parseInt(o.getOrDefault("messages", "100000"));
         this.size = Integer.parseInt(o.getOrDefault("size", "1024"));
         this.async = !"sync".equals(o.getOrDefault("send", "async"));
-        String defaultClients = "scale".equals(scenario) ? "10" : "1";
+        String defaultClients = "scale".equals(scenario) || "soak".equals(scenario) ? "10" : "1";
         this.producers = Integer.parseInt(o.getOrDefault("producers", defaultClients));
         this.consumers = Integer.parseInt(o.getOrDefault("consumers", defaultClients));
-        this.queues = "scale".equals(scenario)
-                ? Integer.parseInt(o.getOrDefault("queues", Integer.toString(Math.min(producers, consumers))))
+        this.queues = "scale".equals(scenario) || "soak".equals(scenario)
+                ? Integer.parseInt(o.getOrDefault("queues", "soak".equals(scenario) ? "1" : Integer.toString(Math.min(producers, consumers))))
                 : 1;
-        this.rate = Integer.parseInt(o.getOrDefault("rate", "1000"));
+        this.rate = Integer.parseInt(o.getOrDefault("rate", "soak".equals(scenario) ? "10" : "1000"));
+        this.durationSeconds = Integer.parseInt(o.getOrDefault("duration-seconds", "300"));
         this.warmup = Integer.parseInt(o.getOrDefault("warmup", "0"));
         this.holdSeconds = Integer.parseInt(o.getOrDefault("hold-seconds", "10"));
         this.timeoutMs = Math.max(1, Long.parseLong(o.getOrDefault("timeout-seconds", "1800"))) * 1000L;
@@ -105,7 +108,7 @@ public final class Bench {
 
     private BenchResult result() {
         return new BenchResult(scenario)
-                .put("messages", messages)
+                .put("messages", "soak".equals(scenario) ? (long) rate * durationSeconds * producers : messages)
                 .put("size", size)
                 .put("send", async ? "async" : "sync");
     }
@@ -118,6 +121,8 @@ public final class Bench {
                 case "throughput":
                 case "scale":
                     return flow();
+                case "soak":
+                    return soak();
                 case "latency":
                     return latency();
                 default:
@@ -531,6 +536,225 @@ public final class Bench {
             }
             r.print();
             return r.exitCode();
+        }
+    }
+
+    /**
+     * {@code soak}: every producer sends {@code rate} messages per second for {@code duration-seconds}
+     * to queue p mod Q while the consumers read queue c mod Q. Checks, per producer: increasing
+     * {@code seq} at every consumer (consecutive when a consumer has its queue alone), no message
+     * lost and none delivered twice; reports end-to-end latency.
+     */
+    private int soak() throws Exception {
+        if (producers < 1 || consumers < 1 || queues < 1 || queues > Math.min(producers, consumers)
+                || rate < 1 || durationSeconds < 1) {
+            throw new IllegalArgumentException("need 1 <= queues <= min(producers, consumers), rate >= 1 and"
+                    + " duration-seconds >= 1; got producers=" + producers + " consumers=" + consumers
+                    + " queues=" + queues + " rate=" + rate + " duration-seconds=" + durationSeconds);
+        }
+        int perProducer = rate * durationSeconds;
+        int[] consumersOnQueue = new int[queues];
+        for (int c = 0; c < consumers; c++) {
+            consumersOnQueue[c % queues]++;
+        }
+        String[] docs = generate(SEED_RUN + size, Math.min(perProducer, 1000), size);
+        BitSet[] seen = new BitSet[producers];
+        for (int p = 0; p < producers; p++) {
+            seen[p] = new BitSet(perProducer + 1);
+        }
+        long total = (long) perProducer * producers;
+        AtomicLong received = new AtomicLong();
+        AtomicLong duplicates = new AtomicLong();
+        AtomicLong outOfOrder = new AtomicLong();
+        AtomicReference<String> failure = new AtomicReference<>();
+        long[] latencies = new long[(int) Math.min(total, 50_000_000L)];
+        AtomicInteger latencyCount = new AtomicInteger();
+        long[] perConsumer = new long[consumers];
+        List<Connection> conns = Collections.synchronizedList(new ArrayList<>());
+        try {
+            ActiveMQConnectionFactory f = new ActiveMQConnectionFactory(url());
+            String[] names = new String[queues];
+            for (int i = 0; i < queues; i++) {
+                names[i] = q("BENCH.SOAK" + i);
+            }
+            if (warmup > 0) {
+                Connection w = f.createConnection(user, password);
+                conns.add(w);
+                w.start();
+                doWarmup(w.createSession(false, Session.AUTO_ACKNOWLEDGE));
+            }
+            List<Thread> cons = new ArrayList<>();
+            for (int c = 0; c < consumers; c++) {
+                Connection cc = f.createConnection(user, password);
+                conns.add(cc);
+                cc.start();
+                Session cs = cc.createSession(false, Session.AUTO_ACKNOWLEDGE);
+                int qi = c % queues;
+                MessageConsumer consumer = cs.createConsumer(cs.createQueue(names[qi]));
+                boolean strict = consumersOnQueue[qi] == 1;
+                final int ci = c;
+                Thread t = new Thread(() -> {
+                    int[] last = new int[producers];
+                    long lastProgress = System.nanoTime();
+                    try {
+                        while (received.get() < total) {
+                            Message m = consumer.receive(200);
+                            long now = System.nanoTime();
+                            if (m == null) {
+                                if (now - lastProgress > IDLE_LIMIT_MS * 1_000_000L) {
+                                    return;
+                                }
+                                continue;
+                            }
+                            lastProgress = now;
+                            int prod = m.getIntProperty("producer");
+                            int seq = m.getIntProperty("seq");
+                            if (strict ? seq != last[prod] + 1 : seq <= last[prod]) {
+                                outOfOrder.incrementAndGet();
+                                failure.compareAndSet(null, "out-of-order-consumer-" + ci + "-producer-" + prod
+                                        + "-after-seq-" + last[prod] + "-received-seq-" + seq);
+                            }
+                            last[prod] = Math.max(last[prod], seq);
+                            if (((TextMessage) m).getText().length() != size) {
+                                failure.compareAndSet(null, "wrong-length-producer-" + prod + "-seq-" + seq);
+                            }
+                            boolean dup;
+                            synchronized (seen[prod]) {
+                                dup = seen[prod].get(seq);
+                                seen[prod].set(seq);
+                            }
+                            if (dup) {
+                                duplicates.incrementAndGet();
+                                failure.compareAndSet(null, "duplicate-producer-" + prod + "-seq-" + seq);
+                                continue;
+                            }
+                            int li = latencyCount.getAndIncrement();
+                            if (li < latencies.length) {
+                                latencies[li] = (now - m.getLongProperty("sendNanos")) / 1000;
+                            }
+                            perConsumer[ci]++;
+                            received.incrementAndGet();
+                        }
+                    } catch (Exception e) {
+                        failure.compareAndSet(null, e.toString());
+                    }
+                }, "soak-consumer-" + c);
+                t.setDaemon(true);
+                t.start();
+                cons.add(t);
+            }
+            Session[] ps = new Session[producers];
+            MessageProducer[] mp = new MessageProducer[producers];
+            for (int p = 0; p < producers; p++) {
+                Connection pc = f.createConnection(user, password);
+                conns.add(pc);
+                pc.start();
+                ps[p] = pc.createSession(false, Session.AUTO_ACKNOWLEDGE);
+                mp[p] = ps[p].createProducer(ps[p].createQueue(names[p % queues]));
+                mp[p].setDeliveryMode(DeliveryMode.NON_PERSISTENT);
+            }
+            CountDownLatch start = new CountDownLatch(1);
+            AtomicLong sent = new AtomicLong();
+            AtomicLong maxLagMs = new AtomicLong();
+            List<Thread> prods = new ArrayList<>();
+            long intervalNs = 1_000_000_000L / rate;
+            for (int p = 0; p < producers; p++) {
+                final int idx = p;
+                Thread t = new Thread(() -> {
+                    try {
+                        start.await();
+                        // Producers are spread over one interval so they do not all send at once.
+                        long next = System.nanoTime() + intervalNs * idx / producers;
+                        for (int n = 0; n < perProducer; n++) {
+                            long wait = next - System.nanoTime();
+                            if (wait > 0) {
+                                Thread.sleep(wait / 1_000_000, (int) (wait % 1_000_000));
+                            } else {
+                                maxLagMs.accumulateAndGet(-wait / 1_000_000, Math::max);
+                            }
+                            TextMessage m = ps[idx].createTextMessage(docs[n % docs.length]);
+                            m.setIntProperty("producer", idx);
+                            m.setIntProperty("seq", n + 1);
+                            m.setLongProperty("sendNanos", System.nanoTime());
+                            mp[idx].send(m);
+                            sent.incrementAndGet();
+                            next += intervalNs;
+                        }
+                    } catch (Exception e) {
+                        failure.compareAndSet(null, e.toString());
+                    }
+                }, "soak-producer-" + p);
+                t.setDaemon(true);
+                t.start();
+                prods.add(t);
+            }
+            phase("produce-start");
+            long t0 = System.nanoTime();
+            start.countDown();
+            for (Thread t : prods) {
+                t.join();
+            }
+            long produceMs = (System.nanoTime() - t0) / 1_000_000;
+            phase("produce-end");
+            long deadline = System.currentTimeMillis() + Math.min(timeoutMs, IDLE_LIMIT_MS + 5_000);
+            for (Thread t : cons) {
+                t.join(Math.max(1, deadline - System.currentTimeMillis()));
+            }
+            long elapsedMs = (System.nanoTime() - t0) / 1_000_000;
+            phase("consume-end");
+            long missing = 0;
+            int firstMissingProducer = -1;
+            int firstMissingSeq = 0;
+            for (int p = 0; p < producers; p++) {
+                int count;
+                synchronized (seen[p]) {
+                    count = seen[p].cardinality();
+                    if (count < perProducer && firstMissingProducer < 0) {
+                        firstMissingProducer = p;
+                        firstMissingSeq = seen[p].nextClearBit(1);
+                    }
+                }
+                missing += perProducer - count;
+            }
+            if (missing > 0) {
+                failure.compareAndSet(null, "missing-" + missing + "-first-producer-" + firstMissingProducer
+                        + "-seq-" + firstMissingSeq);
+            }
+            int n = Math.min(latencyCount.get(), latencies.length);
+            long[] sorted = Arrays.copyOf(latencies, n);
+            Arrays.sort(sorted);
+            long minC = Arrays.stream(perConsumer).min().orElse(0);
+            long maxC = Arrays.stream(perConsumer).max().orElse(0);
+            BenchResult r = result()
+                    .put("queues", queues)
+                    .put("rate_per_producer", rate)
+                    .put("duration_s", durationSeconds)
+                    .put("sent", sent.get())
+                    .put("received", received.get())
+                    .put("missing", missing)
+                    .put("duplicates", duplicates.get())
+                    .put("out_of_order", outOfOrder.get())
+                    .put("produce_ms", produceMs)
+                    .put("elapsed_ms", elapsedMs)
+                    .put("max_send_lag_ms", maxLagMs.get())
+                    .put("per_consumer_min", minC)
+                    .put("per_consumer_max", maxC)
+                    .put("p50_us", n == 0 ? 0 : sorted[n / 2])
+                    .put("p99_us", n == 0 ? 0 : sorted[Math.min(n - 1, (int) (n * 0.99))])
+                    .put("max_us", n == 0 ? 0 : sorted[n - 1]);
+            if (failure.get() != null) {
+                r.fail(failure.get());
+            }
+            r.print();
+            return r.exitCode();
+        } finally {
+            for (Connection c : conns) {
+                try {
+                    c.close();
+                } catch (Exception ignored) {
+                    // the run is over; nothing to report
+                }
+            }
         }
     }
 }

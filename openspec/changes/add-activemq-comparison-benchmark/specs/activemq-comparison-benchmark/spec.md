@@ -144,6 +144,21 @@ From these the report SHALL derive the cost per unit of work for each broker: br
 - **WHEN** any run completes
 - **THEN** the report shows, for each phase, the CPU of the broker, of the benchmark client and of the rest of the machine
 
+### Requirement: Soak scenario with sequence verification
+The benchmark client SHALL offer a `soak` scenario: `--producers` (default 10) producers each send `--rate` messages per second (default 10) for `--duration-seconds` (default 300) at a steady pace, spread over the send interval, while `--consumers` (default 10) consumers read at the same time; producer p sends to queue p mod Q and consumer c reads queue c mod Q, with `--queues` Q (default 1, a shared queue). Every message carries its producer index, a per-producer `seq` and its send time. The scenario SHALL fail when, for any producer, a consumer receives a `seq` not greater than the previous one from that producer (or not exactly the next one when the consumer has its queue alone), when a message is received twice, when a message is missing at the end, or when a body has the wrong length. It SHALL report sent, received, missing, duplicates, out-of-order count, the largest send lag behind schedule, messages per consumer (min and max) and end-to-end latency (p50, p99, max). The comparison script SHALL be able to run it against every broker with the per-phase CPU and memory figures of "Resource usage under load".
+
+#### Scenario: Ten producers for five minutes
+- **WHEN** `bench --scenario soak` runs with the defaults against a broker
+- **THEN** 30,000 messages are sent at 100 messages per second in total, every one is received exactly once, every consumer sees each producer's `seq` in increasing order, and the result line reports `missing=0 duplicates=0 out_of_order=0` with the latency percentiles
+
+#### Scenario: Lost message detected
+- **WHEN** a broker never delivers message `seq=390` of producer 0
+- **THEN** the scenario fails with a reason naming producer 0 and seq 390
+
+#### Scenario: One queue per pair
+- **WHEN** the scenario runs with `--queues 10`
+- **THEN** each consumer must receive each producer's messages with consecutive `seq` values
+
 ### Requirement: Fair ActiveMQ configuration
 The primary ActiveMQ runs SHALL use ActiveMQ 5.18.x and 6.x with `scripts\activemq-bench\activemq-tuned.xml`: `persistent="false"`; a `vmQueueCursor` pending queue policy so no message is spooled to temporary storage; `producerFlowControl="false"` for queues and topics; a broker-wide memory limit of 3 GB (store and temp limits also 3 GB, unused); JMX, advisory support and the scheduler disabled; only an OpenWire transport connector on `127.0.0.1:61616`, with the connector options of the distribution's `activemq.xml`; and a `simpleAuthenticationPlugin` with the benchmark user `admin` / `admin`. The file SHALL be a template for the port: for each run the script SHALL write a copy with the port replaced by the one it was given. The JVM SHALL run with `-Xmx4g`, no `-Xms`, the default garbage collector and the same JDK as the client. The report SHALL include the exact XML and the full JVM command line.
 

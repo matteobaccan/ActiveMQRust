@@ -48,3 +48,8 @@
 
 - [x] 7.1 Record per phase the broker and client CPU time, average and peak Working Set and Private Bytes, and the machine CPU average; derive CPU % of one core and of the machine, CPU ms per 1,000 messages and per MB, and memory per held message
 - [x] 7.2 Add the resource figures to the report tables (mean/median/min/max) and every individual value to the CSV
+
+## 8. Soak scenario
+
+- [x] 8.1 Add the `soak` scenario to Bench.java: steady per-producer rate for a duration, shared or per-pair queues, checks for order, duplicates, losses and length, latency percentiles
+- [ ] 8.2 Add the soak run to the comparison script and report (per broker, with per-phase CPU and memory), and run it on a quiet machine
