@@ -5,7 +5,7 @@
 - [x] 1.3 Implement scenario 1 (queue round trip, FIFO, message IDs)
 - [x] 1.4 Implement scenario 2 (correlation ID selectors, LIKE, invalid selector)
 - [x] 1.5 Implement scenario 3 (authentication)
-- [ ] 1.6 Add `run-acceptance.cmd` and document in the README how to start a local ActiveMQ
+- [x] 1.6 Add `run-acceptance.cmd` and document in the README how to start a local ActiveMQ
 - [ ] 1.7 Run all scenarios against a real ActiveMQ with both profiles and confirm PASS
 
 ## 2. Project skeleton and packaging
@@ -22,7 +22,7 @@
 - [x] 3.2 Implement validation with field-specific errors and exit code 2
 - [x] 3.3 Implement the CLI (`--config`, `--bind`, `--port`, `--admin-bind`, `--admin-port`, `--version`) with precedence over the file
 - [x] 3.4 Implement `check-config`, `init-config` (no overwrite) and `hash-password` (hidden input, Argon2id)
-- [ ] 3.5 Unit tests for defaults, partial files, precedence and every validation error
+- [x] 3.5 Unit tests for defaults, partial files, precedence and every validation error
 
 ## 4. Logging and lifecycle
 
@@ -43,7 +43,7 @@
 - [x] 6.3 Implement command/response correlation and the unsupported-command reply
 - [x] 6.4 Implement keep-alive writes and the inactivity timeout
 - [x] 6.5 Implement the connection/session lifecycle and resource release on close or drop
-- [ ] 6.6 Accept advisory consumers silently
+- [x] 6.6 Accept advisory consumers; publish only the temporary-destination advisories
 
 ## 7. Authentication
 
@@ -59,6 +59,6 @@
 ## 9. Verification
 
 - [x] 9.1 Acceptance scenario 3 passes against `mqrust.exe` started with no arguments (both profiles)
-- [ ] 9.2 The idle connection test (over 60 s) passes
+- [x] 9.2 The idle connection test (over 60 s) passes
 - [ ] 9.3 The clean-machine test in Windows Sandbox passes (executable alone, scenario 3)
 - [ ] 9.4 Install, start, stop, uninstall the service on the development machine and check `mqrust.log`

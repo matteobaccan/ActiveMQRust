@@ -333,6 +333,12 @@ impl Decoder {
         m.transaction_id = self.opt_transaction_id(r)?;
         m.original_destination = self.opt_destination(r)?;
         m.message_id = self.opt_message_id(r)?;
+        // The message id normally repeats the producer's connection id: share one string.
+        if let (Some(p), Some(MessageId { producer_id: Some(mp), .. })) = (&m.producer_id, &mut m.message_id) {
+            if mp.connection_id == p.connection_id {
+                mp.connection_id = p.connection_id.clone();
+            }
+        }
         m.original_transaction_id = self.opt_transaction_id(r)?;
         m.group_id = r.opt_string()?;
         m.group_sequence = r.i32()?;
@@ -409,8 +415,8 @@ impl Decoder {
         Ok(match type_code {
             t::ACTIVEMQ_QUEUE | t::ACTIVEMQ_TOPIC | t::ACTIVEMQ_TEMP_QUEUE | t::ACTIVEMQ_TEMP_TOPIC => {
                 let kind = DestKind::from_type_code(type_code).unwrap();
-                let name = r.opt_string()?.unwrap_or_default();
-                DataStructure::Destination(Destination { kind, name: Arc::from(name) })
+                let name = r.opt_arc_str()?.unwrap_or_else(|| Arc::from(""));
+                DataStructure::Destination(Destination { kind, name })
             }
             t::CONNECTION_ID => DataStructure::ConnectionId(ConnectionId { value: self.arc(r)? }),
             t::SESSION_ID => DataStructure::SessionId(SessionId { connection_id: self.arc(r)?, value: r.i64()? }),
@@ -555,22 +561,31 @@ impl Encoder {
 
     /// Appends a frame to `out` without copying large message bodies.
     pub fn encode_frame_chunks(&self, cmd: &Command, out: &mut ChunkBuf) {
-        let mut parts = Vec::new();
+        let mut parts = std::mem::take(&mut out.parts);
         {
             let mut w = Writer::with_sink(&mut out.scratch, &mut parts);
             w.u8(cmd.type_code());
             self.command(cmd, &mut w);
         }
+        if parts.is_empty() {
+            // No large body: the frame is copied from the scratch buffer, which stays reusable.
+            out.small.put_i32(out.scratch.len() as i32);
+            out.small.put_slice(&out.scratch);
+            out.scratch.clear();
+            out.parts = parts;
+            return;
+        }
         parts.push(out.scratch.split().freeze());
         let size: usize = parts.iter().map(|p| p.len()).sum();
         out.small.put_i32(size as i32);
-        for p in parts {
+        for p in parts.drain(..) {
             if p.len() >= crate::openwire::codec::ZERO_COPY_MIN {
                 out.push_big(p);
             } else {
                 out.small.put_slice(&p);
             }
         }
+        out.parts = parts;
     }
 
     pub fn frame(&self, cmd: &Command) -> Bytes {
@@ -595,7 +610,7 @@ impl Encoder {
             Command::BrokerInfo(c) => self.broker_info(c, w),
             Command::ConnectionInfo(c) => {
                 self.header(&c.header, w);
-                self.opt(c.connection_id.as_ref().map(|v| DsRef::ConnectionId(v)), w);
+                self.opt(c.connection_id.as_ref().map(DsRef::ConnectionId), w);
                 w.opt_string(c.client_id.as_deref());
                 w.opt_string(c.password.as_deref());
                 w.opt_string(c.user_name.as_deref());
@@ -925,6 +940,8 @@ impl Encoder {
 pub struct ChunkBuf {
     small: BytesMut,
     scratch: BytesMut,
+    /// Reusable list of the pieces of one frame.
+    parts: Vec<Bytes>,
     chunks: std::collections::VecDeque<Bytes>,
 }
 
@@ -933,6 +950,7 @@ impl ChunkBuf {
         ChunkBuf {
             small: BytesMut::with_capacity(64 * 1024),
             scratch: BytesMut::with_capacity(4096),
+            parts: Vec::new(),
             chunks: Default::default(),
         }
     }

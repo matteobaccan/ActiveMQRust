@@ -99,6 +99,7 @@ public final class Integration {
         run("brokerCompression", only, this::brokerCompression);
         run("expiration", only, this::expiration);
         run("selectors", only, this::selectors);
+        run("selectorParity", only, () -> new SelectorParity(url, user, password).run());
         if (longTests || "idleKeepAlive".equals(only)) {
             run("idleKeepAlive", only, this::idleKeepAlive);
         }
@@ -575,7 +576,7 @@ public final class Integration {
                 results.put(sel, got);
                 System.out.println("SELECTOR " + sel + " => " + got);
             }
-            check(results.get("color = 'red'").equals(Arrays.asList("m0", "m4", "m8")), "color = 'red' gave " + results.get("color = 'red'"));
+            SelectorExpectations.verify(results);
         }
     }
 

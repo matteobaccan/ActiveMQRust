@@ -9,11 +9,12 @@
 
 use parking_lot::Mutex;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
 use super::conn::ConnHandle;
-use super::entry::Entry;
+use super::entry::{DestUsage, Entry};
 use crate::openwire::model::*;
 use crate::selector::Selector;
 
@@ -239,12 +240,19 @@ pub struct Dest {
     pub created: chrono::DateTime<chrono::Local>,
     topic_max_pending: usize,
     state: Mutex<State>,
+    /// Bytes and compressed messages held, maintained without the lock (admin console).
+    usage: Arc<DestUsage>,
+    /// True while the destination is in the broker's set of destinations with expiring messages.
+    expiring_marked: AtomicBool,
+    /// Messages expired since the last per-minute summary (read without the lock).
+    expired_minute: AtomicU64,
 }
 
 /// Admin view of one subscription.
 #[derive(Debug, Clone)]
 pub struct SubSnapshot {
     pub consumer_id: String,
+    pub connection_id: String,
     pub remote: String,
     pub prefetch: usize,
     pub inflight: usize,
@@ -265,8 +273,16 @@ pub struct DestSnapshot {
     pub stats: Stats,
     pub with_expiry: usize,
     pub next_expiry: Option<i64>,
+    /// Bytes held by the destination, each stored message counted once.
     pub memory: u64,
+    /// Compressed messages waiting in the queue (not yet delivered).
+    pub compressed: u64,
 }
+
+/// Most messages copied for one admin page.
+pub const PAGE_MAX: usize = 50;
+/// Most entries walked while holding the lock in one step of an admin page or lookup.
+pub const WALK_CHUNK: usize = 10_000;
 
 impl Dest {
     pub fn new(dest: Destination, owner: Option<u64>, topic_max_pending: usize) -> Dest {
@@ -286,11 +302,20 @@ impl Dest {
                 idle_since: Some(Instant::now()),
                 reserved: HashMap::new(),
             }),
+            usage: Arc::new(DestUsage::default()),
+            expiring_marked: AtomicBool::new(false),
+            expired_minute: AtomicU64::new(0),
         }
     }
 
     pub fn is_queue(&self) -> bool {
         self.dest.kind.is_queue()
+    }
+
+    /// Holds this destination's lock until the returned guard is dropped (lock-scope tests).
+    #[doc(hidden)]
+    pub fn hold_lock(&self) -> impl Sized + '_ {
+        self.state.lock()
     }
 
     // -- producers ----------------------------------------------------------
@@ -319,15 +344,46 @@ impl Dest {
             .check_and_record(id.producer_sequence_id)
     }
 
-    /// Counts a message that expired before it could be stored.
-    pub fn add_expired(&self) {
+    /// Forgets the duplicate windows of every producer of a closed connection.
+    pub fn release_audits(&self, connection_id: &str) {
+        let mut st = self.state.lock();
+        if !st.audit.is_empty() {
+            st.audit.retain(|p, _| p.connection_id.as_ref() != connection_id);
+        }
+    }
+
+    /// Counts a message discarded before it could be stored (memory limit).
+    pub fn add_discarded(&self) {
+        self.state.lock().stats.discarded += 1;
+    }
+
+    /// Counts a message that expired before it could be stored (on arrival or at commit).
+    pub fn expired_before_storing(&self, msg: &Message) {
         self.state.lock().stats.expired += 1;
+        self.expired_minute.fetch_add(1, Ordering::Relaxed);
+        tracing::debug!("{}: message {} expired before it was stored", self.dest, msg.message_id_text());
+    }
+
+    /// The single deletion path of expired messages, after the caller has taken the message out of
+    /// the structure that held it: counts it, logs it and drops it. Dropping the last copy of a
+    /// message releases its accounted memory.
+    fn expire(&self, stats: &mut Stats, e: Entry) {
+        stats.expired += 1;
+        self.expired_minute.fetch_add(1, Ordering::Relaxed);
+        tracing::debug!("{}: message {} expired", self.dest, e.msg.message_id_text());
+        drop(e);
+    }
+
+    /// Returns and resets the number of messages expired since the previous call.
+    pub fn take_expired_since_summary(&self) -> u64 {
+        self.expired_minute.swap(0, Ordering::Relaxed)
     }
 
     // -- enqueue ------------------------------------------------------------
 
     /// Stores a message (queue) or fans it out (topic), then dispatches.
     pub fn enqueue(&self, entry: Entry, now_ms: i64) -> Vec<Effect> {
+        entry.meta.charge(&self.usage, entry.msg.compressed);
         let mut st = self.state.lock();
         st.stats.enqueued += 1;
         if self.is_queue() {
@@ -352,6 +408,12 @@ impl Dest {
                     while sub.tpending.len() > max {
                         if let Some((seq, old)) = sub.tpending.pop_first() {
                             sub.texpiry.remove(&(old.msg.expiration, seq));
+                            tracing::debug!(
+                                "{}: pending limit of {max} reached for subscription {}: evicted message {}",
+                                self.dest,
+                                sub.id,
+                                old.msg.message_id_text()
+                            );
                             discarded += 1;
                         }
                     }
@@ -368,7 +430,7 @@ impl Dest {
         let mut min_seq = u64::MAX;
         for e in entries {
             if e.expired(now_ms) {
-                st.stats.expired += 1;
+                self.expire(&mut st.stats, e);
                 continue;
             }
             min_seq = min_seq.min(e.seq);
@@ -393,7 +455,7 @@ impl Dest {
         }
         // Browsers are served from their own snapshot.
         for sub in subs.iter_mut().filter(|s| s.browser.is_some()) {
-            Self::dispatch_browser(&self.dest, sub, now_ms);
+            self.dispatch_browser(sub, pending, expiry, stats, now_ms);
         }
         let n = subs.len();
         loop {
@@ -421,7 +483,7 @@ impl Dest {
                 for seq in expired {
                     if let Some(e) = pending.remove(&seq) {
                         expiry.remove(&(e.msg.expiration, seq));
-                        stats.expired += 1;
+                        self.expire(stats, e);
                     }
                 }
                 if let Some(seq) = chosen {
@@ -443,7 +505,15 @@ impl Dest {
         }
     }
 
-    fn dispatch_browser(dest: &Destination, sub: &mut Sub, now_ms: i64) {
+    fn dispatch_browser(
+        &self,
+        sub: &mut Sub,
+        pending: &mut BTreeMap<u64, Entry>,
+        expiry: &mut BTreeSet<(i64, u64)>,
+        stats: &mut Stats,
+        now_ms: i64,
+    ) {
+        let dest = &self.dest;
         loop {
             let credit = if sub.prefetch == 0 { sub.pull.is_some() } else { sub.window() < sub.prefetch };
             if !credit {
@@ -451,7 +521,13 @@ impl Dest {
             }
             let next = sub.browser.as_mut().and_then(|b| b.pop_front());
             match next {
-                Some(e) if e.expired(now_ms) => continue,
+                Some(e) if e.expired(now_ms) => {
+                    // Skipped, and deleted if it is still pending (not already taken by a consumer).
+                    if let Some(stored) = pending.remove(&e.seq) {
+                        expiry.remove(&(stored.msg.expiration, stored.seq));
+                        self.expire(stats, stored);
+                    }
+                }
                 Some(e) => sub.send(dest, e),
                 None => {
                     if !sub.browse_finished {
@@ -473,7 +549,7 @@ impl Dest {
                     sub.texpiry.remove(&(e.msg.expiration, seq));
                 }
                 if e.expired(now_ms) {
-                    stats.expired += 1;
+                    self.expire(stats, e);
                     continue;
                 }
                 sub.send(&self.dest, e);
@@ -496,11 +572,20 @@ impl Dest {
         let mut st = self.state.lock();
         let mut sub = Sub::new(spec);
         if let Some(snapshot) = sub.browser.as_mut() {
+            let mut expired = Vec::new();
             for e in st.pending.values() {
                 if e.expired(now_ms) {
+                    expired.push(e.seq);
                     continue;
                 }
                 snapshot.push_back(e.clone());
+            }
+            // Expired messages met while browsing are deleted.
+            for seq in expired {
+                if let Some(e) = st.pending.remove(&seq) {
+                    st.expiry.remove(&(e.msg.expiration, seq));
+                    self.expire(&mut st.stats, e);
+                }
             }
             if let Some(sel) = sub.selector.clone() {
                 snapshot.retain(|e| sel.matches(e));
@@ -565,16 +650,18 @@ impl Dest {
         let mut st = self.state.lock();
         let Some(cid) = &ack.consumer_id else { return effects };
         let Some(pos) = st.subs.iter().position(|s| &s.id == cid) else {
-            if !transacted {
-                self.ack_reserved(&mut st, cid, ack, &mut effects);
-                Self::touch_idle(&mut st);
-                self.dispatch(&mut st, now_ms);
+            if transacted || !self.ack_reserved(&mut st, cid, ack, &mut effects) {
+                tracing::debug!("{}: ack of type {} for unknown consumer {cid} ignored", self.dest, ack.ack_type);
+                return effects;
             }
+            Self::touch_idle(&mut st);
+            self.dispatch(&mut st, now_ms);
             return effects;
         };
         let mut consumed = 0u64;
-        let mut expired = 0u64;
+        let mut expired = Vec::new();
         let mut discarded = 0u64;
+        let mut matched = 0usize;
         {
             let sub = &mut st.subs[pos];
             let browser = sub.browser.is_some();
@@ -582,6 +669,7 @@ impl Dest {
                 let cumulative = matches!(ack.ack_type, ack_type::STANDARD | ack_type::UNMATCHED);
                 for d in sub.ack_range(ack, cumulative) {
                     if let Some(inf) = sub.inflight.get_mut(&d) {
+                        matched += 1;
                         inf.tx = true;
                         if !inf.freed {
                             inf.freed = true;
@@ -594,6 +682,7 @@ impl Dest {
                     ack_type::DELIVERED => {
                         for d in sub.ack_range(ack, false) {
                             if let Some(inf) = sub.inflight.get_mut(&d) {
+                                matched += 1;
                                 if !inf.freed {
                                     inf.freed = true;
                                     sub.freed += 1;
@@ -607,6 +696,7 @@ impl Dest {
                                 consumed += 1;
                             }
                         }
+                        matched += consumed as usize;
                     }
                     ack_type::INDIVIDUAL => {
                         let last = ack
@@ -617,6 +707,7 @@ impl Dest {
                         if let Some(d) = last {
                             if sub.remove_inflight(d).is_some() {
                                 consumed += 1;
+                                matched += 1;
                             }
                         }
                     }
@@ -628,6 +719,7 @@ impl Dest {
                             .unwrap_or_else(|| "Delivery failure: poison ack".to_string());
                         for d in sub.ack_range(ack, false) {
                             if let Some(e) = sub.remove_inflight(d) {
+                                matched += 1;
                                 if browser {
                                     continue;
                                 }
@@ -642,14 +734,16 @@ impl Dest {
                     ack_type::REDELIVERED => {
                         for d in sub.ack_range(ack, false) {
                             if let Some(inf) = sub.inflight.get_mut(&d) {
+                                matched += 1;
                                 inf.entry.redelivery = inf.entry.redelivery.saturating_add(1);
                             }
                         }
                     }
                     ack_type::EXPIRED => {
                         for d in sub.ack_range(ack, false) {
-                            if sub.remove_inflight(d).is_some() {
-                                expired += 1;
+                            if let Some(e) = sub.remove_inflight(d) {
+                                matched += 1;
+                                expired.push(e);
                             }
                         }
                     }
@@ -659,11 +753,16 @@ impl Dest {
             if browser {
                 // A browser never removes queue messages.
                 consumed = 0;
-                expired = 0;
+                expired.clear();
             }
         }
+        if matched == 0 {
+            tracing::debug!("{}: ack of type {} from {cid} matches no inflight message", self.dest, ack.ack_type);
+        }
         st.stats.dequeued += consumed;
-        st.stats.expired += expired;
+        for e in expired {
+            self.expire(&mut st.stats, e);
+        }
         st.stats.discarded += discarded;
         Self::touch_idle(&mut st);
         self.dispatch(&mut st, now_ms);
@@ -671,16 +770,17 @@ impl Dest {
     }
 
     /// Commits an ack of a consumer that closed while its transaction was open.
-    fn ack_reserved(&self, st: &mut State, cid: &ConsumerId, ack: &MessageAck, effects: &mut Vec<Effect>) {
-        let Some(list) = st.reserved.get_mut(cid) else { return };
-        let Some(last) = ack.last_message_id.as_ref().map(|m| m.broker_sequence_id as u64) else { return };
+    /// Returns false when the consumer has no reserved messages.
+    fn ack_reserved(&self, st: &mut State, cid: &ConsumerId, ack: &MessageAck, effects: &mut Vec<Effect>) -> bool {
+        let Some(list) = st.reserved.get_mut(cid) else { return false };
+        let Some(last) = ack.last_message_id.as_ref().map(|m| m.broker_sequence_id as u64) else { return true };
         let first = ack.first_message_id.as_ref().map(|m| m.broker_sequence_id as u64);
         let mut taken = Vec::new();
         list.retain(|e| {
             let hit = match ack.ack_type {
                 ack_type::STANDARD | ack_type::UNMATCHED => e.seq <= last,
                 ack_type::INDIVIDUAL => e.seq == last,
-                ack_type::POISON | ack_type::EXPIRED => e.seq <= last && first.map_or(true, |f| e.seq >= f),
+                ack_type::POISON | ack_type::EXPIRED => e.seq <= last && first.is_none_or(|f| e.seq >= f),
                 _ => false,
             };
             if hit {
@@ -700,10 +800,11 @@ impl Dest {
                         st.stats.discarded += 1;
                     }
                 }
-                ack_type::EXPIRED => st.stats.expired += 1,
+                ack_type::EXPIRED => self.expire(&mut st.stats, e),
                 _ => st.stats.dequeued += 1,
             }
         }
+        true
     }
 
     /// Returns the reserved messages of a closed consumer to pending (transaction rolled back).
@@ -780,32 +881,56 @@ impl Dest {
                 break;
             }
             st.expiry.pop_first();
-            if st.pending.remove(&seq).is_some() {
+            if let Some(e) = st.pending.remove(&seq) {
+                self.expire(&mut st.stats, e);
                 removed += 1;
             }
         }
-        for sub in st.subs.iter_mut() {
+        let State { subs, stats, .. } = &mut *st;
+        for sub in subs.iter_mut() {
             while removed < max {
                 let Some(&(exp, seq)) = sub.texpiry.first() else { break };
                 if exp > now_ms {
                     break;
                 }
                 sub.texpiry.pop_first();
-                if sub.tpending.remove(&seq).is_some() {
+                if let Some(e) = sub.tpending.remove(&seq) {
+                    self.expire(stats, e);
                     removed += 1;
                 }
             }
         }
-        st.stats.expired += removed as u64;
         if removed > 0 {
             Self::touch_idle(&mut st);
         }
         removed
     }
 
+    /// True when some pending list holds a message with an expiration.
     pub fn has_expiring(&self) -> bool {
         let st = self.state.lock();
         !st.expiry.is_empty() || st.subs.iter().any(|s| !s.texpiry.is_empty())
+    }
+
+    /// Marks the destination as registered in the broker's expiring set. Returns the previous mark.
+    pub fn mark_expiring(&self) -> bool {
+        self.expiring_marked.swap(true, Ordering::AcqRel)
+    }
+
+    /// Clears the mark when the destination holds no message with an expiration anywhere
+    /// (pending lists, inflight, reserved by a transaction). Returns true when it was cleared.
+    pub fn unmark_expiring_if_none(&self) -> bool {
+        let st = self.state.lock();
+        let any = !st.expiry.is_empty()
+            || st.subs.iter().any(|s| {
+                !s.texpiry.is_empty() || s.inflight.values().any(|i| i.entry.msg.expiration > 0)
+            })
+            || st.reserved.values().flatten().any(|e| e.msg.expiration > 0);
+        if any {
+            return false;
+        }
+        self.expiring_marked.store(false, Ordering::Release);
+        true
     }
 
     // -- lifecycle ------------------------------------------------------------
@@ -829,7 +954,7 @@ impl Dest {
         st.pending.is_empty()
             && st.subs.is_empty()
             && st.producers.is_empty()
-            && st.idle_since.map_or(false, |t| t.elapsed().as_secs() >= secs)
+            && st.idle_since.is_some_and(|t| t.elapsed().as_secs() >= secs)
     }
 
     /// Number of messages held (pending plus inflight, all subscriptions).
@@ -838,28 +963,45 @@ impl Dest {
         st.pending.len() + st.subs.iter().map(|s| s.inflight.len() + s.tpending.len()).sum::<usize>()
     }
 
-    /// Drops every message (used when the destination is deleted).
+    /// Drops every message, pending, inflight or reserved (used when the destination is deleted).
+    /// Returns how many were dropped.
     pub fn clear(&self) -> usize {
         let mut st = self.state.lock();
-        let n = st.pending.len();
+        let mut n = st.pending.len() + st.reserved.values().map(|v| v.len()).sum::<usize>();
         st.pending.clear();
         st.expiry.clear();
+        st.reserved.clear();
+        for sub in st.subs.iter_mut() {
+            n += sub.inflight.len() + sub.tpending.len();
+            sub.inflight.clear();
+            sub.by_seq.clear();
+            sub.freed = 0;
+            sub.tpending.clear();
+            sub.texpiry.clear();
+            if let Some(b) = sub.browser.as_mut() {
+                b.clear();
+            }
+        }
         n
     }
 
     // -- admin --------------------------------------------------------------
 
+    /// Counters, consumers and producers. Cost under the lock: O(consumers + inflight),
+    /// never O(pending): memory and compressed counts come from running counters.
     pub fn snapshot(&self) -> DestSnapshot {
         let st = self.state.lock();
-        let mut memory: u64 = st.pending.values().map(|e| e.meta.size).sum();
+        let mut compressed_out = 0u64;
         let consumers = st
             .subs
             .iter()
             .map(|s| {
-                memory += s.inflight.values().map(|i| i.entry.meta.size).sum::<u64>();
-                memory += s.tpending.values().map(|e| e.meta.size).sum::<u64>();
+                if s.browser.is_none() {
+                    compressed_out += s.inflight.values().filter(|i| i.entry.msg.compressed).count() as u64;
+                }
                 SubSnapshot {
                     consumer_id: s.id.to_string(),
+                    connection_id: s.id.connection_id.to_string(),
                     remote: s.conn.remote.to_string(),
                     prefetch: s.prefetch,
                     inflight: s.inflight.len(),
@@ -870,6 +1012,7 @@ impl Dest {
                 }
             })
             .collect();
+        compressed_out += st.reserved.values().flatten().filter(|e| e.msg.compressed).count() as u64;
         let with_expiry = st.expiry.len() + st.subs.iter().map(|s| s.texpiry.len()).sum::<usize>();
         let next_expiry = st
             .expiry
@@ -878,6 +1021,12 @@ impl Dest {
             .into_iter()
             .chain(st.subs.iter().filter_map(|s| s.texpiry.first().map(|x| x.0)))
             .min();
+        let compressed = if self.is_queue() {
+            let held = self.usage.compressed.load(Ordering::Relaxed);
+            held.saturating_sub(compressed_out).min(st.pending.len() as u64)
+        } else {
+            0
+        };
         DestSnapshot {
             dest: self.dest.clone(),
             pending: st.pending.len() + st.subs.iter().map(|s| s.tpending.len()).sum::<usize>(),
@@ -887,35 +1036,94 @@ impl Dest {
             stats: st.stats,
             with_expiry,
             next_expiry,
-            memory,
+            memory: self.usage.bytes.load(Ordering::Relaxed),
+            compressed,
         }
     }
 
-    /// A page of pending messages in FIFO order: (total, entries).
-    pub fn page(&self, offset: usize, limit: usize) -> (usize, Vec<Entry>) {
-        let st = self.state.lock();
-        let total = st.pending.len();
-        (total, st.pending.values().skip(offset).take(limit).cloned().collect())
+    /// Sequence of the pending message at FIFO position `index`, found by walking at most
+    /// `WALK_CHUNK` entries per lock hold, from the nearer end of the queue.
+    fn seq_at(&self, index: usize) -> Option<u64> {
+        let (len, first, last) = {
+            let st = self.state.lock();
+            (st.pending.len(), *st.pending.keys().next()?, *st.pending.keys().next_back()?)
+        };
+        if index >= len {
+            return None;
+        }
+        let forward = index <= len / 2;
+        let (mut at, mut left) = if forward { (first, index) } else { (last, len - 1 - index) };
+        while left > 0 {
+            let step = left.min(WALK_CHUNK);
+            let st = self.state.lock();
+            let next = if forward {
+                st.pending.range(at..).nth(step)
+            } else {
+                st.pending.range(..=at).rev().nth(step)
+            };
+            at = *next?.0;
+            left -= step;
+        }
+        Some(at)
     }
 
-    /// Finds a pending or inflight message by sequence or JMS message id.
-    pub fn find(&self, seq_hint: Option<u64>, message_id: &str) -> Option<(Entry, bool)> {
+    /// A page of pending messages in FIFO order: (total pending, entries). Copies at most
+    /// `PAGE_MAX` entries (`Arc` clones); the walk to `offset` releases the lock every
+    /// `WALK_CHUNK` entries, so concurrent traffic may shift the page slightly.
+    pub fn page(&self, offset: usize, limit: usize) -> (usize, Vec<Entry>) {
+        let limit = limit.min(PAGE_MAX);
+        let start = match offset {
+            0 => None,
+            _ => match self.seq_at(offset) {
+                Some(seq) => Some(seq),
+                None => return (self.state.lock().pending.len(), Vec::new()),
+            },
+        };
         let st = self.state.lock();
+        let entries = match start {
+            Some(seq) => st.pending.range(seq..).take(limit).map(|(_, e)| e.clone()).collect(),
+            None => st.pending.values().take(limit).cloned().collect(),
+        };
+        (st.pending.len(), entries)
+    }
+
+    /// Finds a message by JMS message id: `(entry, inflight)`. The sequence hint gives an
+    /// O(log n) lookup; otherwise pending messages are scanned `WALK_CHUNK` at a time with the
+    /// lock released in between, then the messages in flight to consumers.
+    pub fn find(&self, seq_hint: Option<u64>, message_id: &str) -> Option<(Entry, bool)> {
+        let matches = |e: &Entry| e.msg.message_id_text() == message_id;
         if let Some(seq) = seq_hint {
-            if let Some(e) = st.pending.get(&seq) {
-                if e.msg.message_id_text() == message_id {
-                    return Some((e.clone(), false));
+            let st = self.state.lock();
+            if let Some(e) = st.pending.get(&seq).filter(|e| matches(e)) {
+                return Some((e.clone(), false));
+            }
+            for s in st.subs.iter().filter(|s| s.browser.is_none()) {
+                if let Some(i) = s.by_seq.get(&seq).and_then(|d| s.inflight.get(d)).filter(|i| matches(&i.entry)) {
+                    return Some((i.entry.clone(), true));
                 }
             }
         }
-        if let Some(e) = st.pending.values().find(|e| e.msg.message_id_text() == message_id) {
-            return Some((e.clone(), false));
+        let mut from = 0u64;
+        loop {
+            let st = self.state.lock();
+            let mut last = None;
+            for (seq, e) in st.pending.range(from..).take(WALK_CHUNK) {
+                if matches(e) {
+                    return Some((e.clone(), false));
+                }
+                last = Some(*seq);
+            }
+            match last {
+                Some(seq) if seq < u64::MAX => from = seq + 1,
+                _ => break,
+            }
         }
-        for s in &st.subs {
-            if let Some(i) = s.inflight.values().find(|i| i.entry.msg.message_id_text() == message_id) {
+        let st = self.state.lock();
+        for s in st.subs.iter().filter(|s| s.browser.is_none()) {
+            if let Some(i) = s.inflight.values().find(|i| matches(&i.entry)) {
                 return Some((i.entry.clone(), true));
             }
-            if let Some(e) = s.tpending.values().find(|e| e.msg.message_id_text() == message_id) {
+            if let Some(e) = s.tpending.values().find(|e| matches(e)) {
                 return Some((e.clone(), false));
             }
         }

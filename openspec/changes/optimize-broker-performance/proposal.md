@@ -22,8 +22,8 @@ None.
 
 ## Impact
 
-- Code: `src/openwire/frame.rs`, `marshal.rs` (zero-copy body slices, header-only re-encoding), `src/connection.rs` (reader buffer reuse, writer batching, vectored writes), `src/broker/mod.rs` and `destination.rs` (sharded registry, lock scope), `Cargo.toml` release profile.
-- New `benches/` directory (`codec.rs`, `dispatch.rs`, and `compression.rs`, `selectors.rs`, `expiry.rs` when those features exist).
+- Code: `src/openwire/codec.rs`, `marshal.rs` (zero-copy body slices, header-only re-encoding), `src/connection.rs` (reader buffer reuse, writer batching, vectored writes, `serve_with_codec`), `src/broker/mod.rs` and `destination.rs` (sharded registry, lock scope), `Cargo.toml` release profile.
+- New `benches/` directory (`codec.rs`, `dispatch.rs`, `compression.rs`, `selectors.rs`, `expiry.rs`, helpers in `benches/common/`); tests in `tests/hot_path.rs` and `src/connection_tests.rs`.
 - `tests/java-it/`: new `bench` mode in `mqrust-acceptance.jar` and `run-bench.cmd`.
 - New documentation: `docs/benchmarks/performance-<date>.md` and a performance section in the README.
 - Dependencies: `criterion` (dev only). `bytes`, `parking_lot` and `mimalloc` already exist.

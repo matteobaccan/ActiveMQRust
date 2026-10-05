@@ -8,8 +8,8 @@ use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
+use bytes::Buf;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, watch, Notify};
 
@@ -29,33 +29,102 @@ const INVALID_DESTINATION: &str = "javax.jms.InvalidDestinationException";
 const INVALID_SELECTOR: &str = "javax.jms.InvalidSelectorException";
 const SECURITY_EXCEPTION: &str = "java.lang.SecurityException";
 const UNSUPPORTED: &str = "java.lang.UnsupportedOperationException";
+const XA_UNSUPPORTED: &str = "XA transactions not supported";
 
-/// Reads one frame body (without the size prefix). `Ok(None)` on clean EOF.
-async fn read_frame(r: &mut OwnedReadHalf, max: i64) -> std::io::Result<Option<Bytes>> {
-    let mut len = [0u8; 4];
-    match r.read_exact(&mut len).await {
-        Ok(_) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
-        Err(e) => return Err(e),
-    }
-    let size = i32::from_be_bytes(len);
-    if size < 0 || size as i64 > max {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            format!("frame of {size} bytes exceeds the maximum frame size of {max} bytes"),
-        ));
-    }
-    let mut buf = BytesMut::zeroed(size as usize);
-    r.read_exact(&mut buf).await?;
-    Ok(Some(buf.freeze()))
+/// Size of the reusable per-connection read buffer. Frames larger than this are read
+/// directly into their own allocation.
+const READ_BUF: usize = 64 * 1024;
+
+/// Buffered frame reader of one connection. Many small frames arrive with one `recv`; each is
+/// cut from the reusable buffer without allocating (`split_to`). A message frame, which the broker
+/// may keep for a long time, is copied into its own exactly sized allocation so that a stored
+/// message never keeps the shared read buffer (and its neighbouring frames) alive. A frame larger
+/// than the buffer is read straight from the socket into its own allocation, without a copy.
+/// The message `content` and `marshalledProperties` are then `Bytes` slices of that frame.
+pub struct FrameReader<R> {
+    r: R,
+    buf: BytesMut,
 }
 
-/// Writes all chunks with vectored writes (large bodies are sent without copying).
-async fn write_chunks(w: &mut OwnedWriteHalf, chunks: &mut std::collections::VecDeque<Bytes>) -> std::io::Result<()> {
-    use bytes::Buf;
+impl<R: AsyncRead + Unpin> FrameReader<R> {
+    pub fn new(r: R) -> Self {
+        FrameReader { r, buf: BytesMut::with_capacity(READ_BUF) }
+    }
+
+    /// Reads more bytes into the buffer; 0 means end of stream.
+    async fn fill(&mut self) -> std::io::Result<usize> {
+        if self.buf.capacity() - self.buf.len() < READ_BUF / 4 {
+            // Reclaims the space of frames already handed out when they have been dropped.
+            self.buf.reserve(READ_BUF);
+        }
+        self.r.read_buf(&mut self.buf).await
+    }
+
+    /// Reads one frame body (without the size prefix). `Ok(None)` on clean EOF.
+    pub async fn next(&mut self, max: i64) -> std::io::Result<Option<Bytes>> {
+        while self.buf.len() < 4 {
+            if self.fill().await? == 0 {
+                return Ok(None);
+            }
+        }
+        let size = i32::from_be_bytes([self.buf[0], self.buf[1], self.buf[2], self.buf[3]]);
+        if size < 0 || size as i64 > max {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("frame of {size} bytes exceeds the maximum frame size of {max} bytes"),
+            ));
+        }
+        let size = size as usize;
+        if size > READ_BUF && self.buf.len() < 4 + size {
+            // Large frame: own allocation, the rest is read without passing through the buffer.
+            self.buf.advance(4);
+            let mut frame = BytesMut::with_capacity(size);
+            frame.extend_from_slice(&self.buf);
+            self.buf.clear();
+            while frame.len() < size {
+                let want = (size - frame.len()) as u64;
+                if (&mut self.r).take(want).read_buf(&mut frame).await? == 0 {
+                    return Err(std::io::ErrorKind::UnexpectedEof.into());
+                }
+            }
+            return Ok(Some(frame.freeze()));
+        }
+        while self.buf.len() < 4 + size {
+            self.buf.reserve(4 + size - self.buf.len());
+            if self.r.read_buf(&mut self.buf).await? == 0 {
+                return Err(std::io::ErrorKind::UnexpectedEof.into());
+            }
+        }
+        self.buf.advance(4);
+        let frame = self.buf.split_to(size);
+        if size > 0 && t::is_message_type(frame[0]) {
+            Ok(Some(Bytes::copy_from_slice(&frame)))
+        } else {
+            Ok(Some(frame.freeze()))
+        }
+    }
+}
+
+/// Reads one frame body (without the size prefix). `Ok(None)` on clean EOF.
+async fn read_frame<R: AsyncRead + Unpin>(r: &mut FrameReader<R>, max: i64) -> std::io::Result<Option<Bytes>> {
+    r.next(max).await
+}
+
+/// Most slices passed to one vectored write.
+const MAX_IO_SLICES: usize = 64;
+/// Encoded bytes gathered from the queue before they are written.
+const BATCH_BYTES: usize = 256 * 1024;
+
+/// Writes all chunks with vectored writes (large bodies are sent without copying), at most
+/// `MAX_IO_SLICES` slices per call.
+async fn write_chunks<W: AsyncWrite + Unpin>(w: &mut W, chunks: &mut std::collections::VecDeque<Bytes>) -> std::io::Result<()> {
     while !chunks.is_empty() {
-        let slices: Vec<std::io::IoSlice> = chunks.iter().take(64).map(|c| std::io::IoSlice::new(c)).collect();
-        let mut n = w.write_vectored(&slices).await?;
+        let mut slices = [std::io::IoSlice::new(&[]); MAX_IO_SLICES];
+        let count = chunks.len().min(MAX_IO_SLICES);
+        for (s, c) in slices.iter_mut().zip(chunks.iter()) {
+            *s = std::io::IoSlice::new(c);
+        }
+        let mut n = w.write_vectored(&slices[..count]).await?;
         if n == 0 {
             return Err(std::io::Error::new(std::io::ErrorKind::WriteZero, "socket closed"));
         }
@@ -74,14 +143,15 @@ async fn write_chunks(w: &mut OwnedWriteHalf, chunks: &mut std::collections::Vec
 }
 
 /// Writer task: batches queued commands into few socket writes and sends keep-alives.
-async fn writer_task(
-    mut w: OwnedWriteHalf,
+/// It never waits for more commands: whatever is already queued (up to `BATCH_BYTES` of
+/// encoded data) is written together, then the next batch starts.
+async fn writer_task<W: AsyncWrite + Unpin>(
+    mut w: W,
     mut rx: mpsc::UnboundedReceiver<Out>,
-    version: i32,
+    codec: Box<dyn WireCodec>,
     keepalive: Option<Duration>,
     closed: Arc<Notify>,
 ) {
-    let codec: Box<dyn WireCodec> = Box::new(LooseCodec::new(version));
     let mut buf = ChunkBuf::new();
     loop {
         let first = match keepalive {
@@ -103,7 +173,7 @@ async fn writer_task(
             }
         };
         push(first, &mut buf, &mut close);
-        while !close && buf.len() < 256 * 1024 {
+        while !close && buf.len() < BATCH_BYTES {
             match rx.try_recv() {
                 Ok(o) => push(o, &mut buf, &mut close),
                 Err(_) => break,
@@ -121,6 +191,10 @@ async fn writer_task(
     closed.notify_waiters();
     closed.notify_one();
 }
+
+#[cfg(test)]
+#[path = "connection_tests.rs"]
+mod tests;
 
 struct ConsumerReg {
     dest: Option<Arc<Dest>>,
@@ -153,10 +227,30 @@ struct Conn {
     closing: bool,
 }
 
+/// Builds the wire codec of a connection for its negotiated version.
+pub type CodecFactory = fn(i32) -> Box<dyn WireCodec>;
+
+fn loose_codec(version: i32) -> Box<dyn WireCodec> {
+    Box::new(LooseCodec::new(version))
+}
+
 /// Serves one TCP connection until it closes.
-pub async fn serve(stream: TcpStream, remote: SocketAddr, broker: Arc<Broker>, mut shutdown: watch::Receiver<bool>) {
+pub async fn serve(stream: TcpStream, remote: SocketAddr, broker: Arc<Broker>, shutdown: watch::Receiver<bool>) {
+    serve_with_codec(stream, remote, broker, shutdown, loose_codec).await
+}
+
+/// Like `serve`, with every command after the `WireFormatInfo` exchange encoded and decoded
+/// by the codec that `make_codec` builds.
+pub async fn serve_with_codec(
+    stream: TcpStream,
+    remote: SocketAddr,
+    broker: Arc<Broker>,
+    mut shutdown: watch::Receiver<bool>,
+    make_codec: CodecFactory,
+) {
     let _ = stream.set_nodelay(true);
-    let (mut r, w) = stream.into_split();
+    let (r, w) = stream.into_split();
+    let mut r = FrameReader::new(r);
     let max_frame = broker.cfg.max_frame_size;
 
     // 1. The client's WireFormatInfo (always loose encoding, version independent).
@@ -202,7 +296,7 @@ pub async fn serve(stream: TcpStream, remote: SocketAddr, broker: Arc<Broker>, m
     handle.info.lock().version = neg.version;
     let keepalive = (neg.max_inactivity_ms > 0).then(|| Duration::from_millis((neg.max_inactivity_ms / 2).max(1) as u64));
     let closed = Arc::new(Notify::new());
-    let writer = tokio::spawn(writer_task(w, rx, neg.version, keepalive, closed.clone()));
+    let writer = tokio::spawn(writer_task(w, rx, make_codec(neg.version), keepalive, closed.clone()));
     handle.send(Command::WireFormatInfo(wireformat::broker_wire_format(&client_wf, max_frame)));
     handle.send(Command::BrokerInfo(BrokerInfo {
         header: Header::default(),
@@ -234,7 +328,7 @@ pub async fn serve(stream: TcpStream, remote: SocketAddr, broker: Arc<Broker>, m
         txs: HashMap::new(),
         closing: false,
     };
-    let codec: Box<dyn WireCodec> = Box::new(LooseCodec::new(neg.version));
+    let codec = make_codec(neg.version);
 
     // 3. Read loop with the inactivity timeout.
     let inactivity = (neg.max_inactivity_ms > 0).then(|| Duration::from_millis(neg.max_inactivity_ms as u64));
@@ -340,14 +434,26 @@ impl Conn {
             }
             Command::Message(m) => self.on_message(*m).await,
             Command::MessageAck(ack) => {
+                if !header.response_required && matches!(ack.transaction_id, Some(TransactionId::Xa { .. })) {
+                    tracing::warn!("{}: XA acknowledgement discarded: {XA_UNSUPPORTED}", self.remote);
+                }
                 let r = self.on_ack(ack);
                 self.reply(header, r);
             }
             Command::MessagePull(p) => {
                 self.on_pull(p);
+                self.reply(header, Ok(()));
             }
             Command::TransactionInfo(ti) => {
+                let xa = matches!(ti.transaction_id, Some(TransactionId::Xa { .. }));
                 let r = self.on_transaction(ti);
+                if !header.response_required {
+                    if let Err((class, msg)) = &r {
+                        if xa || msg == XA_UNSUPPORTED {
+                            tracing::warn!("{}: XA transaction command discarded: {class}: {msg}", self.remote);
+                        }
+                    }
+                }
                 self.reply(header, r);
             }
             Command::DestinationInfo(di) => {
@@ -488,7 +594,7 @@ impl Conn {
         let selector = match ci.selector.as_deref() {
             Some(text) => match Selector::compile(text) {
                 Ok(s) => s.map(Arc::new),
-                Err(e) => return Err((INVALID_SELECTOR, format!("{} in selector: {}", e, text))),
+                Err(e) => return Err((INVALID_SELECTOR, e.exception_message(text))),
             },
             None => None,
         };
@@ -545,10 +651,23 @@ impl Conn {
             .and_then(|p| self.producers.get(p))
             .map(|p| p.window)
             .unwrap_or(0);
+        // Asynchronous messages that can never be accepted deserve a warning: a wildcard or composite
+        // destination, an XA transaction or a transaction that is not open.
+        let serious = msg.destination.as_ref().is_some_and(|d| d.is_wildcard() || d.is_composite())
+            || match &msg.transaction_id {
+                Some(TransactionId::Xa { .. }) => true,
+                Some(txid) => !self.txs.contains_key(txid),
+                None => false,
+            };
+        let transacted = msg.transaction_id.is_some();
         let result = self.accept_message(&mut msg, sync).await;
         if !sync {
             if let Err((class, m)) = &result {
-                tracing::debug!("{}: asynchronous message dropped: {class}: {m}", self.remote);
+                if serious || transacted {
+                    tracing::warn!("{}: asynchronous message {} dropped: {class}: {m}", self.remote, msg.message_id_text());
+                } else {
+                    tracing::debug!("{}: asynchronous message {} dropped: {class}: {m}", self.remote, msg.message_id_text());
+                }
             }
             if producer_window > 0 {
                 self.handle.send(Command::ProducerAck(ProducerAck {
@@ -569,14 +688,14 @@ impl Conn {
             return Ok(());
         }
         self.check_destination(&dest, false)?;
+        if matches!(msg.transaction_id, Some(TransactionId::Xa { .. })) {
+            return Err((JMS_EXCEPTION, XA_UNSUPPORTED.into()));
+        }
         let now = now_ms();
         if !self.broker.apply_expiry_options(msg, now) {
-            self.broker.stats.expired_on_arrival.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            let d = if dest.kind.is_temporary() { self.broker.get_dest(&dest) } else { Some(self.broker.get_or_create(&dest, None)) };
-            if let Some(d) = d {
-                d.add_expired();
-            }
-            tracing::debug!("message {} expired on arrival", msg.message_id_text());
+            // A missing temporary destination is refused by `target` and counts nothing.
+            let d = self.broker.target(&dest).map_err(rejection)?;
+            self.broker.expire_before_storing(&d, msg);
             return Ok(());
         }
         // Broker-side compression (heavy bodies off the async runtime, order preserved by awaiting).
@@ -594,42 +713,52 @@ impl Conn {
             self.broker.compress(msg);
         }
         match msg.transaction_id.clone() {
-            Some(TransactionId::Xa { .. }) => Err((JMS_EXCEPTION, "XA transactions are not supported".into())),
             Some(txid) => {
-                let size = msg.content_len() as u64 + msg.properties_len() as u64 + crate::broker::entry::ENTRY_OVERHEAD;
-                let Some(tx) = self.txs.get_mut(&txid) else {
+                if !self.txs.contains_key(&txid) {
                     return Err((JMS_EXCEPTION, format!("Transaction '{}' has not been started.", tx_text(&txid))));
-                };
+                }
+                // The destination exists from the send on; the memory limit applies now, not at commit.
+                let d = self.broker.target(&dest).map_err(rejection)?;
+                let size = msg.content_len() as u64 + msg.properties_len() as u64 + crate::broker::entry::ENTRY_OVERHEAD;
+                self.broker.check_memory(size, sync, &dest, Some(&d)).map_err(rejection)?;
                 let ticket = MemTicket::new(self.broker.memory.clone(), size);
-                tx.sends.push((msg.clone(), ticket));
+                if let Some(tx) = self.txs.get_mut(&txid) {
+                    tx.sends.push((msg.clone(), ticket));
+                }
                 Ok(())
             }
-            None => self
-                .broker
-                .deliver(msg.clone(), sync, now)
-                .map_err(|r| match r {
-                    crate::broker::Rejection::Error { class, message } => (class, message),
-                }),
+            None => self.broker.deliver(msg.clone(), sync, now).map_err(rejection),
         }
     }
 
     fn on_ack(&mut self, ack: MessageAck) -> Result<(), (&'static str, String)> {
-        let Some(cid) = &ack.consumer_id else { return Ok(()) };
-        let Some(Some(d)) = self.consumers.get(cid).map(|c| c.dest.clone()) else { return Ok(()) };
+        if matches!(ack.transaction_id, Some(TransactionId::Xa { .. })) {
+            return Err((JMS_EXCEPTION, XA_UNSUPPORTED.into()));
+        }
+        let Some(cid) = &ack.consumer_id else {
+            tracing::debug!("{}: ack without consumer ignored", self.remote);
+            return Ok(());
+        };
+        let Some(Some(d)) = self.consumers.get(cid).map(|c| c.dest.clone()) else {
+            tracing::debug!("{}: ack for unknown consumer {cid} ignored", self.remote);
+            return Ok(());
+        };
         let now = now_ms();
+        // Only acks that consume are deferred to the commit; DELIVERED, REDELIVERED and EXPIRED apply at once.
+        let deferred = matches!(
+            ack.ack_type,
+            ack_type::STANDARD | ack_type::INDIVIDUAL | ack_type::UNMATCHED | ack_type::POISON
+        );
         match &ack.transaction_id {
-            Some(TransactionId::Xa { .. }) => Err((JMS_EXCEPTION, "XA transactions are not supported".into())),
-            Some(txid) => {
+            Some(txid) if deferred => {
                 let Some(tx) = self.txs.get_mut(txid) else {
                     return Err((JMS_EXCEPTION, format!("Transaction '{}' has not been started.", tx_text(txid))));
                 };
-                if ack.ack_type != ack_type::DELIVERED {
-                    tx.acks.push((d.clone(), ack.clone()));
-                }
+                tx.acks.push((d.clone(), ack.clone()));
                 d.ack(&ack, true, now);
                 Ok(())
             }
-            None => {
+            _ => {
                 let effects = d.ack(&ack, false, now);
                 self.broker.run_effects(effects, now);
                 Ok(())
@@ -654,7 +783,7 @@ impl Conn {
             return Err((JMS_EXCEPTION, "TransactionInfo without transactionId".into()));
         };
         if matches!(txid, TransactionId::Xa { .. }) {
-            return Err((JMS_EXCEPTION, "XA transactions are not supported".into()));
+            return Err((JMS_EXCEPTION, XA_UNSUPPORTED.into()));
         }
         match ti.tx_type {
             tx_type::BEGIN => {
@@ -669,6 +798,12 @@ impl Conn {
                 for (mut m, ticket) in tx.sends {
                     m.transaction_id = None;
                     drop(ticket);
+                    if m.expiration > 0 && m.expiration <= now {
+                        if let Some(d) = m.destination.as_ref().and_then(|d| self.broker.target(d).ok()) {
+                            self.broker.expire_before_storing(&d, &m);
+                        }
+                        continue;
+                    }
                     if let Err(r) = self.broker.deliver_checked(m, true, now, false) {
                         let crate::broker::Rejection::Error { class, message } = r;
                         tracing::debug!("{}: committed message not stored: {class}: {message}", self.remote);
@@ -689,7 +824,7 @@ impl Conn {
                 Ok(())
             }
             tx_type::END | tx_type::FORGET => Ok(()),
-            _ => Err((JMS_EXCEPTION, "XA transactions are not supported".into())),
+            _ => Err((JMS_EXCEPTION, XA_UNSUPPORTED.into())),
         }
     }
 
@@ -709,6 +844,9 @@ impl Conn {
                     self.broker.temp_advisory(&d, dest_op::ADD);
                 }
                 Ok(())
+            }
+            dest_op::REMOVE if d.is_wildcard() || d.is_composite() => {
+                Err((INVALID_DESTINATION, format!("Unsupported destination: {d}")))
             }
             dest_op::REMOVE => match self.broker.delete_dest(&d) {
                 Ok(_) => Ok(()),
@@ -786,6 +924,9 @@ impl Conn {
         self.sessions.clear();
         self.broker.remove_advisory_conn(self.handle.id);
         self.broker.drop_temp_destinations(self.handle.id);
+        if let Some(cid) = &self.connection_id {
+            self.broker.release_producer_audits(&cid.value);
+        }
         self.update_info();
     }
 }
@@ -800,6 +941,12 @@ fn release_tx(tx: Tx) {
                 d.release_reserved(&cid, now);
             }
         }
+    }
+}
+
+fn rejection(r: crate::broker::Rejection) -> (&'static str, String) {
+    match r {
+        crate::broker::Rejection::Error { class, message } => (class, message),
     }
 }
 

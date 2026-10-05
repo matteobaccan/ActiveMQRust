@@ -18,16 +18,16 @@ After `add-queue-messaging`, messages are stored as `Arc<StoredMessage>` with `c
 
 ## Decisions
 
-### D1. zlib format, level 1, `flate2` with `zlib-rs`
-Level 1 gives most of the size reduction on text/XML/JSON at a fraction of the CPU of the default level. zlib (not raw deflate, not gzip) is what `java.util.zip.Inflater` reads by default. `zlib-rs` is pure Rust, so no native library enters the executable.
+### D1. zlib format, level 2, `flate2` with `zlib-rs`
+A low level gives most of the size reduction on text/XML/JSON at a fraction of the CPU of the default level. Level 1 of `zlib-rs` (`deflate_quick`) uses static Huffman codes only, so it saves almost nothing on base64 text, the usual way binary data travels inside XML and JSON: on 1 MB of XML with a base64 payload (like the Java benchmark's `XmlPayload`) it leaves 99.8% of the size, while level 2 (`deflate_fast` with dynamic Huffman codes) leaves 75.3%, and levels 3 to 6 do no better. On plain text level 2 leaves 23.9% against 34.4% for level 1. Level 2 is the lowest level that saves at least 15% on the XML payload; a test fixes the choice on these deterministic data, and the compression benchmark confirms its speed. zlib (not raw deflate, not gzip) is what `java.util.zip.Inflater` reads by default. `zlib-rs` is pure Rust, so no native library enters the executable.
 - *Alternatives:* `miniz_oxide` backend (pure Rust but slower); the C `zlib-ng` backend (fast, but a native build dependency against the single-exe goal); LZ4 or zstd (faster or better, but Java clients cannot read them through the `compressed` flag).
 
 ### D2. Threshold and minimum saving, decided once on entry
 A body is a candidate when `content.len() > compress_threshold_kb * 1024` and `compressed=false`. The compressed result is kept only if `compressed_len <= original_len * (100 - compress_min_saving_pct) / 100`. The decision is never revisited, so dispatch and redelivery do no compression work.
-- *Alternatives:* compressing every body (CPU wasted on small bodies where headers dominate); sampling the first bytes to predict compressibility (extra complexity; level 1 on incompressible data is fast enough and the result is discarded).
+- *Alternatives:* compressing every body (CPU wasted on small bodies where headers dominate); sampling the first bytes to predict compressibility (extra complexity; a low level on incompressible data is fast enough and the result is discarded, and counted).
 
 ### D3. Per-type encoder module, verified against the Java sources
-`src/broker/compression.rs` holds one encoder and one bounded decoder per supported data type (24 Bytes, 25 Map, 26 Object, 27 Stream, 28 Text). The uncompressed `content` of these types is already the serialized form, so the encoder applies zlib to it, adding the length prefix for `BytesMessage`. Each type has a flag in a compile-time table; a type that fails the Java integration check is set to "excluded" and is passed through as received. `ActiveMQMessage` (no body) and other types are never compressed.
+`src/broker/compress.rs` holds the encoder and the bounded decoder for the supported data types (24 Bytes, 25 Map, 26 Object, 27 Stream, 28 Text). The uncompressed `content` of these types is already the serialized form, so the encoder applies zlib to it, adding the 4-byte length prefix for `BytesMessage`. The supported types are the `compressible()` match, which is the compile-time exclusion table: a type that fails the Java integration check is removed from it and is passed through as received. The decoder takes an output limit; the admin preview asks for one byte more than it shows to detect truncation. Golden vectors marshalled by the real client (`tests/data/compression/`, written by `mqrust-acceptance.jar compression-golden`) check the layout of every type. `ActiveMQMessage` (no body) and other types are never compressed.
 - *Alternatives:* decoding and re-serializing bodies via the Java object model (requires full body decoding on the hot path, against §14.1); compressing all types with one format (would break `BytesMessage`, which has a different layout).
 
 ### D4. `spawn_blocking` above 1 MB, reader waits
@@ -35,7 +35,7 @@ The connection reader calls the compressor inline for bodies up to 1 MB. Above 1
 - *Alternatives:* always inline (a 50 MB body would stall a runtime worker and every connection on it); a separate compression pool with reordering buffers (more code for no gain, since the reader must preserve per-connection order anyway).
 
 ### D5. Accounting on the stored size
-Memory accounting and the `max_memory_mb` check use the stored (possibly compressed) size, measured after compression. Statistics record `compressed` and the stored size.
+Memory accounting and the `max_memory_mb` check use the stored (possibly compressed) size, measured after compression. Statistics record `compressed` and the stored size. When a body is replaced, the properties (a slice of the received frame) are copied, so the uncompressed frame is freed and the accounted size is the real one. The broker statistics count the bodies compressed (`compressed`) and those compressed and then discarded for a saving below the minimum (`compress_discarded`), which shows CPU spent for nothing and suggests a higher threshold.
 - *Alternatives:* accounting the uncompressed size (overstates RAM use and rejects messages that would fit).
 
 ### D6. Bounded decompression only in the admin
@@ -45,7 +45,7 @@ Admin preview inflates with a streaming decoder into a buffer capped at 64 KB of
 ## Risks / Trade-offs
 
 - [Per-type compressed layout differs from the client's expectations, so consumers fail to read broker-compressed messages] → Replicate `storeContent()` exactly from 5.18.x / 6.x sources; integration tests on all 5 types at threshold-1, threshold and threshold+1 with both driver profiles; any failing type is excluded from broker-side compression.
-- [CPU cost on entry raises latency for large messages] → Level 1, a 32 KB threshold, and off-thread work above 1 MB; `criterion` benchmarks measure compression throughput.
+- [CPU cost on entry raises latency for large messages] → Level 2, a 32 KB threshold, and off-thread work above 1 MB; `criterion` benchmarks measure compression throughput.
 - [Incompressible payloads waste CPU every time] → Minimum-saving rule keeps the original; the cost is one level-1 pass per message on entry.
 - [Older or non-Java clients without inflate support] → Out of scope for the first version (A1 reference client is Java); `compress_threshold_kb = 0` disables broker-side compression.
 - [Zip bomb in the admin] → 64 KB decompressed cap.

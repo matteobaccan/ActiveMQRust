@@ -1,11 +1,19 @@
 ## ADDED Requirements
 
 ### Requirement: Expiration source
-The broker SHALL take a message's expiration from the `expiration` field set by the producing client (`timestamp + timeToLive`, computed on the client clock by `MessageProducer.setTimeToLive()` or `send(..., timeToLive)`). An `expiration` of 0 SHALL mean the message never expires. The broker SHALL keep `expiration` unchanged unless one of the `[expiry]` options changes it, and the consumer SHALL see the effective value as `JMSExpiration`. A message is expired when `expiration > 0` and `expiration <= now`, where `now` is the broker's wall clock in milliseconds. A message that is already expired when it would enter a destination, after the `[expiry]` options have been applied, SHALL NOT be queued: it SHALL be deleted as expired, and a synchronous send SHALL still receive a normal `Response`.
+The broker SHALL take a message's expiration from the `expiration` field set by the producing client (`timestamp + timeToLive`, computed on the client clock by `MessageProducer.setTimeToLive()` or `send(..., timeToLive)`). An `expiration` of 0 SHALL mean the message never expires. The broker SHALL keep `expiration` unchanged unless one of the `[expiry]` options changes it, and the consumer SHALL see the effective value as `JMSExpiration`. A message is expired when `expiration > 0` and `expiration <= now`, where `now` is the broker's wall clock in milliseconds. A message that is already expired when it would enter a destination, after the `[expiry]` options have been applied, SHALL NOT be queued: it SHALL be deleted as expired, and a synchronous send SHALL still receive a normal `Response`. The same applies to a transacted message that has expired when its transaction commits: it is deleted and counted as expired instead of being queued. A message sent to a temporary destination that does not exist SHALL be handled by the temporary destination rules of `destination-management` (refused when synchronous, discarded when asynchronous) whether or not it has expired, and SHALL NOT be counted as expired by any destination.
 
 #### Scenario: Already expired on arrival
 - **WHEN** a producer sends a message whose `expiration` is already in the past on the broker clock
 - **THEN** the producer's send succeeds, the message is never delivered, and the destination's `expired` counter is incremented
+
+#### Scenario: Expired before commit
+- **WHEN** a transacted producer sends a message with a 100 ms TTL and commits 200 ms later
+- **THEN** the commit succeeds, the message is never delivered, and the destination's `expired` counter is incremented
+
+#### Scenario: Expired message to a missing temporary queue
+- **WHEN** a producer sends an already expired message synchronously to a temporary queue that has been deleted
+- **THEN** the send fails with `javax.jms.InvalidDestinationException` and no destination's `expired` counter changes
 
 #### Scenario: Expiration preserved
 - **WHEN** a producer sends a message with `setTimeToLive(60000)` and default `[expiry]` settings, and a consumer receives it
@@ -33,7 +41,7 @@ All values SHALL be non-negative integers, and `check_interval_ms` SHALL be at l
 - **THEN** the broker reports `expiry.check_interval_ms` and exits with code 2
 
 ### Requirement: Broker clock option
-When `use_broker_clock = true`, for every message arriving from a producer with `expiration > 0`, the broker SHALL set `expiration = now_broker + (expiration - timestamp)` and `timestamp = now_broker`, preserving the time-to-live and correcting the skew between the client and broker clocks. This option is equivalent to ActiveMQ's `TimeStampingBrokerPlugin`.
+When `use_broker_clock = true`, for every message arriving from a producer with `expiration > 0`, the broker SHALL set `expiration = now_broker + (expiration - timestamp)` and `timestamp = now_broker`, preserving the time-to-live and correcting the skew between the client and broker clocks. This option is equivalent to ActiveMQ's `TimeStampingBrokerPlugin`. A message with `timestamp = 0` (the producer disabled timestamps) and `expiration > 0` SHALL be left unchanged, because its time-to-live cannot be derived; `TimeStampingBrokerPlugin` likewise only rebases messages that carry a timestamp.
 
 #### Scenario: Client clock one hour ahead
 - **WHEN** `use_broker_clock = true` and a client whose clock is one hour ahead sends a message with a 10 s TTL
@@ -42,6 +50,10 @@ When `use_broker_clock = true`, for every message arriving from a producer with 
 #### Scenario: Client clock one hour behind
 - **WHEN** `use_broker_clock = true` and a client whose clock is one hour behind sends a message with a 10 s TTL
 - **THEN** the message is not treated as expired on arrival, and it expires about 10 s after arrival on the broker clock
+
+#### Scenario: Message without timestamp
+- **WHEN** `use_broker_clock = true` and a message arrives with `timestamp = 0` and an expiration
+- **THEN** its `timestamp` and `expiration` are not changed
 
 #### Scenario: Option disabled
 - **WHEN** `use_broker_clock = false` and a client whose clock is one hour behind sends a message with a 10 s TTL
