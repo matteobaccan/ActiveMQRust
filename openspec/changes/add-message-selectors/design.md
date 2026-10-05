@@ -19,19 +19,19 @@ After `add-queue-messaging`, ActiveMQRust delivers queue messages in strict FIFO
 ## Decisions
 
 ### D1. Hand-written lexer and recursive-descent parser
-`src/selector/lexer.rs` produces tokens with their character offsets; `parser.rs` builds an AST with one function per precedence level; `eval.rs` evaluates it.
+The whole engine lives in one module, `src/selector.rs`: a lexer that produces tokens with their character offsets (token rules of ActiveMQ's `SelectorParser.jj`), a parser that builds an AST with one function per precedence level of the same grammar (so `NOT` is a unary operator that binds tighter than comparisons), the compile-time checks of ActiveMQ (`checkLessThanOperand`, `checkEqualOperand`, `asBooleanExpression`) and the evaluator. Header identifiers are resolved to a `Header` enum at compile time, so evaluation never matches identifier strings.
 - *Alternatives:* a parser generator (`pest`, `lalrpop`) adds a build dependency and makes ActiveMQ-style error messages harder to control; porting ActiveMQ's JavaCC grammar literally brings Java idioms and is not smaller. A hand-written parser for this small grammar is about the same size and gives precise positions.
 
 ### D2. Compile once, share an immutable AST
-The selector is compiled when `ConsumerInfo` arrives; the consumer holds `Arc<Selector>`. Constant folding and type checks of literals happen at compile time (for example a string literal used with `<` is rejected, as ActiveMQ's `ComparisonExpression.checkLessThanOperand` does).
+The selector is compiled when `ConsumerInfo` arrives; the consumer holds `Arc<Selector>`. Type checks of literals and operands happen at compile time (there is no constant folding: ActiveMQ treats `-1` as a negation, not a literal, and its checks depend on that) (for example a string literal used with `<` is rejected, as ActiveMQ's `ComparisonExpression.checkLessThanOperand` does).
 - *Alternatives:* interpreting the source string per message (wasteful); compiling to closures (`Box<dyn Fn>`), which is slightly faster but harder to test and debug. An enum AST with a tight `match` evaluator is fast enough and can be revisited in `optimize-broker-performance`.
 
-### D3. Three-valued evaluation with a `Value` enum
-Evaluation returns `Value` = `Null | Bool | Long | Double | String | Unsupported` (byte arrays, maps, lists). Integer-family values are widened to `i64`, `float` to `f64`; mixed arithmetic promotes to `f64`. Boolean results use `Option<bool>` where `None` is UNKNOWN. Division by zero and any other runtime error yield `Null`/UNKNOWN, never a panic.
-- *Alternatives:* separate integer types per width (more code, no observable difference in selector results); `f64` for everything (loses precision on large longs such as `JMSTimestamp`).
+### D3. Three-valued evaluation with Java-typed values
+Evaluation returns `Result<SVal, EvalError>`. `SVal` keeps the Java class ActiveMQ works with: `Null | Bool | Byte | Short | Int | Long | BigInt | Float | Double | Char | Str | Opaque` (`BigInt` is a decimal literal beyond the `long` range, `Opaque` a byte array, map or list property). `SVal::Null` is UNKNOWN for boolean results. The class matters because ActiveMQ's `ComparisonExpression.compare` converts only some pairs (a narrower number on the left is widened to the right operand's class, `Short` vs `Byte` is FALSE, `Double` vs `Float` raises), and `ArithmeticExpression` computes `int`, `long` or `double` by operand classes, with `/` and `%` always in `double` (so division by zero gives Infinity or NaN). `EvalError` stands for the cases where ActiveMQ raises an exception (for example a number plus a boolean) and for undecodable properties: it aborts the whole evaluation and the message is not selected for that consumer, never a panic.
+- *Alternatives:* collapsing integers to `i64` and floats to `f64` (simpler, but gives different results from ActiveMQ for `300 = shortProp`, `intProp = floatProp`, `1 / 2` and overflow); treating exceptions as UNKNOWN (wrong under `NOT`, which would select the message).
 
 ### D4. Lazy, cached property decoding
-`StoredMessage` gets `properties: OnceLock<Arc<PropertyMap>>`. The evaluator asks a `MessageView` for an identifier: `JMS*` names are served from decoded header fields; anything else triggers `get_or_init` on the property map. The decoder for the OpenWire primitive map lives in `src/openwire/message_body.rs` and is shared with the admin console.
+The metadata shared by every copy of a stored message (`Meta` in `src/broker/entry.rs`) holds `props: OnceLock<Props>`, where `Props` is absent, a decoded `Arc<PrimitiveMap>` or undecodable. The evaluator asks a `MessageView` (implemented by `Entry`) for a header (`Header` enum, served from decoded message fields) or a property, which triggers `get_or_init`; an undecodable map is logged once and makes property lookups return `EvalError`. The decoder for the OpenWire primitive map lives in `src/openwire/props.rs` and is shared with the admin console.
 - *Alternatives:* decoding properties on arrival (cost paid by every message even without selectors, against §14.1); decoding per evaluation without caching (repeated work with several selective consumers).
 
 ### D5. Per-consumer cursor over the `pending` BTreeMap
@@ -43,24 +43,29 @@ The queue dispatch loop iterates consumers in round-robin order; for each consum
 - *Alternatives:* iterating messages and searching a consumer for each (re-evaluates every unmatched message on every pass, the head-of-line pattern this change avoids).
 
 ### D7. Topics filter at publish time
-On publish, each subscription's selector is evaluated once and the `Arc<StoredMessage>` is pushed only into matching pending lists. A message matching nobody is dropped immediately.
+On publish, each subscription's selector is evaluated once and the shared `Entry` (an `Arc<Message>` plus its shared metadata) is pushed only into matching pending lists. A message matching nobody is dropped immediately.
 - *Alternatives:* filtering at dispatch time from per-subscriber lists (stores messages that will never be delivered, wasting RAM, against the goal).
 
 ### D8. LIKE and IN compilation
-`LIKE` patterns are classified at compile time: exact, prefix (`abc%`), suffix (`%abc`), contains (`%abc%`), or generic. The generic matcher is a small backtracking matcher over chars with `%`, `_` and the escape character. `IN` lists above 8 elements are stored in a `HashSet<Arc<str>>`; smaller lists use a linear scan, which is faster for few elements.
+`LIKE` patterns are compiled to a sequence of literal characters and wildcards (escape rules of `LikeExpression`: the escape character makes a following `%`, `_` or itself literal, and is literal otherwise), then classified: exact, prefix (`abc%`), suffix (`%abc`), contains (`%abc%`), match-all (`%`), or generic. The generic matcher is a small backtracking matcher over chars. A unit test checks the compiled matchers and the generic matcher against a recursive reference matcher on 20,000 random patterns. `IN` lists above 8 elements are stored in a `HashSet<String>`; smaller lists use a linear scan, which is faster for few elements.
 - *Alternatives:* translating `LIKE` to the `regex` crate (adds a dependency and binary size for no gain on this simple pattern language).
 
 ### D9. Error messages
-Lexer and parser errors carry the token text and its zero-based character offset and are returned as `InvalidSelectorException` with the message format `Unexpected token '<tok>' at column <n> in selector: <selector>`. `XPATH` / `XQUERY` as the first token is detected before parsing and rejected with `XPath selectors are not supported`.
+Lexer and parser errors carry the token text and its zero-based character offset and are returned as `InvalidSelectorException` with the message format `Unexpected token '<tok>' at column <n> in selector: <selector>` (compile-time type errors give their reason instead of the token). `XPATH` / `XQUERY` anywhere in the selector is rejected with exactly `XPath selectors are not supported` (`SelectorError::exception_message`).
 - *Alternatives:* copying ActiveMQ's JavaCC `ParseException` text verbatim (tied to generated-parser internals; the acceptance test only requires the exception class).
+
+### D10. Conformance with ActiveMQ's engine
+ActiveMQ's selector classes are in `activemq-client`, so they can be run in-process without a broker. A table of more than 500 selectors (`tests/data/selector_conformance.tsv`) records the result of ActiveMQ's engine (TRUE, FALSE, NULL, parse error or exception; identical for 5.18.7 and 6.3.2) on one message with every property type and header; `tests/selector_semantics.rs` evaluates the same selectors on the same message through `Entry` and must match every line. The Java integration scenarios `selectors` and `selectorParity` assert the expected messages computed the same way.
+- *Alternatives:* comparing only against a running ActiveMQ broker (slower, needs an installation, and cannot see UNKNOWN versus FALSE).
 
 ## Risks / Trade-offs
 
-- [Subtle differences between our evaluator and ActiveMQ's] → A Java comparison suite runs the same selectors and messages against real ActiveMQ and ActiveMQRust and compares the received messages and order; every divergence becomes a unit test.
+- [Subtle differences between our evaluator and ActiveMQ's] → The conformance table of D10 and the Java selector scenarios pin ActiveMQ's results; every divergence found becomes a table line.
 - [Selectors that never match make messages pile up] → Messages stay visible in the admin with each consumer's selector shown; the memory limit (`max_memory_mb`) and expiration (`add-message-expiration`) bound the growth.
 - [Cursor bookkeeping bugs on redelivery cause skipped messages] → Semantics tests for reinsertion before, at and after every cursor position, with several selective consumers.
 - [Long scans for a consumer whose selector rarely matches] → The cursor makes each message examined once per consumer; a benchmark with 10 selective consumers on 100,000 messages checks the cost.
 - [Malformed `marshalledProperties` from a buggy client] → Decoding errors make the selector UNKNOWN for that message, logged once, never a crash.
+- [Known remaining differences] → ActiveMQ's function-call extension (`REGEX(...)`, `INLIST(...)`) and XQuery are rejected; decimal literals beyond 128 bits are rejected (ActiveMQ accepts any length); the text of an XA `JMSXProducerTXID` approximates `XATransactionId.toString()`.
 
 ## Migration Plan
 
@@ -68,8 +73,10 @@ No data migration: the broker keeps no state across restarts. Applications that 
 
 ## Open Questions
 
-- Verify the exact list of `JMS*` identifiers and their values (including `JMSXGroupSeq` default, `JMSXDeliveryCount`, `JMSDeliveryMode` strings, and whether `JMSRedelivered`, `JMSDestination`, `JMSReplyTo`, `JMSExpiration`, `JMSXUserID`, `JMSXProducerTXID` are recognised) against `org.apache.activemq.filter.PropertyExpression` in 5.18.x / 6.x.
-- Verify the primitive map type codes and the encoding of `BIG_STRING`, `CHAR`, `MAP` and `LIST` values against `org.apache.activemq.util.MarshallingSupport`.
-- Verify how ActiveMQ evaluates `=` between incompatible types (UNKNOWN versus FALSE) and ordering comparisons with string or boolean property values at runtime, and align with it; the design spec states UNKNOWN.
-- Verify octal and hexadecimal literal handling and `L` suffix limits in ActiveMQ's `SelectorParser` grammar.
-- Verify how ActiveMQ treats `CHAR` properties in comparisons (as a string of one character or as unsupported).
+All resolved by reading and running ActiveMQ's own classes (activemq-client 5.18.7 and 6.3.2 behave identically):
+
+- *JMS identifiers* (resolved): `PropertyExpression` recognises 19 names: `JMSDestination`, `JMSReplyTo`, `JMSType`, `JMSDeliveryMode`, `JMSPriority`, `JMSMessageID`, `JMSTimestamp`, `JMSCorrelationID`, `JMSExpiration`, `JMSRedelivered`, `JMSXDeliveryCount`, `JMSXGroupID`, `JMSXUserID`, `JMSXGroupSeq`, `JMSXProducerTXID`, `JMSActiveMQBrokerInTime`, `JMSActiveMQBrokerOutTime`, `JMSActiveMQBrokerPath`, `JMSXGroupFirstForConsumer`. Destinations and transaction ids are strings (`queue://Q`, `TX:<conn>:<n>`), `JMSXGroupSeq` defaults to 0, `JMSXDeliveryCount` is `redeliveryCounter + 1`, `JMSXUserID` falls back to the property of the same name, and the broker path is the string `null` when absent. The table with types is the doc comment of `Header` in `src/selector.rs`.
+- *Primitive map encoding* (resolved): type codes and encodings match `MarshallingSupport`; golden bytes for every type are tested in `src/openwire/props.rs`.
+- *Incompatible types and runtime ordering* (resolved): `=` between incompatible non-null values is FALSE (not UNKNOWN); `ComparisonExpression.compare` uses `compareTo` for values of the same class, so two string or two boolean property values can be ordered at run time, while string/boolean literals are rejected at compile time; numeric conversions depend on the left operand's class (see D3).
+- *Literals* (resolved): decimal literals take an optional `L`; hexadecimal (`0x`) and octal (leading `0`) take no suffix and must fit in a `long`; a decimal literal is an `int` when it fits, else a `long`, else a `BigDecimal`; floating literals are `double` and take no `f`/`d` suffix; identifiers are ASCII only; `/* */` comments are skipped and `--` is not a comment.
+- *CHAR properties* (resolved): they are `java.lang.Character`, comparable only with other chars: `c = 'x'` and `c LIKE 'x'` are FALSE, `c IN ('x')` is UNKNOWN, and `'a' + c` concatenates the character.

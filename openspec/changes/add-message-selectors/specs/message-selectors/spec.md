@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: Selector scope and compilation
-The broker SHALL accept a JMS selector in `ConsumerInfo.selector` for queue consumers, topic consumers and `QueueBrowser` consumers (`ConsumerInfo.browser=true`), including consumers on temporary destinations. The selector SHALL be compiled exactly once, when the consumer is created, into an immutable AST shared through `Arc<Selector>`; it SHALL NOT be reparsed per message. An empty selector or a selector made only of whitespace SHALL be treated as no selector. The syntax SHALL be the SQL-92 subset defined by JMS 1.1 / 2.0, with the same semantics as ActiveMQ.
+The broker SHALL accept a JMS selector in `ConsumerInfo.selector` for queue consumers, topic consumers and `QueueBrowser` consumers (`ConsumerInfo.browser=true`), including consumers on temporary destinations. The selector SHALL be compiled exactly once, when the consumer is created, into an immutable AST shared through `Arc<Selector>`; it SHALL NOT be reparsed per message. An empty selector or a selector made only of whitespace (characters up to U+0020, as Java's `String.trim()`) SHALL be treated as no selector. The syntax SHALL be the SQL-92 subset defined by JMS 1.1 / 2.0, with the grammar and semantics of ActiveMQ's `org.apache.activemq.selector.SelectorParser` and `org.apache.activemq.filter` classes (5.18.x and 6.x).
 
 #### Scenario: Selector compiled at consumer creation
 - **WHEN** a client creates a consumer with selector `color = 'red'`
@@ -12,11 +12,14 @@ The broker SHALL accept a JMS selector in `ConsumerInfo.selector` for queue cons
 - **THEN** the consumer behaves exactly like a consumer without a selector and receives every message
 
 ### Requirement: Selector literals
-The selector language SHALL support these literals:
-- strings in single quotes, where `''` inside the string stands for one quote;
-- integers in decimal, with an optional `L` or `l` suffix, in hexadecimal with the `0x` prefix, and in octal with a leading `0`;
-- decimals and exponential notation (for example `1.5`, `.5`, `1e3`, `2.5E-2`);
-- the boolean literals `TRUE` and `FALSE`, case-insensitive.
+The selector language SHALL support the literals of ActiveMQ's `SelectorParser` grammar:
+- strings in single quotes, where `''` inside the string stands for one quote (double quotes do not delimit strings);
+- integers in decimal, with an optional `L` or `l` suffix, in hexadecimal with the `0x`/`0X` prefix, and in octal with a leading `0`; hexadecimal and octal literals take no suffix and SHALL fit in a signed 64-bit `long`;
+- an integer literal SHALL have the Java type `int` when it fits in 32 bits, otherwise `long`; a decimal literal beyond the `long` range SHALL be kept as an exact big integer (ActiveMQ's `BigDecimal`), which compares equal only to an equal big integer;
+- floating-point literals of type `double`: `1.5`, `1.`, `.5`, `1e3`, `2.5E-2` (no `f`/`d` suffix);
+- the literals `TRUE`, `FALSE` and `NULL`, case-insensitive.
+
+Whitespace between tokens SHALL be space, tab, line feed, carriage return and form feed; `/* ... */` comments SHALL be skipped, while `--` is two minus signs, not a comment.
 
 #### Scenario: Escaped quote
 - **WHEN** a consumer has selector `name = 'O''Brien'` and a message has property `name` equal to `O'Brien`
@@ -26,32 +29,51 @@ The selector language SHALL support these literals:
 - **WHEN** a message has int property `n` equal to 26 and consumers have the selectors `n = 26`, `n = 26L`, `n = 0x1A` and `n = 032`
 - **THEN** each of the four consumers selects the message
 
+#### Scenario: Literal forms ActiveMQ rejects
+- **WHEN** a client creates consumers with the selectors `n = 3.0f`, `n = 0x1AL`, `n = 032L` and `n = 08`
+- **THEN** each one is rejected with `javax.jms.InvalidSelectorException`
+
 #### Scenario: Exponential literal
 - **WHEN** a message has double property `v` equal to 1500.0 and the selector is `v = 1.5e3`
 - **THEN** the message is selected
 
 ### Requirement: Identifiers and keywords
-Identifiers that name application properties SHALL be case-sensitive. Keywords (`AND`, `OR`, `NOT`, `BETWEEN`, `IN`, `LIKE`, `ESCAPE`, `IS`, `NULL`, `TRUE`, `FALSE`) SHALL be case-insensitive. A property that is not present in the message SHALL evaluate to NULL.
+Identifiers SHALL start with an ASCII letter, `_` or `$` and continue with ASCII letters, digits, `_` or `$` (no `.` and no non-ASCII letters), and SHALL be case-sensitive. Keywords (`AND`, `OR`, `NOT`, `BETWEEN`, `IN`, `LIKE`, `ESCAPE`, `IS`, `NULL`, `TRUE`, `FALSE`, `XPATH`, `XQUERY`) SHALL be case-insensitive. A property that is not present in the message SHALL evaluate to NULL.
 
 #### Scenario: Case-sensitive property names
 - **WHEN** a message has property `Color = 'red'` and a consumer has selector `color = 'red'`
 - **THEN** the message is not selected, because `color` is NULL
 
 #### Scenario: Case-insensitive keywords
-- **WHEN** a consumer has selector `a = 1 and not b is null` and a message has `a = 1` and `b = 2`
+- **WHEN** a consumer has selector `a = 1 aNd b = 2 Or c Is NuLl` and a message has `a = 1` and `b = 2`
 - **THEN** the message is selected
 
-### Requirement: JMS header identifiers
-The broker SHALL evaluate these header identifiers from message fields that are already decoded, without decoding `marshalledProperties`:
-- `JMSDeliveryMode`: the string `'PERSISTENT'` or `'NON_PERSISTENT'`;
-- `JMSPriority`: integer 0–9;
-- `JMSMessageID`: the text representation of the `MessageId` (`<connectionId>:<sessionId>:<producerId>:<producerSequenceId>`, as ActiveMQ's `MessageId.toString()`);
-- `JMSTimestamp`: long, milliseconds;
-- `JMSCorrelationID` and `JMSType`: string, or NULL when absent;
-- `JMSXGroupID` and `JMSXGroupSeq`: from the message's `groupID` and `groupSequence` fields;
-- `JMSXDeliveryCount`: `redeliveryCounter + 1`.
+#### Scenario: NOT binds tighter than IS NULL
+- **WHEN** a consumer has selector `a = 1 and not b is null` and a message has `a = 1` and `b = 2`
+- **THEN** the message is not selected, as in ActiveMQ: the selector reads `a = 1 AND ((NOT b) IS NULL)`, `NOT b` is TRUE because `b` is not a boolean, and `TRUE IS NULL` is FALSE
 
-Any other identifier SHALL be looked up in the application properties. The list of recognised `JMS*` identifiers and their values SHALL match `org.apache.activemq.filter.PropertyExpression` in ActiveMQ 5.18.x / 6.x.
+#### Scenario: Identifier with a dot
+- **WHEN** a client creates a consumer with selector `x.y = 1`
+- **THEN** the broker rejects it with `javax.jms.InvalidSelectorException`
+
+### Requirement: JMS header identifiers
+The broker SHALL recognise exactly the identifiers of `org.apache.activemq.filter.PropertyExpression` (identical in ActiveMQ 5.18.x and 6.x), with the same values, and SHALL serve them from message fields that are already decoded:
+- `JMSDestination`: string, `originalDestination` or else `destination`, in the form `queue://name`, `topic://name`, `temp-queue://...`, `temp-topic://...`; NULL if none;
+- `JMSReplyTo`: string in the same form, or NULL;
+- `JMSType`, `JMSCorrelationID`, `JMSXGroupID`: string, or NULL when absent;
+- `JMSDeliveryMode`: the string `'PERSISTENT'` or `'NON_PERSISTENT'`;
+- `JMSPriority`: `int` 0–9;
+- `JMSMessageID`: the text of `MessageId.toString()` (`<producerId>:<producerSequenceId>`, or the text view);
+- `JMSTimestamp`, `JMSExpiration`, `JMSActiveMQBrokerInTime`, `JMSActiveMQBrokerOutTime`: `long` milliseconds;
+- `JMSRedelivered`: boolean, `redeliveryCounter > 0`;
+- `JMSXDeliveryCount`: `int`, `redeliveryCounter + 1`;
+- `JMSXGroupSeq`: `int`, `groupSequence` (0 when not set);
+- `JMSXUserID`: the message's `userID`, or else the `JMSXUserID` application property;
+- `JMSXProducerTXID`: the string `TX:<connectionId>:<n>` (or `XID:[...]`) of `originalTransactionId` or else `transactionId`, or NULL;
+- `JMSActiveMQBrokerPath`: the string `[id1, id2]` of the broker path, or the string `null` (never NULL);
+- `JMSXGroupFirstForConsumer`: boolean.
+
+Names are case-sensitive; any other identifier, including other names starting with `JMS`, SHALL be looked up in the application properties. Among the header identifiers only `JMSXUserID`, when the message has no `userID`, can cause the properties to be decoded.
 
 #### Scenario: Delivery mode
 - **WHEN** a consumer has selector `JMSDeliveryMode = 'PERSISTENT'` and two messages are sent, one persistent and one non-persistent
@@ -65,6 +87,10 @@ Any other identifier SHALL be looked up in the application properties. The list 
 - **WHEN** a message with `redeliveryCounter = 1` is evaluated against `JMSXDeliveryCount = 2`
 - **THEN** the message is selected
 
+#### Scenario: Destination as a string
+- **WHEN** a message sent to queue `ORDERS` is evaluated against `JMSDestination = 'queue://ORDERS'`
+- **THEN** the message is selected
+
 #### Scenario: Header-only selector does not decode properties
 - **WHEN** a consumer has selector `JMSPriority > 3` and a matching message arrives
 - **THEN** the message is selected and its `marshalledProperties` are not decoded
@@ -75,7 +101,9 @@ The selector language SHALL support `AND`, `OR` and `NOT` with three-valued logi
 - `OR`: TRUE if either operand is TRUE; FALSE if both are FALSE; otherwise UNKNOWN;
 - `NOT`: TRUE becomes FALSE, FALSE becomes TRUE, UNKNOWN stays UNKNOWN.
 
-A message SHALL be selected only if the whole selector evaluates to TRUE; FALSE and UNKNOWN SHALL both mean "not selected".
+A message SHALL be selected only if the whole selector evaluates to TRUE; FALSE and UNKNOWN SHALL both mean "not selected". `AND` and `OR` SHALL evaluate their operands from left to right and stop at the first FALSE (`AND`) or TRUE (`OR`) operand.
+
+The whole selector and every operand of `AND`, `OR` and `NOT` SHALL be a boolean expression (a comparison, `LIKE`, `IN`, `BETWEEN`, `IS NULL`, a logical expression or a `TRUE`/`FALSE`/`NULL` literal) or an identifier; anything else (for example `5`, `'x'`, `a + 1` or `NOT -a`) SHALL be rejected at compile time. An identifier used as a boolean SHALL be NULL when its value is NULL, itself when it is a boolean, and FALSE otherwise (ActiveMQ's boolean cast).
 
 #### Scenario: NOT of UNKNOWN
 - **WHEN** a message has no property `size` and the selector is `NOT (size > 2)`
@@ -89,8 +117,20 @@ A message SHALL be selected only if the whole selector evaluates to TRUE; FALSE 
 - **WHEN** a message has `color = 'red'` and no property `size`, and the selector is `color = 'red' AND size > 2`
 - **THEN** the message is not selected
 
+#### Scenario: Non-boolean property used as a condition
+- **WHEN** a message has int property `size = 3` and the selectors are `size` and `NOT size`
+- **THEN** `size` does not select the message and `NOT size` selects it
+
+#### Scenario: Non-boolean expression as a condition
+- **WHEN** a client creates a consumer with selector `size + 1`
+- **THEN** the broker rejects it with `javax.jms.InvalidSelectorException`
+
 ### Requirement: Comparison and arithmetic operators
-The selector language SHALL support the comparison operators `=`, `<>`, `<`, `<=`, `>`, `>=` and the arithmetic operators `+`, `-`, `*`, `/` and unary `-`, with numeric promotion integer → long → double (byte, short and int values count as integer; float counts as double). Strings and booleans SHALL be comparable only with `=` and `<>`. Parentheses SHALL be supported, and operator precedence SHALL follow the JMS specification: unary `+`/`-`, then `*` `/`, then `+` `-`, then comparison operators and `BETWEEN`/`IN`/`LIKE`/`IS NULL`, then `NOT`, then `AND`, then `OR`.
+The selector language SHALL support the comparison operators `=`, `<>`, `<`, `<=`, `>`, `>=`, the arithmetic operators `+`, `-`, `*`, `/`, `%` (remainder) and unary `+`/`-`, and parentheses. Operator precedence SHALL follow ActiveMQ's `SelectorParser`, from tightest to loosest: unary `+`, `-` and `NOT`; `*` `/` `%`; binary `+` `-`; `<` `<=` `>` `>=` `[NOT] LIKE` `[NOT] BETWEEN` `[NOT] IN`; `=` `<>` `IS [NOT] NULL`; `AND`; `OR`. In particular `NOT` binds tighter than comparisons, so `NOT a = 1` means `(NOT a) = 1`, and `NOT a > 1` is rejected because a boolean cannot be ordered.
+
+Arithmetic SHALL follow ActiveMQ's `ArithmeticExpression`: `+`, `-` and `*` give a `double` when either operand is `float` or `double`, else a `long` when either is `long`, else a 32-bit `int` that wraps on overflow; `/` and `%` are always computed in `double`. Unary minus SHALL negate `int`, `long`, `float` and `double` values and give NULL for non-numbers.
+
+Ordering comparisons SHALL reject at compile time a string, boolean or NULL literal operand and a boolean expression operand (`ComparisonExpression.checkLessThanOperand`). At run time, two string values SHALL be ordered by UTF-16 code units and two boolean values with FALSE < TRUE, as ActiveMQ does with `Comparable.compareTo`.
 
 #### Scenario: Numeric promotion
 - **WHEN** a message has int property `a = 3` and double property `b = 0.5`, and the selector is `a * b = 1.5`
@@ -100,16 +140,32 @@ The selector language SHALL support the comparison operators `=`, `<>`, `<`, `<=
 - **WHEN** a message has `a = 1`, `b = 0`, `c = 0` and the selector is `a = 1 OR b = 1 AND c = 1`
 - **THEN** the message is selected, because `AND` binds tighter than `OR`
 
+#### Scenario: Division is computed in double
+- **WHEN** a message has int property `a = 7` and the selector is `a / 2 = 3.5`
+- **THEN** the message is selected
+
+#### Scenario: Remainder
+- **WHEN** a message has int property `a = 7` and the selector is `a % 3 = 1`
+- **THEN** the message is selected
+
+#### Scenario: NOT before a comparison
+- **WHEN** a message has int property `size = 3` and the selector is `NOT size = 3`
+- **THEN** the message is not selected, because `(NOT size) = 3` compares TRUE with 3
+
+#### Scenario: Runtime ordering of two strings
+- **WHEN** a message has string properties `a = 'red'` and `b = 'abc'` and the selector is `a > b`
+- **THEN** the message is selected
+
 #### Scenario: Ordering comparison on a string literal
 - **WHEN** a client creates a consumer with selector `name > 'abc'`
 - **THEN** the broker rejects it with `javax.jms.InvalidSelectorException`
 
 ### Requirement: BETWEEN, IN, LIKE and IS NULL
 The selector language SHALL support:
-- `x [NOT] BETWEEN a AND b`, equivalent to `a <= x AND x <= b` (negated with `NOT`);
-- `x [NOT] IN ('a', 'b', ...)` on string values; a NULL `x` gives UNKNOWN;
-- `x [NOT] LIKE 'pattern' [ESCAPE 'c']`, where `%` matches any sequence of characters, `_` matches exactly one character, and the escape character makes the next `%` or `_` literal; a NULL `x` gives UNKNOWN;
-- `x IS [NOT] NULL`, which is always TRUE or FALSE, never UNKNOWN.
+- `x BETWEEN a AND b`, equivalent to `x >= a AND x <= b`, and `x NOT BETWEEN a AND b`, equivalent to `x < a OR x > b`;
+- `x [NOT] IN ('a', 'b', ...)` where `x` is an identifier and the list holds at least one string literal; a NULL or non-string `x` gives UNKNOWN;
+- `x [NOT] LIKE 'pattern' [ESCAPE 'c']`, where `%` matches any sequence of characters, `_` matches exactly one character (both also match line terminators), matching is case-sensitive, and the escape character (a one-character string) makes a following `%`, `_` or escape character literal and is itself literal before any other character; a NULL `x` gives UNKNOWN and a non-string `x` gives FALSE (`NOT LIKE` is the negation);
+- `x IS [NOT] NULL`, which is always TRUE or FALSE, never UNKNOWN; `x` can be any expression.
 
 #### Scenario: LIKE with wildcards
 - **WHEN** the selector is `JMSCorrelationID LIKE 'ORD-A-%'` and messages have correlation IDs `ORD-A-100`, `ORD-B-200`, `ORD-A-300`
@@ -127,17 +183,23 @@ The selector language SHALL support:
 - **WHEN** a message has no property `size` and the selector is `size BETWEEN 1 AND 10`
 - **THEN** the message is not selected
 
+#### Scenario: NOT BETWEEN with a NULL bound
+- **WHEN** a message has `size = 3`, no property `low`, and the selector is `size NOT BETWEEN low AND 1`
+- **THEN** the message is selected, because `size > 1` is TRUE
+
 #### Scenario: IN on correlation ID
 - **WHEN** the selector is `JMSCorrelationID IN ('ORD-A','ORD-C')` and messages with `ORD-A`, `ORD-B` and `ORD-C` arrive
 - **THEN** only the `ORD-A` and `ORD-C` messages are selected
 
 ### Requirement: Type rules
-Evaluation SHALL follow ActiveMQ's type rules (`org.apache.activemq.filter.ComparisonExpression`, verified in the 5.18 sources):
-- a comparison between non-null values of incompatible types, for example a string with a number, SHALL be FALSE (not UNKNOWN), so `x = 5` does not select a message whose `x` is the string `'5'`, while `NOT (x = 5)` does;
-- `x = y` with `x` NULL SHALL be UNKNOWN; with `x` non-null and `y` NULL it SHALL be FALSE; ordering comparisons (`<`, `<=`, `>`, `>=`) with a NULL operand SHALL be UNKNOWN;
-- `LIKE` on a non-string value SHALL be FALSE (TRUE for `NOT LIKE`); `IN` on a non-string value SHALL be UNKNOWN;
-- arithmetic with a NULL operand SHALL give NULL; `+` with a string left operand SHALL concatenate;
-- a property whose value is a byte array, map or list SHALL be a non-null value that compares unequal to everything.
+Evaluation SHALL follow ActiveMQ's type rules (`org.apache.activemq.filter.ComparisonExpression`, `ArithmeticExpression` and `UnaryExpression`, verified against activemq-client 5.18.x and 6.x). Values keep the Java class of their source: property values are `Boolean`, `Byte`, `Short`, `Integer`, `Long`, `Float`, `Double`, `Character`, `String`, byte array, map or list; literals are `Integer`, `Long`, big integer, `Double`, `String` or `Boolean`.
+- Equality: two NULL values (for example two absent properties) SHALL be equal (TRUE); NULL on the left of `=` SHALL be UNKNOWN and NULL on the right SHALL be FALSE; a NULL literal operand of `=`/`<>`, and a `TRUE`/`FALSE` literal with a literal of another type on its right, SHALL be rejected at compile time.
+- Ordering comparisons with a NULL operand SHALL be UNKNOWN.
+- Values of the same class SHALL compare with Java `compareTo` (`Double`/`Float` order NaN above everything and equal to itself, and -0.0 below 0.0). Values of different numeric classes SHALL be converted as ActiveMQ does: a `Byte`, `Short` or `Integer` on the left is widened to the class of a wider right operand; a `Long` on the left converts an `Integer` on the right to `Long` and is itself converted to `Float`/`Double` against those; a `Float` on the left converts an `Integer`/`Long` right operand to `Float` and is widened to `Double` against a `Double`; a `Double` on the left converts an `Integer`/`Long` right operand. Any other pair (for example a string with a number, a `Short` on the left of a `Byte`, a `Character` with a string) SHALL compare as FALSE, not UNKNOWN, so `x = 5` does not select a message whose `x` is the string `'5'` while `NOT (x = 5)` does.
+- A `char` property SHALL be a `Character`, not a string: `c = 'x'` and `c LIKE 'x'` are FALSE and `c IN ('x')` is UNKNOWN.
+- A byte array, map or list property SHALL be non-null, equal only to itself, and SHALL NOT be orderable.
+- Arithmetic with a NULL operand SHALL give NULL (the right operand is not evaluated when the left one is NULL). `+` with a string on the left SHALL concatenate the Java text of the right operand (for example `'red' + 2.5` gives `'red2.5'` and `'red' + 1e20` gives `'red1.0E20'`); a string `+` NULL SHALL give NULL, as in ActiveMQ.
+- Division and remainder SHALL be computed in `double`, so division by zero SHALL give `Infinity`, `-Infinity` or `NaN`, not UNKNOWN.
 
 #### Scenario: String compared with number
 - **WHEN** a message has string property `qty = '5'` and the selector is `qty = 5`
@@ -147,9 +209,25 @@ Evaluation SHALL follow ActiveMQ's type rules (`org.apache.activemq.filter.Compa
 - **WHEN** a message has string property `qty = '5'` and the selector is `NOT (qty = 5)`
 - **THEN** the message is selected, as in ActiveMQ
 
+#### Scenario: Two NULL values are equal
+- **WHEN** a message has neither property `a` nor property `b` and the selector is `a = b`
+- **THEN** the message is selected
+
+#### Scenario: Widening goes from the left operand
+- **WHEN** a message has short property `s = 300` and the selectors are `s = 300` and `300 = s`
+- **THEN** `s = 300` selects the message and `300 = s` does not, as in ActiveMQ
+
 #### Scenario: Arithmetic with NULL
 - **WHEN** a message has no property `a` and the selector is `a + 1 > 0`
 - **THEN** the message is not selected
+
+#### Scenario: String concatenated with NULL
+- **WHEN** a message has `color = 'red'` and no property `missing`, and the selector is `color + missing IS NULL`
+- **THEN** the message is selected
+
+#### Scenario: Float division by zero
+- **WHEN** a message has double property `w = 2.5` and the selector is `w / 0 > 1000000`
+- **THEN** the message is selected, because the quotient is `Infinity`
 
 ### Requirement: Selective dispatch on queues without head-of-line blocking
 On a queue, each consumer with a selector SHALL receive the first message in `pending`, in `broker_seq` order, that matches its selector. A message that matches no current consumer SHALL stay in the queue and SHALL NOT block the delivery of the following messages. Each consumer SHALL receive its matching messages as an ordered FIFO subsequence of the queue. Among several consumers that accept the same message, the round-robin rule of queue dispatch SHALL apply: the message goes to the first consumer, in round-robin order, that has free prefetch and a matching selector.
@@ -207,7 +285,7 @@ A `QueueBrowser` created with a selector SHALL receive copies of only the matchi
 - **THEN** the browser enumerates `ORD-A-1` then `ORD-A-2`, and the queue still holds all three messages
 
 ### Requirement: Lazy property decoding
-The broker SHALL decode `marshalledProperties` (OpenWire primitive map) only the first time a selector needs an application property of that message, and SHALL cache the result in the message (`OnceLock<Arc<PropertyMap>>`), so each message is decoded at most once whatever the number of consumers. Consumers without a selector and selectors that use only JMS header identifiers SHALL never trigger the decoding. The primitive map format SHALL be: the number of entries, then for each entry the key (string) and a typed value with the type codes NULL=0, BOOLEAN=1, BYTE=2, CHAR=3, SHORT=4, INTEGER=5, LONG=6, DOUBLE=7, FLOAT=8, STRING=9, BYTE_ARRAY=10, MAP=11, LIST=12, BIG_STRING=13, as defined in ActiveMQ's `MarshallingSupport`. Properties are never compressed, so selector evaluation SHALL never decompress anything.
+The broker SHALL decode `marshalledProperties` (OpenWire primitive map, decoder in `src/openwire/props.rs`) only the first time a selector needs an application property of that message, and SHALL cache the result in the data shared by every copy of the stored message (`OnceLock` in the entry metadata of `src/broker/entry.rs`), so each message is decoded at most once whatever the number of consumers. Consumers without a selector and selectors that use only JMS header identifiers SHALL never trigger the decoding. The primitive map format SHALL be: the number of entries, then for each entry the key (string) and a typed value with the type codes NULL=0, BOOLEAN=1, BYTE=2, CHAR=3, SHORT=4, INTEGER=5, LONG=6, DOUBLE=7, FLOAT=8, STRING=9, BYTE_ARRAY=10, MAP=11, LIST=12, BIG_STRING=13, as defined in ActiveMQ's `MarshallingSupport`. Properties are never compressed, so selector evaluation SHALL never decompress anything.
 
 #### Scenario: Decoded once for many consumers
 - **WHEN** five consumers with property selectors examine the same queue message
@@ -217,12 +295,16 @@ The broker SHALL decode `marshalledProperties` (OpenWire primitive map) only the
 - **WHEN** a Java client sends a message with boolean, byte, short, int, long, float, double and string properties, and a consumer has a selector that tests each of them
 - **THEN** every property is decoded with its correct type and value and the message is selected
 
+#### Scenario: Golden bytes
+- **WHEN** maps written by `MarshallingSupport.marshalPrimitiveMap` with a value of each type code are decoded and encoded again
+- **THEN** every value has the expected type and the encoding reproduces the same bytes
+
 #### Scenario: Compressed body
 - **WHEN** a message with a compressed body (`compressed=true`) and property `k = 1` is evaluated against `k = 1`
 - **THEN** the message is selected without its body being decompressed
 
 ### Requirement: Compiled LIKE and IN
-At compile time, every `LIKE` pattern SHALL be turned into a dedicated matcher: a prefix, suffix or contains test when the pattern allows it, otherwise a generic matcher. An `IN` list with many elements SHALL be evaluated through a hash set rather than a linear scan. These optimisations SHALL NOT change results.
+At compile time, every `LIKE` pattern SHALL be turned into a dedicated matcher: an exact, prefix (`abc%`), suffix (`%abc`), contains (`%abc%`) or match-all (`%`) test when the pattern allows it, otherwise the generic wildcard matcher. An `IN` list with more than 8 elements SHALL be evaluated through a hash set rather than a linear scan. These optimisations SHALL NOT change results.
 
 #### Scenario: Prefix pattern
 - **WHEN** the selector `name LIKE 'abc%'` is compiled
@@ -233,7 +315,7 @@ At compile time, every `LIKE` pattern SHALL be turned into a dedicated matcher: 
 - **THEN** membership is tested through a hash set and gives the same results as a linear comparison
 
 ### Requirement: Invalid selector errors
-A selector with a syntax error SHALL be rejected with an `ExceptionResponse` carrying `javax.jms.InvalidSelectorException`, whose message gives the offending token, its position and the selector, for example `Unexpected token 'AN' at column 14 in selector: color = 'red' AN size > 2`. The Java client SHALL therefore raise the exception from `createConsumer()`, and no consumer SHALL be registered.
+A selector with a syntax error SHALL be rejected with an `ExceptionResponse` carrying `javax.jms.InvalidSelectorException`, whose message gives the offending token, its zero-based character position and the selector, for example `Unexpected token 'AN' at column 14 in selector: color = 'red' AN size > 2`. Compile-time type errors (see the type rules) SHALL be reported the same way, with the reason instead of the token. The Java client SHALL therefore raise the exception from `createConsumer()`, and no consumer SHALL be registered.
 
 #### Scenario: Syntax error
 - **WHEN** a Java client calls `createConsumer(queue, "JMSCorrelationID = = 'X'")`
@@ -244,18 +326,28 @@ A selector with a syntax error SHALL be rejected with an `ExceptionResponse` car
 - **THEN** the `ExceptionResponse` message names the token `AN`, its column and the full selector
 
 ### Requirement: XPath and XQuery selectors rejected
-A selector that starts with `XPATH '...'` or `XQUERY '...'` (keywords case-insensitive) SHALL be rejected with `javax.jms.InvalidSelectorException("XPath selectors are not supported")`. This is a deliberate difference from ActiveMQ, which supports XPath selectors on XML message bodies.
+A selector that contains `XPATH '...'` or `XQUERY '...'` anywhere (keywords case-insensitive) SHALL be rejected with `javax.jms.InvalidSelectorException` whose message is exactly `XPath selectors are not supported`. This is a deliberate difference from ActiveMQ, which supports XPath selectors on XML message bodies. ActiveMQ's non-standard function-call extension (for example `REGEX('a.*', x)`) is not supported either and is rejected as a syntax error.
 
 #### Scenario: XPath selector
 - **WHEN** a client creates a consumer with selector `XPATH '//order[@id=1]'`
 - **THEN** the client receives `InvalidSelectorException` with the message `XPath selectors are not supported`
 
 ### Requirement: Runtime evaluation errors
-An error during evaluation, such as division by zero, SHALL make the selector UNKNOWN for that message and that consumer only. The broker SHALL NOT send an error to the client and SHALL NOT remove the message; it stays available to other consumers. A message whose `marshalledProperties` cannot be decoded SHALL be treated the same way, and the broker SHALL log the decoding failure once per message at warning level.
+Where ActiveMQ raises an exception while evaluating a selector (arithmetic on a boolean, string or `char` operand other than string concatenation; a number plus a string; ordering a byte array, map or list; unary minus on a `byte` or `short`; a `double` compared with a `float` on its right), the selector SHALL not select that message for that consumer, whatever operators surround the failing expression (`NOT` does not turn it into TRUE). Evaluation SHALL stop where ActiveMQ's does: `AND`/`OR` stop at their first decisive operand, both sides of `=` are always evaluated, and ordering comparisons and arithmetic stop at a NULL left operand. The broker SHALL NOT send an error to the client and SHALL NOT remove the message; it stays available to other consumers.
 
-#### Scenario: Division by zero
-- **WHEN** a message has `a = 1` and `b = 0` and the selector is `a / b > 0`
+A message whose `marshalledProperties` cannot be decoded SHALL make every selector evaluation that reads one of its application properties UNKNOWN as a whole (not selected, even under `NOT` or `IS NULL`), rather than treating the properties as absent; selectors that only use header identifiers keep working. The broker SHALL try to decode at most once per message and log the failure once per message at warning level.
+
+#### Scenario: Evaluation error
+- **WHEN** a message has boolean property `flag = true` and the selector is `NOT (flag + 1 > 0)`
 - **THEN** the message is not selected, the consumer stays open, and no error is sent to the client
+
+#### Scenario: Short-circuit before an evaluation error
+- **WHEN** a message has boolean property `flag = true` and the selector is `flag OR flag + 1 > 0`
+- **THEN** the message is selected
+
+#### Scenario: Undecodable properties
+- **WHEN** a message has malformed `marshalledProperties` and the selector is `color IS NULL`
+- **THEN** the message is not selected, it stays in the queue, and a warning is logged once
 
 ### Requirement: Selector visible in the admin
 The consumer snapshot used by the admin console SHALL include the consumer's selector text, and the queue detail page and the `/api/queues/{name}` JSON SHALL show the selector of each consumer. Messages that no consumer selects SHALL remain visible in the queue contents.
@@ -265,12 +357,16 @@ The consumer snapshot used by the admin console SHALL include the consumer's sel
 - **THEN** the consumer entry contains the selector `JMSCorrelationID = 'ORD-A'`
 
 ### Requirement: Selector acceptance gate
-Scenario 2 of the Java acceptance program SHALL pass against `mqrust.exe` with both the `amq5` and `amq6` profiles, and scenarios 1 and 3 SHALL keep passing. The Java integration tests SHALL run the same set of selectors and messages against a real ActiveMQ and against ActiveMQRust, and both SHALL produce the same received messages in the same order.
+Scenario 2 of the Java acceptance program SHALL pass against `mqrust.exe` with both the `amq5` and `amq6` profiles, and scenarios 1 and 3 SHALL keep passing. The Java integration scenarios `selectors` and `selectorParity` SHALL assert, for every selector, the received messages and their order as computed by ActiveMQ's own selector engine, so the same suite applies to a real ActiveMQ and to ActiveMQRust. A conformance table of more than 500 selectors, evaluated by ActiveMQ's engine (activemq-client 5.18.x and 6.x give identical results) on a message carrying every property type, SHALL be checked by `cargo test`.
 
 #### Scenario: Acceptance scenario 2
 - **WHEN** the acceptance program runs scenario 2 against `mqrust.exe`
 - **THEN** it prints `PASS`
 
 #### Scenario: Same results as ActiveMQ
-- **WHEN** the selector comparison suite runs against real ActiveMQ and against ActiveMQRust
-- **THEN** for every selector both brokers deliver the same messages in the same order
+- **WHEN** the selector scenarios of the Java integration suite run against ActiveMQRust with the `amq5` and `amq6` profiles
+- **THEN** for every selector the received messages and their order equal the results of ActiveMQ's selector engine
+
+#### Scenario: Conformance table
+- **WHEN** `cargo test` runs the selector conformance table
+- **THEN** every selector gives ActiveMQ's result: TRUE, FALSE, UNKNOWN, rejected at compile time, or not selected because of an evaluation error
