@@ -43,7 +43,23 @@ windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_
 criterion = { version = "0.5", default-features = false }
 
 [[bench]]
-name = "broker"
+name = "codec"
+harness = false
+
+[[bench]]
+name = "dispatch"
+harness = false
+
+[[bench]]
+name = "compression"
+harness = false
+
+[[bench]]
+name = "selectors"
+harness = false
+
+[[bench]]
+name = "expiry"
 harness = false
 
 [build-dependencies]

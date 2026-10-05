@@ -389,3 +389,236 @@ async fn codec_is_pluggable() {
     assert_eq!(DECODED.load(Ordering::Relaxed), sent.len() - 1);
     assert!(ENCODED.load(Ordering::Relaxed) >= received, "{} encoded, {received} received", ENCODED.load(Ordering::Relaxed));
 }
+
+// -- broker-side compression over real connections -------------------------------------------
+
+/// Starts a broker that serves every connection accepted on a loopback port.
+async fn start_broker() -> (Arc<Broker>, SocketAddr, watch::Sender<bool>) {
+    let broker = broker();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (stop, shutdown) = watch::channel(false);
+    let b = broker.clone();
+    tokio::spawn(async move {
+        while let Ok((s, remote)) = listener.accept().await {
+            tokio::spawn(serve(s, remote, b.clone(), shutdown.clone()));
+        }
+    });
+    (broker, addr, stop)
+}
+
+/// A minimal OpenWire client (version 12) for tests.
+struct TestClient {
+    r: FrameReader<tokio::net::tcp::OwnedReadHalf>,
+    w: tokio::net::tcp::OwnedWriteHalf,
+    conn: Arc<str>,
+    next_id: i32,
+    seq: i64,
+}
+
+impl TestClient {
+    async fn open(addr: SocketAddr, name: &str) -> TestClient {
+        let (r, w) = TcpStream::connect(addr).await.unwrap().into_split();
+        let mut c = TestClient { r: FrameReader::new(r), w, conn: Arc::from(name), next_id: 1, seq: 0 };
+        let mut props = PrimitiveMap::new();
+        props.set("MaxInactivityDuration", Value::Long(0));
+        c.write(Command::WireFormatInfo(WireFormatInfo { magic: wireformat::MAGIC, version: 12, properties: props })).await;
+        let info = ConnectionInfo {
+            header: Header::default(),
+            connection_id: Some(ConnectionId { value: c.conn.clone() }),
+            client_id: Some(name.into()),
+            password: Some("admin".into()),
+            user_name: Some("admin".into()),
+            broker_path: None,
+            broker_master_connector: false,
+            manageable: false,
+            client_master: true,
+            fault_tolerant: false,
+            failover_reconnect: false,
+            client_ip: None,
+        };
+        c.request(Command::ConnectionInfo(info)).await;
+        let session = SessionId { connection_id: c.conn.clone(), value: 1 };
+        c.request(Command::SessionInfo(SessionInfo { header: Header::default(), session_id: Some(session) })).await;
+        c
+    }
+
+    async fn write(&mut self, cmd: Command) {
+        self.w.write_all(&Encoder::new(12).frame(&cmd)).await.unwrap();
+    }
+
+    /// Sends a command with `responseRequired` set, without waiting for the response.
+    async fn send_request(&mut self, mut cmd: Command) {
+        let header = Header { command_id: self.next_id, response_required: true };
+        self.next_id += 1;
+        match &mut cmd {
+            Command::ConnectionInfo(x) => x.header = header,
+            Command::SessionInfo(x) => x.header = header,
+            Command::ConsumerInfo(x) => x.header = header,
+            Command::Message(x) => x.header = header,
+            other => panic!("unexpected request {other:?}"),
+        }
+        self.write(cmd).await;
+    }
+
+    async fn wait_response(&mut self) -> Command {
+        loop {
+            match self.read(Duration::from_secs(60)).await {
+                Some(c @ (Command::Response { .. } | Command::ExceptionResponse { .. })) => return c,
+                Some(_) => {}
+                None => panic!("no response"),
+            }
+        }
+    }
+
+    /// Sends a command with `responseRequired` and waits for its response.
+    async fn request(&mut self, cmd: Command) -> Command {
+        self.send_request(cmd).await;
+        self.wait_response().await
+    }
+
+    async fn read(&mut self, timeout: Duration) -> Option<Command> {
+        let frame = tokio::time::timeout(timeout, self.r.next(i64::MAX)).await.ok()?.unwrap()?;
+        crate::openwire::marshal::Decoder::new(12).decode_frame(frame).unwrap()
+    }
+
+    async fn consume(&mut self, q: &Destination, prefetch: i32) {
+        let ci = ConsumerInfo {
+            header: Header::default(),
+            consumer_id: Some(ConsumerId { connection_id: self.conn.clone(), session_id: 1, value: 1 }),
+            browser: false,
+            destination: Some(q.clone()),
+            prefetch_size: prefetch,
+            maximum_pending_message_limit: 0,
+            dispatch_async: true,
+            selector: None,
+            client_id: None,
+            subscription_name: None,
+            no_local: false,
+            exclusive: false,
+            retroactive: false,
+            priority: 0,
+            broker_path: None,
+            additional_predicate: None,
+            network_subscription: false,
+            optimized_acknowledge: false,
+            no_range_acks: false,
+            network_consumer_path: None,
+        };
+        self.request(Command::ConsumerInfo(ci)).await;
+    }
+
+    fn message(&mut self, q: &Destination, content: Bytes) -> Message {
+        self.seq += 1;
+        let pid = ProducerId { connection_id: self.conn.clone(), session_id: 1, value: 1 };
+        let mut m = Message::new(t::ACTIVEMQ_TEXT_MESSAGE);
+        m.producer_id = Some(pid.clone());
+        m.destination = Some(q.clone());
+        m.message_id = Some(MessageId { text_view: None, producer_id: Some(pid), producer_sequence_id: self.seq, broker_sequence_id: 0 });
+        m.correlation_id = Some(format!("corr-{}", self.seq));
+        m.jms_type = Some("compression-test".into());
+        m.priority = 7;
+        m.timestamp = 1_700_000_000_000;
+        let mut p = PrimitiveMap::new();
+        p.set("k", Value::Int(self.seq as i32));
+        m.marshalled_properties = Some(p.encode());
+        m.content = Some(content);
+        m
+    }
+
+    /// Sends without waiting (asynchronous send).
+    async fn send_async(&mut self, m: Message) {
+        self.write(Command::Message(Box::new(m))).await;
+    }
+
+    async fn dispatch(&mut self, timeout: Duration) -> Option<Arc<Message>> {
+        loop {
+            if let Command::MessageDispatch(md) = self.read(timeout).await? {
+                return md.message;
+            }
+        }
+    }
+}
+
+/// A text message content (4-byte length + text) of `len` compressible bytes.
+fn compressible(len: usize) -> Bytes {
+    let unit = b"<order><id>42</id><status>shipped</status><note>compressible</note></order>";
+    let mut v: Vec<u8> = unit.iter().copied().cycle().take(len).collect();
+    v[..4].copy_from_slice(&((len - 4) as i32).to_be_bytes());
+    Bytes::from(v)
+}
+
+#[tokio::test]
+async fn large_compressed_message_keeps_fifo_and_headers() {
+    let (broker, addr, _stop) = start_broker().await;
+    let q = Destination::queue("ZIP.FIFO");
+    let mut consumer = TestClient::open(addr, "ID:zip-consumer").await;
+    consumer.consume(&q, 100).await;
+    let mut producer = TestClient::open(addr, "ID:zip-producer").await;
+    let big = compressible(5 * 1024 * 1024);
+    let first = producer.message(&q, big.clone());
+    let mut sent = vec![first.clone()];
+    producer.send_async(first).await;
+    for i in 0..10 {
+        let m = producer.message(&q, Bytes::from(format!("\0\0\0\x06small{i}").into_bytes()));
+        sent.push(m.clone());
+        producer.send_async(m).await;
+    }
+    for (i, s) in sent.iter().enumerate() {
+        let got = consumer.dispatch(Duration::from_secs(30)).await.expect("message not delivered");
+        let id = |m: &Message| m.message_id.as_ref().map(|x| (x.producer_id.clone(), x.producer_sequence_id));
+        assert_eq!(id(&got), id(s), "message {i} out of order or with a changed MessageId");
+        if i == 0 {
+            assert!(got.compressed, "the 5 MB body was not compressed");
+            let content = got.content.as_ref().unwrap();
+            assert!(content.len() < big.len() / 10);
+            let back = crate::broker::compress::decompress_content(t::ACTIVEMQ_TEXT_MESSAGE, content, usize::MAX).unwrap();
+            assert_eq!(&back[..], &big[..]);
+        } else {
+            assert!(!got.compressed);
+            assert_eq!(got.content, s.content);
+        }
+        // Headers and properties are unchanged by compression.
+        assert_eq!(got.producer_id, s.producer_id);
+        assert_eq!(got.correlation_id, s.correlation_id);
+        assert_eq!(got.jms_type, s.jms_type);
+        assert_eq!(got.priority, s.priority);
+        assert_eq!(got.timestamp, s.timestamp);
+        assert_eq!(got.destination, s.destination);
+        assert_eq!(got.marshalled_properties, s.marshalled_properties);
+    }
+    assert_eq!(broker.stats.compressed.load(Ordering::Relaxed), 1);
+}
+
+/// One runtime thread: if the 50 MB body were compressed on it, no other connection could
+/// make progress between the end of its frame and its storage.
+#[tokio::test(flavor = "current_thread")]
+async fn other_connections_progress_during_a_large_compression() {
+    let (broker, addr, _stop) = start_broker().await;
+    let big_q = Destination::queue("ZIP.BIG");
+    let small_q = Destination::queue("ZIP.SMALL");
+    let mut other = TestClient::open(addr, "ID:zip-other").await;
+    other.consume(&small_q, 1_000_000).await;
+    let mut heavy = TestClient::open(addr, "ID:zip-heavy").await;
+    let m = heavy.message(&big_q, compressible(50 * 1024 * 1024));
+    let (written_tx, written_rx) = tokio::sync::oneshot::channel();
+    let sender = tokio::spawn(async move {
+        heavy.send_request(Command::Message(Box::new(m))).await;
+        let _ = written_tx.send(());
+        heavy.wait_response().await
+    });
+    written_rx.await.unwrap();
+    let stored = |b: &Broker| b.get_dest(&big_q).map_or(0, |d| d.message_count()) > 0;
+    let mut while_compressing = 0;
+    while !stored(&broker) {
+        let m = other.message(&small_q, Bytes::from_static(b"\0\0\0\x02hi"));
+        other.send_async(m).await;
+        other.dispatch(Duration::from_secs(10)).await.expect("small message not delivered");
+        if !stored(&broker) {
+            while_compressing += 1;
+        }
+    }
+    assert!(matches!(sender.await.unwrap(), Command::Response { .. }));
+    assert!(broker.get_dest(&big_q).unwrap().message_count() == 1);
+    assert!(while_compressing >= 3, "only {while_compressing} round trips while the 50 MB body was compressed");
+}

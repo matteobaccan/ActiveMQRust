@@ -610,7 +610,7 @@ impl Encoder {
             Command::BrokerInfo(c) => self.broker_info(c, w),
             Command::ConnectionInfo(c) => {
                 self.header(&c.header, w);
-                self.opt(c.connection_id.as_ref().map(|v| DsRef::ConnectionId(v)), w);
+                self.opt(c.connection_id.as_ref().map(DsRef::ConnectionId), w);
                 w.opt_string(c.client_id.as_deref());
                 w.opt_string(c.password.as_deref());
                 w.opt_string(c.user_name.as_deref());

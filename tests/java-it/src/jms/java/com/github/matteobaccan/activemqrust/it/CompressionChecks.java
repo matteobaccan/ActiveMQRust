@@ -136,7 +136,8 @@ public final class CompressionChecks {
 
     /** Payload length that gives exactly {@code target} uncompressed content bytes. */
     static int payloadFor(Session plain, String type, int target) throws Exception {
-        int probe = 1000;
+        // Probe near the target: some types switch to a wider length field for long strings.
+        int probe = target - 200;
         int overhead = wireContent(create(plain, type, probe)).length - probe;
         int n = target - overhead;
         int got = wireContent(create(plain, type, n)).length;
