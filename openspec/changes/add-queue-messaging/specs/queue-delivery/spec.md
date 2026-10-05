@@ -183,11 +183,15 @@ After any ack or other event that frees prefetch space or makes messages pending
 - **THEN** it receives all 100 messages
 
 ### Requirement: Return of unacknowledged messages
-When a consumer closes or its connection drops, every message inflight to it and not yet removed by an ack SHALL return to the queue's pending messages at its original position, by `broker_seq`, not at the tail, with its `redeliveryCounter` incremented by 1. Returned messages SHALL therefore be dispatched before messages that arrived after them. Transaction rollback is covered by the `add-local-transactions` change.
+When a consumer closes or its connection drops, every message inflight to it and not yet removed by an ack SHALL return to the queue's pending messages at its original position, by `broker_seq`, not at the tail, with its `redeliveryCounter` incremented by 1 if it was delivered to the application. As in ActiveMQ, when the consumer's `RemoveInfo` carries a `lastDeliveredSequenceId` (not `-1`), only the returned messages whose `broker_seq` is at most that value count as delivered; messages that were prefetched but never handed to the application return with their counter unchanged. On a connection drop, or with `lastDeliveredSequenceId = -1`, every returned message counts as delivered. Returned messages SHALL therefore be dispatched before messages that arrived after them. Transaction rollback is covered by the `add-local-transactions` change.
 
 #### Scenario: Consumer killed with messages in flight
 - **WHEN** a consumer receives messages 1 to 5 without acknowledging them, its process is killed, and a new consumer attaches
 - **THEN** the new consumer receives messages 1 to 5 first, in order, with `JMSRedelivered=true`, followed by messages 6 onwards
+
+#### Scenario: Prefetched but never delivered
+- **WHEN** a consumer has messages 1 and 2 inflight, the application received only message 1, and the consumer closes with `lastDeliveredSequenceId` equal to the `broker_seq` of message 1
+- **THEN** message 1 returns with `redeliveryCounter` 1 and message 2 returns with `redeliveryCounter` 0
 
 #### Scenario: Original position
 - **WHEN** consumer A holds message 3 inflight, consumer B has consumed messages 4 and 5, message 6 is pending, and consumer A closes
@@ -201,11 +205,11 @@ The redelivery policy (`maximumRedeliveries`, redelivery delays) SHALL remain cl
 - **THEN** the client sends a POISON ack and the message ends up in `ActiveMQ.DLQ`
 
 ### Requirement: Poison messages to the dead letter queue
-A message that receives a POISON ack SHALL be removed from the consumer's inflight messages. As in ActiveMQ's default dead letter strategy, a **persistent** poison message SHALL be appended to `ActiveMQ.DLQ` with a new `broker_seq` of that queue; it SHALL keep its original `MessageId` and all its headers, and SHALL receive the string property `dlqDeliveryFailureCause` describing the cause sent by the client in the ack (or a generic cause if the ack carries none). A **non-persistent** poison message SHALL be discarded, its memory released and the destination's `discarded` counter incremented. Moving a message to the DLQ SHALL NOT be refused by the memory limit.
+A message that receives a POISON ack SHALL be removed from the consumer's inflight messages. As in ActiveMQ's default dead letter strategy, a **persistent** poison message SHALL be appended to `ActiveMQ.DLQ` with a new `broker_seq` of that queue; it SHALL keep its original `MessageId` and all its headers, SHALL have `originalDestination` set to the destination it came from (unless already set), and SHALL receive the string property `dlqDeliveryFailureCause` describing the cause sent by the client in the ack (or a generic cause if the ack carries none). A **non-persistent** poison message SHALL be discarded, its memory released and the destination's `discarded` counter incremented. Moving a message to the DLQ SHALL NOT be refused by the memory limit.
 
 #### Scenario: Poison message in the DLQ
 - **WHEN** a client sends a POISON ack for a persistent message with `JMSMessageID` `ID:h-1-2-1:1:1:1:7`
-- **THEN** `ActiveMQ.DLQ` holds a message with the same `JMSMessageID`, body and properties, plus a `dlqDeliveryFailureCause` property
+- **THEN** `ActiveMQ.DLQ` holds a message with the same `JMSMessageID`, body and properties, plus a `dlqDeliveryFailureCause` property, and its `originalDestination` is the queue it came from
 
 #### Scenario: Non-persistent poison message
 - **WHEN** a non-persistent message receives a POISON ack

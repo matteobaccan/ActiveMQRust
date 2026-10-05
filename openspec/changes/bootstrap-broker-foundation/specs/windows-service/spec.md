@@ -14,7 +14,7 @@
 - start type automatic;
 - account LocalSystem.
 
-The registered command line SHALL be the absolute path of the current `mqrust.exe` followed by `service run`, plus `--config <absolute path>` when `--config` is given to `install`. A configuration file is otherwise looked up next to the executable as usual. The command SHALL print the outcome and exit with code 0 on success.
+The registered command line SHALL be the absolute path of the current `mqrust.exe` followed by `service run --name <name>` (the service name, `ActiveMQRust` by default), plus `--config <absolute path>` when `--config` is given to `install`. The service-mode process uses `--name` to register with the Service Control Manager under the right name. A configuration file is otherwise looked up next to the executable as usual. The command SHALL print the outcome and exit with code 0 on success.
 
 #### Scenario: Install
 - **WHEN** an administrator runs `mqrust.exe service install`
@@ -22,7 +22,7 @@ The registered command line SHALL be the absolute path of the current `mqrust.ex
 
 #### Scenario: Install with configuration
 - **WHEN** an administrator runs `mqrust.exe service install --config C:\mq\mqrust.toml`
-- **THEN** the registered command line contains `service run --config C:\mq\mqrust.toml`
+- **THEN** the registered command line contains `service run --name ActiveMQRust --config C:\mq\mqrust.toml`
 
 #### Scenario: Already installed
 - **WHEN** `mqrust.exe service install` runs and a service with the same name exists

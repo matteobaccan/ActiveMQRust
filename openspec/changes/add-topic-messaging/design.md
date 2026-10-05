@@ -18,7 +18,7 @@
 ## Decisions
 
 ### D1. One shared message, one pending list per subscription
-A published message becomes one `Arc<StoredMessage>`; each subscription's pending list holds a clone of the `Arc` keyed by a per-topic publish sequence. Memory is accounted once for the `StoredMessage` and released when the last `Arc` is dropped.
+A published message becomes one `Arc<StoredMessage>`; each subscription's pending list holds a clone of the `Arc` keyed by the message's broker-wide `broker_seq`, the same monotonic sequence used for queues. Since `broker_seq` grows in publish order, it gives every subscription the topic's publish order without a separate per-topic counter. Memory is accounted once for the `StoredMessage` and released when the last `Arc` is dropped.
 - *Alternatives:* a single topic log with a cursor per subscription (less memory per entry, but eviction for one slow subscriber and independent acks become complex, and the log cannot be trimmed while any cursor lags); a deep copy per subscriber (multiplies memory by the number of subscribers, against the RAM goal).
 
 ### D2. Fan-out under the topic lock, dispatch through the queue code path
@@ -57,6 +57,6 @@ No data migration. Deploy the new executable; existing configuration files stay 
 To verify in the Java sources (5.18.x and 6.x):
 - How ActiveMQ's `TopicSubscription` handles acks, in particular whether the client sends DELIVERED or STANDARD acks for topic consumers with `optimizeAcknowledge` and the default prefetch, and whether UNMATCHED acks appear without selectors.
 - Whether ActiveMQ's `noLocal` check uses the producer's connection ID or the message's `producerId` connection part, and how it behaves for messages sent through another connection of the same client.
-- Whether ActiveMQ sends non-persistent POISON topic messages to the DLQ (its default `processNonPersistent=false` discards them); this change sends them, consistently with queues.
+- Whether ActiveMQ sends non-persistent POISON topic messages to the DLQ. *Resolved:* its default dead letter strategy (`processNonPersistent=false`) discards them; this broker does the same, as for queues: persistent POISON messages go to `ActiveMQ.DLQ`, non-persistent ones are discarded and counted in the topic's `discarded` counter.
 - The `ConsumerInfo` field carrying the durable subscription name in each OpenWire version (`subscriptionName`) and the fields of `RemoveSubscriptionInfo`.
-- Whether the topic `discarded` counter shown in the admin should also count messages published with no subscribers; this change counts only evictions.
+- Whether the topic `discarded` counter shown in the admin should also count messages published with no subscribers. *Resolved:* it does not; it counts evictions and non-persistent POISON messages.

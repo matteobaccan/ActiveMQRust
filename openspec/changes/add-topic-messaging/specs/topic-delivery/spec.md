@@ -23,7 +23,7 @@ A message published to a topic with no attached subscriptions SHALL be discarded
 - **THEN** `send()` returns normally and the message is not stored anywhere
 
 ### Requirement: Per-subscription FIFO, prefetch and acks
-Each subscription SHALL receive its messages in publish order. Prefetch (from `ConsumerInfo.prefetchSize`, Java client default 32767 for topics), prefetch 0 with `MessagePull`, `MessageDispatch` and all ack types (DELIVERED, POISON, STANDARD, REDELIVERED, INDIVIDUAL, UNMATCHED, EXPIRED) SHALL work per subscription exactly as specified for queues by `queue-delivery`, with UNMATCHED behaving as STANDARD. A message that receives a POISON ack SHALL be moved to `ActiveMQ.DLQ` with the `dlqDeliveryFailureCause` property, as for queues. A message is removed from memory when the last subscription holding it no longer references it.
+Each subscription SHALL receive its messages in publish order. Prefetch (from `ConsumerInfo.prefetchSize`, Java client default 32767 for topics), prefetch 0 with `MessagePull`, `MessageDispatch` and all ack types (DELIVERED, POISON, STANDARD, REDELIVERED, INDIVIDUAL, UNMATCHED, EXPIRED) SHALL work per subscription exactly as specified for queues by `queue-delivery`, with UNMATCHED behaving as STANDARD. A message that receives a POISON ack SHALL be handled as for queues: a persistent message SHALL be moved to `ActiveMQ.DLQ` with the `dlqDeliveryFailureCause` property, and a non-persistent message SHALL be discarded and counted in the topic's `discarded` counter (ActiveMQ's default dead letter strategy does not process non-persistent messages). A message is removed from memory when the last subscription holding it no longer references it.
 
 #### Scenario: Prefetch on a topic
 - **WHEN** a topic consumer with prefetch 10 acknowledges nothing and 50 messages are published
@@ -34,8 +34,12 @@ Each subscription SHALL receive its messages in publish order. Prefetch (from `C
 - **THEN** the message stays in memory until the second subscriber acknowledges it
 
 #### Scenario: Poison on a topic
-- **WHEN** a topic subscriber sends a POISON ack for a message
+- **WHEN** a topic subscriber sends a POISON ack for a persistent message
 - **THEN** the message is stored in `ActiveMQ.DLQ` with `dlqDeliveryFailureCause`, and other subscribers are not affected
+
+#### Scenario: Non-persistent poison on a topic
+- **WHEN** a topic subscriber sends a POISON ack for a non-persistent message
+- **THEN** the message is not stored in `ActiveMQ.DLQ`, and the topic's `discarded` counter increases by 1
 
 ### Requirement: End of a subscription
 When a topic consumer closes or its connection drops, its subscription SHALL be removed together with its pending and inflight messages, which SHALL NOT be redelivered to other subscribers. Their accounted memory SHALL be released when no other subscription references them.
@@ -95,7 +99,7 @@ Durable subscriptions are not supported. A `ConsumerInfo` with a subscription na
 - **THEN** the call throws `JMSException`
 
 ### Requirement: Topic statistics
-For each topic the broker SHALL maintain: consumer count, producer count, total published messages and total discarded messages (evicted by the slow consumer limit). They SHALL be readable as a consistent snapshot. Advisory topics SHALL NOT be included.
+For each topic the broker SHALL maintain: consumer count, producer count, total published messages and total discarded messages (evicted by the slow consumer limit, plus non-persistent messages discarded by a POISON ack). They SHALL be readable as a consistent snapshot. Advisory topics SHALL NOT be included.
 
 #### Scenario: Counters
 - **WHEN** 50 messages are published to a topic with one subscriber and no evictions occur
