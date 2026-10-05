@@ -25,7 +25,7 @@ None.
 
 ## Impact
 
-- Code: `src/broker/destination.rs` (topic type and fan-out), `src/broker/subscription.rs` (per-subscription pending list and eviction), `src/connection.rs` (topic consumers, `RemoveSubscriptionInfo`), `src/config.rs` (`topic_max_pending_per_consumer`), codec support for `RemoveSubscriptionInfo` (type 9) decoding.
+- Code: `src/broker/destination.rs` (topic type and fan-out), per-subscription pending list and eviction also in `src/broker/destination.rs`, `src/connection.rs` (topic consumers, `RemoveSubscriptionInfo`), `src/config.rs` (`topic_max_pending_per_consumer`), codec support for `RemoveSubscriptionInfo` (type 9) decoding.
 - Tests: broker semantics tests for fan-out and eviction; Java integration test "topic with 3 subscribers" and temporary topic request/reply.
 - No new crates.
 - Depends on `add-queue-messaging` (destination registry, temporary destination ownership, codec, ack handling, memory accounting). `add-message-selectors` and `add-message-expiration` extend topic delivery afterwards.

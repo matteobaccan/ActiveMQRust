@@ -38,7 +38,7 @@ A queue with no messages, no consumers and no producers SHALL stay in the regist
 - **THEN** the queue is still in the registry 10 minutes later
 
 ### Requirement: Optional deletion of empty destinations
-The `[broker]` section SHALL accept the key `auto_delete_empty_after_secs`, a non-negative integer, default `0`, where `0` disables automatic deletion. When it is greater than 0, a non-temporary destination that has had no pending messages, no inflight messages, no consumers and no producers continuously for at least that number of seconds SHALL be removed from the registry. The check SHALL run at least once per second. A destination that is used again after removal SHALL be created again by the automatic creation rule. A negative or non-integer value SHALL be a configuration validation error that names `broker.auto_delete_empty_after_secs` and exits with code 2.
+The `[broker]` section SHALL accept the key `auto_delete_empty_after_secs`, a non-negative integer, default `0`, where `0` disables automatic deletion. When it is greater than 0, a non-temporary destination that has had no pending messages, no inflight messages, no consumers and no producers continuously for at least that number of seconds SHALL be removed from the registry. The check SHALL run at least once per second (every `min(expiry.check_interval_ms, 1000)` milliseconds). The dead letter queue `ActiveMQ.DLQ` and temporary destinations SHALL never be deleted automatically. A destination that is used again after removal SHALL be created again by the automatic creation rule. A negative or non-integer value SHALL be a configuration validation error that names `broker.auto_delete_empty_after_secs` and exits with code 2.
 
 #### Scenario: Idle empty queue removed
 - **WHEN** `auto_delete_empty_after_secs = 5`, a queue is emptied and its last consumer and producer close
@@ -51,6 +51,10 @@ The `[broker]` section SHALL accept the key `auto_delete_empty_after_secs`, a no
 #### Scenario: Queue with messages kept
 - **WHEN** `auto_delete_empty_after_secs = 5` and a queue holds one pending message with no consumers or producers
 - **THEN** the queue is not removed
+
+#### Scenario: DLQ never auto-deleted
+- **WHEN** `auto_delete_empty_after_secs = 5` and `ActiveMQ.DLQ` has been empty and unused for 10 seconds
+- **THEN** `ActiveMQ.DLQ` is still in the registry
 
 #### Scenario: Invalid value
 - **WHEN** the configuration file sets `auto_delete_empty_after_secs = -1`

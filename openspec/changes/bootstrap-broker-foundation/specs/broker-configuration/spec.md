@@ -23,7 +23,7 @@ Without a configuration file, the broker SHALL use these defaults: OpenWire on `
 - **THEN** it listens for OpenWire on port 61616 on all interfaces
 
 #### Scenario: Partial file
-- **WHEN** the configuration file contains only a `[[users]]` section
+- **WHEN** the configuration file contains only a `[[users]]` section and the `[admin]` password that every file must provide
 - **THEN** all other settings take their default values
 
 #### Scenario: Default credentials warning

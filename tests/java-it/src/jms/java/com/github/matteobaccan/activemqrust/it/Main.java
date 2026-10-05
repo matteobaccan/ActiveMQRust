@@ -10,6 +10,7 @@ import java.util.Map;
  * Entry point.
  * <pre>
  *   java -jar mqrust-acceptance.jar [accept] --url tcp://127.0.0.1:61616 --user admin --password admin [--only 1|2|3]
+ *   java -jar mqrust-acceptance.jar expiry-options --url ... (broker started with the [expiry] options in ExpiryOptions)
  *   java -jar mqrust-acceptance.jar bench --url ... --user ... --password ... --scenario hold|throughput|latency [options]
  * </pre>
  */
@@ -52,6 +53,9 @@ public final class Main {
                 break;
             case "compression-golden":
                 code = new CompressionChecks(url, user, password, opts).golden();
+                break;
+            case "expiry-options":
+                code = new ExpiryOptions(url, user, password).run();
                 break;
             case "bench":
                 code = new Bench(url, user, password, opts).run();

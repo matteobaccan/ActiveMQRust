@@ -69,9 +69,17 @@ The broker SHALL handle `ConnectionInfo` (after authentication), `SessionInfo`, 
 - **WHEN** the client's TCP connection drops without `ShutdownInfo`
 - **THEN** the broker releases the connection's resources and logs the close with its reason
 
-### Requirement: Advisory topics accepted silently
-The broker SHALL accept consumers on `ActiveMQ.Advisory.*` topics, including the composite `ActiveMQ.Advisory.TempQueue,ActiveMQ.Advisory.TempTopic` that the Java driver creates by default, reply with `Response`, and publish no advisory messages. Advisory topics SHALL NOT be listed as user destinations.
+### Requirement: Advisory topics
+The broker SHALL accept consumers on `ActiveMQ.Advisory.*` topics, including the composite `ActiveMQ.Advisory.TempQueue,ActiveMQ.Advisory.TempTopic` that the Java driver creates by default, and reply with `Response`. Consumers on `ActiveMQ.Advisory.TempQueue` and `ActiveMQ.Advisory.TempTopic` SHALL receive, as ActiveMQ does, a message carrying a `DestinationInfo` (operation ADD) for every temporary destination of that kind that exists when they subscribe, then one `DestinationInfo` (ADD or REMOVE) whenever a temporary destination of that kind is created or deleted. The driver uses these messages to know which temporary destinations still exist. No other advisory message SHALL be published, and advisory topics SHALL NOT be listed as user destinations.
 
 #### Scenario: Default driver advisory consumer
 - **WHEN** a Java client with `watchTopicAdvisories=true` (default) connects
 - **THEN** its advisory consumer is accepted, and the connection works normally
+
+#### Scenario: Temporary destination advisories
+- **WHEN** a client has a consumer on `ActiveMQ.Advisory.TempQueue` and another connection creates and later deletes a temporary queue
+- **THEN** the consumer receives a `DestinationInfo` advisory with operation ADD for that queue, then one with operation REMOVE
+
+#### Scenario: No other advisories
+- **WHEN** a client has a consumer on another advisory topic, such as `ActiveMQ.Advisory.Connection`
+- **THEN** the consumer is accepted and receives no messages

@@ -24,7 +24,7 @@ None.
 
 ## Impact
 
-- Code: `src/broker/destination.rs` (expiry index, delivery-time checks, deletion), `src/broker/mod.rs` (sweeper task, counters), `src/broker/subscription.rs` (`EXPIRED` ack, topic pending lists), `src/broker/memory.rs` (release on deletion), `src/config.rs` (`[expiry]` section), admin snapshot data.
+- Code: `src/broker/destination.rs` (expiry index, delivery-time checks, deletion, `EXPIRED` ack, topic subscription pending lists), `src/broker/mod.rs` (sweeper task, set of destinations with expiring messages, counters, options on arrival), `src/broker/entry.rs` (accounted memory released when the last copy of a message is dropped), `src/connection.rs` (expiry on arrival and at commit), `src/config.rs` (`[expiry]` section), admin snapshot data.
 - No new crates: the sweeper uses `tokio` timers already in the project.
 - Depends on `add-queue-messaging` (queues, dispatch, acks, browser, redelivery, DLQ on POISON ack). The topic part depends on `add-topic-messaging`; the rollback check depends on `add-local-transactions`; the admin display is rendered by `add-admin-console`.
 - The Java acceptance scenarios 1, 2 and 3 keep passing.

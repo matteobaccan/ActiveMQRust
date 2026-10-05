@@ -304,4 +304,48 @@ mod tests {
         assert_eq!(back, m);
         assert_eq!(back.get_long("b"), Some(30000));
     }
+
+    /// One-entry maps `{"k": value}` as written by `MarshallingSupport.marshalPrimitiveMap`
+    /// (identical bytes from activemq-client 5.18.7 and 6.3.2).
+    fn golden() -> Vec<(&'static str, Vec<u8>, Value)> {
+        const HEAD: [u8; 7] = [0x00, 0x00, 0x00, 0x01, 0x00, 0x01, b'k'];
+        let with = |tail: &[u8]| HEAD.iter().chain(tail).copied().collect::<Vec<u8>>();
+        let mut inner = PrimitiveMap::new();
+        inner.set("n", Value::Int(1));
+        vec![
+            ("null", with(&[0x00]), Value::Null),
+            ("boolean", with(&[0x01, 0x01]), Value::Bool(true)),
+            ("byte", with(&[0x02, 0xfb]), Value::Byte(-5)),
+            ("char", with(&[0x03, 0x00, 0xe9]), Value::Char(0xe9)),
+            ("short", with(&[0x04, 0xfe, 0xd4]), Value::Short(-300)),
+            ("int", with(&[0x05, 0x00, 0x01, 0xe2, 0x40]), Value::Int(123456)),
+            ("long", with(&[0x06, 0xff, 0xff, 0xfe, 0xe0, 0x8e, 0x04, 0xfb, 0x35]), Value::Long(-1234567890123)),
+            ("float", with(&[0x08, 0x3f, 0xc0, 0x00, 0x00]), Value::Float(1.5)),
+            ("double", with(&[0x07, 0xc0, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]), Value::Double(-2.25)),
+            (
+                "string",
+                with(&[0x09, 0x00, 0x08, 0x68, 0xc3, 0xa9, 0x6c, 0x6c, 0x6f, 0xc0, 0x80]),
+                Value::String("h\u{e9}llo\u{0}".into()),
+            ),
+            ("byte[]", with(&[0x0a, 0x00, 0x00, 0x00, 0x03, 0x01, 0x02, 0x03]), Value::Bytes(Bytes::from_static(&[1, 2, 3]))),
+            ("map", with(&[0x0b, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01, b'n', 0x05, 0x00, 0x00, 0x00, 0x01]), Value::Map(inner)),
+            (
+                "list",
+                with(&[0x0c, 0x00, 0x00, 0x00, 0x02, 0x05, 0x00, 0x00, 0x00, 0x01, 0x09, 0x00, 0x01, b'a']),
+                Value::List(vec![Value::Int(1), Value::String("a".into())]),
+            ),
+            ("big string", with(&[[0x0d, 0x00, 0x00, 0x23, 0x28].as_slice(), &[b'x'; 9000]].concat()), Value::String("x".repeat(9000))),
+        ]
+    }
+
+    #[test]
+    fn every_type_round_trips_from_golden_bytes() {
+        for (name, bytes, value) in golden() {
+            let decoded = PrimitiveMap::decode(&Bytes::from(bytes.clone())).unwrap().unwrap();
+            assert_eq!(decoded.get("k"), Some(&value), "{name}");
+            let mut m = PrimitiveMap::new();
+            m.set("k", value);
+            assert_eq!(m.encode().as_ref(), bytes.as_slice(), "{name}");
+        }
+    }
 }

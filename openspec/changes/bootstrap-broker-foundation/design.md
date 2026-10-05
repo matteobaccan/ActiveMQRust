@@ -52,7 +52,7 @@ Passwords are either plain text (compared in constant time, with a warning) or A
 - [Undocumented field differences between OpenWire versions] → Derive them from the Java marshallers; check against golden byte vectors captured from a real client and against both driver versions.
 - [Java client closes idle connections after 30 s] → The broker sends `KeepAliveInfo` after `MaxInactivityDuration / 2` without writes; there is a test with more than 60 s of idle time.
 - [Default `admin`/`admin` credentials on `0.0.0.0`] → A warning on every start, the README advises setting passwords, and the admin console binds to localhost only.
-- [Hidden client behaviour, e.g. advisory consumers] → Accept advisory consumers with a `Response` and publish nothing; any divergence found becomes a test.
+- [Hidden client behaviour, e.g. advisory consumers] → Accept advisory consumers with a `Response`; publish only the temporary-destination advisories (`DestinationInfo` on `ActiveMQ.Advisory.TempQueue`/`TempTopic`) that the driver relies on to track temporary destinations; any divergence found becomes a test.
 
 ## Migration Plan
 
