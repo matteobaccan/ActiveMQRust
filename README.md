@@ -7,7 +7,7 @@ Java applications that use the ActiveMQ driver (`activemq-client`) connect witho
 
 The goal is a broker that is **compatible** with ActiveMQ, **uses less RAM** and is **faster** than ActiveMQ, shipped as a single Windows executable with no dependencies.
 
-> **Project status:** the broker is implemented; the specifications are written as [OpenSpec](https://github.com/Fission-AI/OpenSpec) changes in [`openspec/changes/`](openspec/changes/), one per feature area. The performance benchmarks and the comparison with ActiveMQ are pending: no results are published yet.
+> **Project status:** version **0.2.0**. The broker is implemented and passes the Rust and Java test suites listed in [Tests and results](#tests-and-results). The specifications are [OpenSpec](https://github.com/Fission-AI/OpenSpec) specs in [`openspec/specs/`](openspec/specs/) (completed changes are archived in [`openspec/changes/archive/`](openspec/changes/archive/)). A soak comparison with ActiveMQ 5.18.7 and 6.3.2 is published; the full benchmark comparison is still to be run.
 
 ## What it is good at
 
@@ -35,7 +35,7 @@ Where it pays off compared to ActiveMQ:
 
 After a restart the broker starts empty. Clients that use a `failover:` URL reconnect automatically.
 
-## Planned features
+## Features
 
 - **OpenWire compatible**: transparently recognized by the ActiveMQ Java driver 5.18.x and 6.x (protocol versions 9–12).
 - **A single `mqrust.exe`** for Windows x64, with no runtime to install (no Visual C++, .NET or Java).
@@ -50,10 +50,11 @@ After a restart the broker starts empty. Clients that use a `failover:` URL reco
 - **Compression**: messages compressed by the client (`useCompression=true`) pass through untouched; the broker quickly compresses those larger than 32 KB.
 - **Non-durable topics**, **local transactions**, **temporary queues** (request/reply), **QueueBrowser**.
 - **Authentication** with username and password (plain text or Argon2 hash).
-- **Web admin console** behind a login: queues, consumers, producers, connections and queue contents, plus a JSON API.
+- **Web admin console** with a login form and sessions: queues (every column sortable), consumers, producers, connections and queue contents, a formatted view of XML bodies, a responsive layout with light and dark themes that follow the system, plus a JSON API.
+- **Guided setup from the command line**: `mqrust.exe -h` shows the four steps to get started; `set-admin` and `user add` / `passwd` / `remove` / `list` manage the console user and the messaging users without editing the file by hand.
 - The broker identifies itself as **`ActiveMQRust <version>`**.
 
-Not planned for the first version: persistence, durable subscriptions, XA transactions, wildcards, network of brokers, protocols other than OpenWire.
+Not in this version: persistence, durable subscriptions, XA transactions, wildcards, network of brokers, protocols other than OpenWire.
 
 ## Getting started
 
@@ -224,6 +225,56 @@ tests\java-it\run-acceptance.cmd amq6 --url tcp://127.0.0.1:61616 --user admin -
 
 `-Config reference` (the default) and `-Config tuned` start it with the non-persistent configurations used by the benchmark. Stop it with Ctrl+C; the script uses a fresh temporary data directory every time.
 
+## Tests and results
+
+All suites below were run on 2026-10-05/06 on version 0.2.0 (Windows 11, Intel Xeon W-2123, JDK 21), and all of them pass.
+
+### Functional tests
+
+| Suite | What it checks | Result |
+|---|---|---|
+| Rust unit tests (`cargo test --release`, library) | codec, configuration, selectors, compression, sessions, XML formatter, CPU sizing, setup commands | 118 passed |
+| `tests/broker_semantics.rs` | FIFO, round-robin, redelivery position, prefetch, acknowledgement types, DLQ, expiration, topics, browsers, transactions, memory limit, concurrent producers | 60 passed |
+| `tests/connection_semantics.rs` | the broker driven over a real socket by a small OpenWire client | 14 passed |
+| `tests/selector_semantics.rs` | 568 selectors checked against the results of ActiveMQ's own selector engine | 9 passed |
+| `tests/admin_http.rs` | login, sessions, lockout, logout, API with Basic, headers, escaping, paging | 18 passed |
+| `tests/cli_setup.rs` | help, `set-admin`, `user` commands, safe file editing, start-up messages, end to end | 17 passed |
+| `tests/codec_golden.rs` | frames written by the real ActiveMQ client, OpenWire versions 9–12 | 4 passed |
+| `tests/compression.rs`, `tests/hot_path.rs` | compressed golden vectors of all 5 message types, allocations per message, batching | 9 passed |
+| **Rust total** | | **249 passed, 0 failed** |
+| Java unit tests (`mvnw test`) | payload generation and result parsing of the bench client | 16 passed |
+| Java `accept`, ActiveMQ client 5.18.x and 6.x | FIFO round trip, correlation-ID selectors, authentication | 3 + 3 passed |
+| Java `integration`, 5.18.x and 6.x | 10,000-message FIFO, all message types, request/reply on temporary queues and topics, client ack, browser, topics, redelivery after a dropped connection, transactions, DLQ, client and broker compression, expiration, selectors, selector parity | 15 + 15 passed |
+| Java `console`, 5.18.x and 6.x | form login, `ProviderVersion` equal to the console version, compressed message page, browsing does not consume | 4 + 4 passed |
+| Java `compression`, 5.18.x and 6.x | byte-identical bodies for the 5 message types at the threshold boundaries | 40 + 40 passed |
+| Java `expiry-options`, 5.18.x and 6.x | TTL ceiling, default TTL, broker clock | 5 + 5 passed |
+| Java `accept` against real **ActiveMQ 5.18.7 and 6.3.2** (tuned configuration) | the same three scenarios give the same results on ActiveMQ | 3 + 3 passed |
+
+While the soak scenario was being written, the multi-producer runs found a bug: with several producers on one queue a message could stay undelivered. It was fixed (`Fix lost queue messages with concurrent producers`) and is covered by a test.
+
+### Load tests
+
+Soak test, 2026-10-05, one shared queue, every message checked for order per producer, losses and duplicates ([full report](docs/benchmarks/soak-2026-10-05.md)):
+
+| | ActiveMQRust | ActiveMQ 5.18.7 | ActiveMQ 6.3.2 |
+|---|---|---|---|
+| **10 producers × 10 msg/s × 240 s, 10 consumers, 1 KB** | ok, 24,000 / 24,000 | ok, 24,000 / 24,000 | ok, 24,000 / 24,000 |
+| Missing / duplicates / out of order | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 |
+| Startup | **72 ms** | 1,838 ms | 1,877 ms |
+| Latency p50 / p99 | **0.69 / 1.03 ms** | 0.74 / 1.25 ms | 0.75 / 1.28 ms |
+| Broker CPU (one core) / per 1,000 messages | **3.0 % / 301 ms** | 5.6 % / 561 ms | 5.7 % / 571 ms |
+| Broker Working Set / Private Bytes (average) | **10.6 / 14.8 MB** | 182 / 642 MB | 192 / 645 MB |
+| **20 producers × 10 msg/s × 60 s, 20 consumers, 10 KB** | ok, 12,000 / 12,000 | ok, 12,000 / 12,000 | ok, 12,000 / 12,000 |
+| Missing / duplicates / out of order | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 |
+| Startup | **62 ms** | 1,825 ms | 1,825 ms |
+| Latency p50 / p99 | **0.75 / 1.14 ms** | 0.81 / 1.26 ms | 0.83 / 1.26 ms |
+| Broker CPU (one core) / per 1,000 messages | **6.2 % / 314 ms** | 16.2 % / 832 ms | 14.7 % / 757 ms |
+| Broker Working Set / Private Bytes (average) | **12.7 / 17.7 MB** | 222 / 651 MB | 228 / 649 MB |
+
+At a steady load all three brokers delivered every message exactly once and in order; ActiveMQRust used about 17 times less Working Set, about 40 times less Private Bytes and roughly half to a third of the CPU per message, and started about 25 times faster. These are single runs at a moderate fixed rate: they show resource use and correctness, not maximum throughput.
+
+Still to run: the full comparison (`scripts\compare-activemq.ps1`, measurements (a)–(f) with 3 runs each) and the criterion micro-benchmarks (`cargo bench`). [`docs/benchmarks/activemq-comparison-2026-10-05.md`](docs/benchmarks/activemq-comparison-2026-10-05.md) is an early partial run of version 0.1.0 (only measurement (e), one run, before the compression and concurrency fixes) and is kept for reference only.
+
 ## Comparison with ActiveMQ
 
 `scripts\compare-activemq.ps1` runs the same Java client against ActiveMQRust and Apache ActiveMQ 5.18.x and 6.x on the same machine, with ActiveMQ configured without persistence so that both process messages in RAM. It measures:
@@ -247,6 +298,17 @@ pwsh scripts\compare-activemq.ps1 -ActiveMQ5 C:\tools\apache-activemq-5.18.7 -Ac
 The full comparison takes a few hours. Run it first with `-DryRun`: it only checks the paths, the ports, free RAM and CPU load and prints what would run, without starting anything. Other options: `-Quick` (one short run of everything, to check the setup; not a valid comparison), `-OutDir <dir>` (default `docs\benchmarks`), `-Port` / `-AdminPort` (default 61616 / 8161, used for every broker), `-SkipActiveMQ5`, `-SkipActiveMQ6`, `-SkipDefault` (skip ActiveMQ with its default configuration), `-Runs <n>` and `-Force` (only warn about CPU load and free memory). The fair ActiveMQ configuration and the ActiveMQRust configuration files are in [`scripts/activemq-bench/`](scripts/activemq-bench/).
 
 The script writes `activemq-comparison-<date>.md` (machine details, every run, medians, ratios and a met / not met verdict for every criterion) and `activemq-comparison-<date>.csv` (one row per run). Reports are published in [`docs/benchmarks/`](docs/benchmarks/).
+
+### Soak test
+
+`scripts\soak-compare.ps1` runs the `soak` scenario of the Java client against ActiveMQRust, ActiveMQ 5.x and 6.x, one after the other: producers send at a steady rate while consumers read, every message is checked for order per producer, losses and duplicates, and the script records start-up time, latency, and the CPU and memory of the broker and the client.
+
+```
+pwsh scripts\soak-compare.ps1 -ActiveMQ5 C:\tools\apache-activemq-5.18.7 -ActiveMQ6 C:\tools\apache-activemq-6.3.2 -Duration 240
+pwsh scripts\soak-compare.ps1 -ActiveMQ5 ... -ActiveMQ6 ... -Duration 60 -Producers 20 -Consumers 20 -Size 10240 -Results docs\benchmarks\soak-20x20.csv
+```
+
+Defaults: 10 producers at 10 messages per second each, 10 consumers on one shared queue (`-Queues` for more), 1 KB messages, 300 s, results in `docs\benchmarks\soak-results.csv`. The same scenario can be run directly: `java -jar tests\java-it\target\amq5\mqrust-acceptance.jar bench --scenario soak --producers 10 --consumers 10 --rate 10 --duration-seconds 300`.
 
 ## License
 

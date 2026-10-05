@@ -3,7 +3,7 @@
 
 [package]
 name = "mqrust"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "ActiveMQRust: an in-memory OpenWire message broker compatible with Apache ActiveMQ"
 authors = ["Matteo Baccan"]

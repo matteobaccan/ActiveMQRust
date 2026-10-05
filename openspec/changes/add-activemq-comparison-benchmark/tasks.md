@@ -12,7 +12,7 @@
 - [x] 2.4 Implement the in-loop O(1) checks (text length, consecutive `seq`) and the after-timing sample verification (every 100th plus first and last: StAX structure, base64, equality with the regenerated document)
 - [x] 2.5 Add the `Deflater` level 1 ratio on the sample to the `RESULT` line
 - [x] 2.6 Add the 20,000-message warm-up queue phase with its own seed
-- [ ] 2.7 Validate the `hold` and `throughput` workloads against a real ActiveMQ 6.x by hand
+- [x] 2.7 Validate the `hold` and `throughput` workloads against a real ActiveMQ 6.x by hand
 
 ## 3. Broker configurations
 
@@ -52,4 +52,4 @@
 ## 8. Soak scenario
 
 - [x] 8.1 Add the `soak` scenario to Bench.java: steady per-producer rate for a duration, shared or per-pair queues, checks for order, duplicates, losses and length, latency percentiles
-- [ ] 8.2 Add the soak run to the comparison script and report (per broker, with per-phase CPU and memory), and run it on a quiet machine
+- [x] 8.2 Add `scripts/soak-compare.ps1` to run the soak scenario against every broker (startup, latency, broker and client CPU, broker memory), run it and publish the report in `docs/benchmarks/`

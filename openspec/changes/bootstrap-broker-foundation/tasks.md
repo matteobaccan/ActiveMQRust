@@ -6,7 +6,7 @@
 - [x] 1.4 Implement scenario 2 (correlation ID selectors, LIKE, invalid selector)
 - [x] 1.5 Implement scenario 3 (authentication)
 - [x] 1.6 Add `run-acceptance.cmd` and document in the README how to start a local ActiveMQ
-- [ ] 1.7 Run all scenarios against a real ActiveMQ with both profiles and confirm PASS
+- [x] 1.7 Run all scenarios against a real ActiveMQ with both profiles and confirm PASS
 
 ## 2. Project skeleton and packaging
 
