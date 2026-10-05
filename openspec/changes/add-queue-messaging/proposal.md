@@ -9,7 +9,7 @@ ActiveMQRust aims to be **compatible** with ActiveMQ Classic, **use less RAM** a
 - Queue delivery: arrival sequence numbers and strict FIFO, round-robin across consumers, prefetch window, prefetch 0 with `MessagePull`, `QueueBrowser`, every ack type, reinsertion of unacknowledged messages at their original position, redelivery counter, POISON ack to `ActiveMQ.DLQ`, synchronous and asynchronous sends, `ProducerAck`.
 - Message identity: client-generated `MessageId` kept intact, broker sequence ID, ActiveMQ-format IDs for broker-generated objects, duplicate detection per producer.
 - Memory management: accounting of message memory, optional `max_memory_mb` limit with `ResourceAllocationException` for synchronous sends and drop-with-warning for asynchronous sends, resume below 90%, no limit on the number of clients.
-- Deliberate differences from ActiveMQ, stated in the specs: persistent messages are kept in RAM only; JMS priority, exclusive consumers, consumer priority and message groups do not influence dispatch; POISON messages go to the DLQ whatever their delivery mode; removal of non-temporary destinations through `DestinationInfo` is refused.
+- Deliberate differences from ActiveMQ, stated in the specs: persistent messages are kept in RAM only; JMS priority, exclusive consumers, consumer priority and message groups do not influence dispatch. Poison messages (persistent to the DLQ, non-persistent discarded) and `DestinationInfo` removal of normal destinations behave as in ActiveMQ.
 
 ## Capabilities
 

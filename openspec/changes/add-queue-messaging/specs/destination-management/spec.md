@@ -57,7 +57,7 @@ The `[broker]` section SHALL accept the key `auto_delete_empty_after_secs`, a no
 - **THEN** the broker reports an error naming `broker.auto_delete_empty_after_secs` and exits with code 2
 
 ### Requirement: Temporary destination creation and removal
-The broker SHALL handle `DestinationInfo` (type 8). An ADD operation for a temporary queue or temporary topic SHALL create it and record the connection that sent the command as its owner. A REMOVE operation for a temporary destination SHALL delete it together with its messages. A REMOVE of a temporary destination that still has consumers SHALL fail with an `ExceptionResponse` carrying `javax.jms.JMSException` with a message stating that the destination still has an active subscription. An ADD for a non-temporary destination SHALL create it as automatic creation would. A REMOVE for a non-temporary destination SHALL fail with an `ExceptionResponse` carrying `javax.jms.JMSException` ("Removal of non-temporary destinations is not supported"); this is a deliberate difference from ActiveMQ, which allows it.
+The broker SHALL handle `DestinationInfo` (type 8). An ADD operation for a temporary queue or temporary topic SHALL create it and record the connection that sent the command as its owner. A REMOVE operation for a temporary destination SHALL delete it together with its messages. A REMOVE of a temporary destination that still has consumers SHALL fail with an `ExceptionResponse` carrying `javax.jms.JMSException` with a message stating that the destination still has an active subscription. An ADD for a non-temporary destination SHALL create it as automatic creation would. A REMOVE for a non-temporary destination (for example from `ActiveMQConnection.destroyDestination()`) SHALL behave as in ActiveMQ: if the destination has no active consumers it SHALL be deleted together with its messages, releasing their memory; if it still has active consumers the REMOVE SHALL fail with an `ExceptionResponse` carrying `javax.jms.JMSException` stating that the destination still has an active subscription. A later use of the same name SHALL create the destination again, empty.
 
 #### Scenario: Temporary queue created
 - **WHEN** a Java client calls `session.createTemporaryQueue()`
@@ -71,9 +71,13 @@ The broker SHALL handle `DestinationInfo` (type 8). An ADD operation for a tempo
 - **WHEN** a `DestinationInfo` REMOVE arrives for a temporary queue that has an active consumer
 - **THEN** the broker replies with an `ExceptionResponse` carrying `javax.jms.JMSException` and the temporary queue is kept
 
-#### Scenario: Removal of a normal queue refused
-- **WHEN** a `DestinationInfo` REMOVE with `responseRequired=true` arrives for queue `ORDERS`
-- **THEN** the broker replies with an `ExceptionResponse` carrying `javax.jms.JMSException` and the queue and its messages are kept
+#### Scenario: Removal of a normal queue
+- **WHEN** a client calls `destroyDestination()` for queue `ORDERS`, which holds 5 messages and has no consumers
+- **THEN** the broker replies with `Response`, the queue and its 5 messages are deleted, and the accounted message memory decreases accordingly
+
+#### Scenario: Removal of a normal queue with consumers
+- **WHEN** a `DestinationInfo` REMOVE with `responseRequired=true` arrives for queue `ORDERS` while it has an active consumer
+- **THEN** the broker replies with an `ExceptionResponse` carrying `javax.jms.JMSException`, and the queue and its messages are kept
 
 ### Requirement: Temporary destination ownership
 Only the owning connection SHALL be able to create consumers on a temporary destination. A `ConsumerInfo` from another connection, or for a temporary destination that does not exist, SHALL receive an `ExceptionResponse` carrying `javax.jms.InvalidDestinationException`. Any authenticated connection SHALL be able to send messages to an existing temporary destination, which is what the request/reply pattern with `JMSReplyTo` needs.

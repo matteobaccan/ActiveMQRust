@@ -25,7 +25,7 @@
 
 - [ ] 4.1 Implement the partitioned registry keyed by destination type and name, with automatic creation from `ProducerInfo`, `ConsumerInfo` and message sends
 - [ ] 4.2 Reject wildcard (`*`, `>`) and composite (`,`) destinations with `InvalidDestinationException`, keeping the advisory consumer exemption
-- [ ] 4.3 Implement `DestinationInfo` ADD/REMOVE: temporary destinations with owner, removal refused with active consumers, removal of non-temporary destinations refused
+- [ ] 4.3 Implement `DestinationInfo` ADD/REMOVE: temporary destinations with owner, removal refused with active consumers, removal of non-temporary destinations deletes them and their messages (refused while consumers are active), as in ActiveMQ
 - [ ] 4.4 Implement temporary destination ownership checks on `ConsumerInfo`, deletion on owner close, and send to a missing temporary destination (sync error, async discard)
 - [ ] 4.5 Implement the idle-destination check for `auto_delete_empty_after_secs` (at least once per second)
 - [ ] 4.6 Create `ActiveMQ.DLQ` on demand as an ordinary queue
@@ -41,7 +41,7 @@
 - [ ] 5.7 Implement `QueueBrowser`: snapshot in FIFO order within the prefetch window, null end marker, acks never remove
 - [ ] 5.8 Implement every ack type (DELIVERED, POISON, STANDARD, REDELIVERED, INDIVIDUAL, UNMATCHED, EXPIRED) and resume dispatch after acks
 - [ ] 5.9 Implement return of unacknowledged messages at the original position with `redeliveryCounter + 1` on consumer close and connection drop
-- [ ] 5.10 Implement the POISON move to `ActiveMQ.DLQ` with `dlqDeliveryFailureCause`, original `MessageId` kept, for every delivery mode
+- [ ] 5.10 Implement the POISON move to `ActiveMQ.DLQ` with `dlqDeliveryFailureCause`, original `MessageId` kept, for persistent messages; discard non-persistent poison messages (counted as discarded)
 - [ ] 5.11 Maintain queue statistics (pending, inflight, consumers, producers, enqueued, consumed, expired) with snapshot reads
 
 ## 6. Broker semantics tests (no network)

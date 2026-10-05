@@ -17,7 +17,7 @@
 ## 3. HTTP server and authentication
 
 - [ ] 3.1 Add `axum`, `serde_json`, `base64` and `windows-sys` with minimal features; confirm `scripts\check-deps.cmd` still passes
-- [ ] 3.2 Start the admin listener on `admin.bind:admin.port` with the CLI overrides, log the listen line, exit non-zero on bind failure
+- [ ] 3.2 Start the admin listener on `admin.bind:admin.port` with the CLI overrides, log the listen line; on bind failure log an error and keep the broker running without the console
 - [ ] 3.3 Implement the Basic authentication layer (plain and Argon2id, constant-time compare, single-entry verified-credential digest cache, `401` with `WWW-Authenticate: Basic realm="ActiveMQRust"`)
 - [ ] 3.4 Log failed admin logins as warnings with remote IP and username; do not log requests without credentials
 - [ ] 3.5 Reject methods other than `GET` and `HEAD` with `405`; add the `Content-Security-Policy` and `X-Content-Type-Options` headers

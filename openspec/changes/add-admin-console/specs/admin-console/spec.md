@@ -1,7 +1,11 @@
 ## ADDED Requirements
 
 ### Requirement: Admin HTTP listener
-The broker SHALL serve the admin console over HTTP on the address given by the `[admin]` keys `bind` (default `127.0.0.1`) and `port` (default `8161`), overridden by `--admin-bind` and `--admin-port`. By default the console SHALL be reachable only from the local machine; exposing it on the network SHALL require explicit configuration. At startup the broker SHALL log `admin listening on http://<bind>:<port>`. If the admin address cannot be bound, the broker SHALL log an error naming the address and exit with a non-zero code.
+The broker SHALL serve the admin console over HTTP on the address given by the `[admin]` keys `bind` (default `127.0.0.1`) and `port` (default `8161`), overridden by `--admin-bind` and `--admin-port`. By default the console SHALL be reachable only from the local machine; exposing it on the network SHALL require explicit configuration. At startup the broker SHALL log `admin listening on http://<bind>:<port>`. If the admin address cannot be bound, the broker SHALL log an error naming the address and SHALL keep running without the admin console: the OpenWire listener and all messaging SHALL be unaffected.
+
+#### Scenario: Admin port already in use
+- **WHEN** port 8161 is already in use at startup
+- **THEN** the broker logs an error naming `127.0.0.1:8161`, starts the OpenWire listener on 61616 normally, and Java clients can connect and exchange messages
 
 #### Scenario: Default address
 - **WHEN** the broker starts without a configuration file

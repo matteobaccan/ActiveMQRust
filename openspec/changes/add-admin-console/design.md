@@ -76,4 +76,4 @@ New feature with no stored state. With default settings the console starts on `1
 ## Open Questions
 
 - Whether to add `/api/queues/{name}/messages/{id}` for a single message with its rendered body; the current API returns headers, properties and body metadata in the message list only.
-- Whether an admin listener that fails to bind (port 8161 in use) should stop the broker (current decision, consistent with the OpenWire listener) or only log an error and keep serving OpenWire.
+- (Resolved) An admin listener that fails to bind does not stop the broker: it logs an error and OpenWire keeps running, because a console problem must not take messaging down.

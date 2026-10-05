@@ -142,7 +142,7 @@ Each delivery SHALL be a `MessageDispatch` (type 21) carrying the consumer's `Co
 ### Requirement: Acknowledgement types
 The broker SHALL process `MessageAck` (type 22) using `consumerId`, `ackType`, `firstMessageId`, `lastMessageId` and `messageCount`, against the consumer's inflight messages in dispatch order. The range of an ack SHALL be from `firstMessageId` (or the oldest inflight message if it is absent) to `lastMessageId`. The types SHALL behave as follows:
 - DELIVERED (0): no removal; the messages in the range no longer count against the prefetch window.
-- POISON (1): removes the messages in the range from inflight and moves them to `ActiveMQ.DLQ`.
+- POISON (1): removes the messages in the range from inflight; persistent ones are moved to `ActiveMQ.DLQ`, non-persistent ones are discarded.
 - STANDARD (2): removes all inflight messages up to and including `lastMessageId` (cumulative ack).
 - REDELIVERED (3): increments the redelivery counter of the messages in the range, which stay inflight.
 - INDIVIDUAL (4): removes only the message `lastMessageId`.
@@ -201,18 +201,18 @@ The redelivery policy (`maximumRedeliveries`, redelivery delays) SHALL remain cl
 - **THEN** the client sends a POISON ack and the message ends up in `ActiveMQ.DLQ`
 
 ### Requirement: Poison messages to the dead letter queue
-A message that receives a POISON ack SHALL be removed from the consumer's inflight messages and appended to `ActiveMQ.DLQ` with a new `broker_seq` of that queue. It SHALL keep its original `MessageId` and all its headers, and SHALL receive the string property `dlqDeliveryFailureCause` describing the cause sent by the client in the ack (or a generic cause if the ack carries none). This SHALL apply to persistent and non-persistent messages alike; this is a deliberate difference from ActiveMQ, whose default dead letter strategy discards non-persistent poison messages. Moving a message to the DLQ SHALL NOT be refused by the memory limit.
+A message that receives a POISON ack SHALL be removed from the consumer's inflight messages. As in ActiveMQ's default dead letter strategy, a **persistent** poison message SHALL be appended to `ActiveMQ.DLQ` with a new `broker_seq` of that queue; it SHALL keep its original `MessageId` and all its headers, and SHALL receive the string property `dlqDeliveryFailureCause` describing the cause sent by the client in the ack (or a generic cause if the ack carries none). A **non-persistent** poison message SHALL be discarded, its memory released and the destination's `discarded` counter incremented. Moving a message to the DLQ SHALL NOT be refused by the memory limit.
 
 #### Scenario: Poison message in the DLQ
-- **WHEN** a client sends a POISON ack for a message with `JMSMessageID` `ID:h-1-2-1:1:1:1:7`
+- **WHEN** a client sends a POISON ack for a persistent message with `JMSMessageID` `ID:h-1-2-1:1:1:1:7`
 - **THEN** `ActiveMQ.DLQ` holds a message with the same `JMSMessageID`, body and properties, plus a `dlqDeliveryFailureCause` property
 
 #### Scenario: Non-persistent poison message
 - **WHEN** a non-persistent message receives a POISON ack
-- **THEN** it is stored in `ActiveMQ.DLQ`
+- **THEN** it is discarded, it does not appear in `ActiveMQ.DLQ`, and the source destination's `discarded` counter is incremented
 
 ### Requirement: Queue statistics
-For each queue the broker SHALL maintain: pending message count, inflight message count, consumer count, producer count, total enqueued, total consumed (removed by ack) and total expired. They SHALL be readable as a consistent snapshot without holding the queue lock beyond the copy.
+For each queue the broker SHALL maintain: pending message count, inflight message count, consumer count, producer count, total enqueued, total consumed (removed by ack), total expired and total discarded (non-persistent poison messages and messages dropped by the memory limit). They SHALL be readable as a consistent snapshot without holding the queue lock beyond the copy.
 
 #### Scenario: Counters after a round trip
 - **WHEN** 10 messages are sent to a new queue and all are consumed and acknowledged
