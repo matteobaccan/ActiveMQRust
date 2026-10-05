@@ -26,6 +26,9 @@ pub const DLQ_NAME: &str = "ActiveMQ.DLQ";
 
 const SHARDS: usize = 16;
 
+/// Maximum expired messages the sweeper deletes per destination and round.
+pub const SWEEP_BATCH: usize = 10_000;
+
 fn shard_of(d: &Destination) -> usize {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -52,6 +55,34 @@ impl Rejection {
     }
 }
 
+/// Generator of broker-created IDs, equivalent to ActiveMQ's `IdGenerator`.
+///
+/// Every generator has the seed `ID:<host>-<port>-<start ms>-<instance>:`, where `instance` counts the
+/// generators created by the process; each ID appends a per-generator sequence starting at 1.
+pub struct IdGenerator {
+    seed: String,
+    sequence: AtomicU64,
+}
+
+static ID_GENERATOR_INSTANCES: AtomicU64 = AtomicU64::new(0);
+
+impl IdGenerator {
+    pub fn new(host: &str, port: u16, start_ms: i64) -> IdGenerator {
+        let instance = ID_GENERATOR_INSTANCES.fetch_add(1, Ordering::Relaxed);
+        IdGenerator { seed: format!("ID:{host}-{port}-{start_ms}-{instance}:"), sequence: AtomicU64::new(0) }
+    }
+
+    /// The common prefix of the IDs of this generator.
+    pub fn seed(&self) -> &str {
+        &self.seed
+    }
+
+    pub fn generate_id(&self) -> String {
+        let n = self.sequence.fetch_add(1, Ordering::Relaxed) + 1;
+        format!("{}{n}", self.seed)
+    }
+}
+
 /// Broker-wide counters shown by the admin console.
 #[derive(Default)]
 pub struct BrokerStats {
@@ -67,6 +98,9 @@ pub struct Broker {
     pub auth: Authenticator,
     pub broker_id: BrokerId,
     pub started: chrono::DateTime<chrono::Local>,
+    ids: IdGenerator,
+    /// Connection part of the `ProducerId` of advisory messages.
+    advisory_producer: Arc<str>,
     pub stats: BrokerStats,
     /// Destination registry, partitioned to keep lookups from contending.
     dests: Vec<RwLock<HashMap<Destination, Arc<Dest>>>>,
@@ -75,7 +109,8 @@ pub struct Broker {
     seq: AtomicU64,
     limited: AtomicBool,
     dropped_while_limited: AtomicU64,
-    id_counter: AtomicU64,
+    /// Destinations that may hold messages with an expiration: the only ones the sweeper visits.
+    expiring: Mutex<HashMap<Destination, Arc<Dest>>>,
     advisory_subs: Mutex<Vec<AdvisorySub>>,
     advisory_seq: AtomicU64,
 }
@@ -100,16 +135,18 @@ impl Broker {
     pub fn new(cfg: Arc<Config>) -> Arc<Broker> {
         let memory = Arc::new(Memory::new(cfg.max_memory_bytes));
         let auth = Authenticator::new(cfg.users.clone(), cfg.allow_anonymous);
-        // Same shape as ActiveMQ's IdGenerator: ID:<host>-<port>-<timestamp>-<counter>:<n>
-        let broker_id = BrokerId {
-            value: Arc::from(format!("ID:{}-{}-{}-0:1", hostname(), cfg.port, now_ms())),
-        };
+        let started = chrono::Local::now();
+        let ids = IdGenerator::new(&hostname(), cfg.port, started.timestamp_millis());
+        let broker_id = BrokerId { value: Arc::from(ids.generate_id()) };
+        let advisory_producer = Arc::from(ids.generate_id());
         Arc::new(Broker {
             cfg,
             memory,
             auth,
             broker_id,
-            started: chrono::Local::now(),
+            started,
+            ids,
+            advisory_producer,
             stats: BrokerStats::default(),
             dests: (0..SHARDS).map(|_| RwLock::new(HashMap::new())).collect(),
             conns: Mutex::new(HashMap::new()),
@@ -117,7 +154,7 @@ impl Broker {
             seq: AtomicU64::new(1),
             limited: AtomicBool::new(false),
             dropped_while_limited: AtomicU64::new(0),
-            id_counter: AtomicU64::new(1),
+            expiring: Mutex::new(HashMap::new()),
             advisory_subs: Mutex::new(Vec::new()),
             advisory_seq: AtomicU64::new(1),
         })
@@ -125,8 +162,7 @@ impl Broker {
 
     /// A new broker-generated id string (`ID:<host>-<port>-<timestamp>-<n>:<m>`).
     pub fn generate_id(&self) -> String {
-        let n = self.id_counter.fetch_add(1, Ordering::Relaxed);
-        format!("ID:{}-{}-{}-1:{}", hostname(), self.cfg.port, self.started.timestamp_millis(), n)
+        self.ids.generate_id()
     }
 
     pub fn next_seq(&self) -> u64 {
@@ -206,13 +242,24 @@ impl Broker {
             shard.write().retain(|d, x| {
                 let drop = d.kind.is_temporary() && x.owner == Some(conn_id);
                 if drop {
-                    removed.push(d.clone());
+                    removed.push(x.clone());
                 }
                 !drop
             });
         }
-        for d in removed {
-            self.temp_advisory(&d, dest_op::REMOVE);
+        for x in removed {
+            // Release the messages (and their memory) even if something still holds the destination.
+            x.clear();
+            tracing::debug!("temporary destination deleted with its owner: {}", x.dest);
+            self.temp_advisory(&x.dest, dest_op::REMOVE);
+        }
+    }
+
+    /// Forgets the duplicate-detection windows of the producers of a closed connection,
+    /// including anonymous producers that are not registered with any destination.
+    pub fn release_producer_audits(&self, connection_id: &str) {
+        for d in self.destinations() {
+            d.release_audits(connection_id);
         }
     }
 
@@ -258,7 +305,7 @@ impl Broker {
 
     fn send_advisory(&self, s: &AdvisorySub, d: &Destination, op: u8) {
         let topic = if d.kind == DestKind::TempQueue { ADVISORY_TEMP_QUEUE } else { ADVISORY_TEMP_TOPIC };
-        let pid = ProducerId { connection_id: self.broker_id.value.clone(), session_id: 0, value: 0 };
+        let pid = ProducerId { connection_id: self.advisory_producer.clone(), session_id: 0, value: 0 };
         let seq = self.advisory_seq.fetch_add(1, Ordering::Relaxed);
         let mut m = Message::new(crate::openwire::types::ACTIVEMQ_MESSAGE);
         m.producer_id = Some(pid.clone());
@@ -293,17 +340,21 @@ impl Broker {
     /// Applies the `[expiry]` options. Returns false when the message is already expired.
     pub fn apply_expiry_options(&self, msg: &mut Message, now: i64) -> bool {
         let cfg = &self.cfg;
-        if cfg.use_broker_clock && msg.expiration > 0 {
-            let ttl = if msg.timestamp > 0 { msg.expiration - msg.timestamp } else { 0 };
-            if msg.timestamp > 0 {
-                msg.timestamp = now;
-                msg.expiration = now + ttl.max(0);
-            }
+        // 1. Broker clock: rebase a message that carries a timestamp (without one the TTL is unknown).
+        if cfg.use_broker_clock && msg.expiration > 0 && msg.timestamp > 0 {
+            let ttl = msg.expiration - msg.timestamp;
+            msg.timestamp = now;
+            msg.expiration = now + ttl.max(0);
         }
         let base = if msg.timestamp > 0 && !cfg.use_broker_clock { msg.timestamp } else { now };
+        // 2. Default TTL, measured from the timestamp or, on the broker clock, from the arrival time.
         if msg.expiration == 0 && cfg.default_ttl_ms > 0 {
             msg.expiration = base + cfg.default_ttl_ms as i64;
+            if cfg.use_broker_clock {
+                msg.timestamp = now;
+            }
         }
+        // 3. Ceiling.
         if cfg.ttl_ceiling_ms > 0 && msg.expiration > 0 {
             let cap = base + cfg.ttl_ceiling_ms as i64;
             if msg.expiration > cap {
@@ -345,12 +396,54 @@ impl Broker {
         if used + size > limit {
             self.limited.store(true, Ordering::Relaxed);
             tracing::warn!(
-                "memory limit of {} MB reached: rejecting new messages",
+                "memory limit reached: {:.1} MB of messages accounted, limit {} MB: rejecting new messages",
+                used as f64 / (1024.0 * 1024.0),
                 limit / (1024 * 1024)
             );
             return false;
         }
         true
+    }
+
+    /// Applies the memory limit to a new message of `size` accounted bytes for `dest`.
+    /// An asynchronous message refused here is counted as dropped (also in the destination's
+    /// `discarded` counter when `d` is given).
+    pub fn check_memory(&self, size: u64, sync: bool, dest: &Destination, d: Option<&Dest>) -> Result<(), Rejection> {
+        if self.admit_memory(size) {
+            return Ok(());
+        }
+        if !sync {
+            self.dropped_while_limited.fetch_add(1, Ordering::Relaxed);
+            self.stats.dropped_async.fetch_add(1, Ordering::Relaxed);
+            if let Some(d) = d {
+                d.add_discarded();
+            }
+        }
+        Err(Rejection::Error {
+            class: "javax.jms.ResourceAllocationException",
+            message: format!(
+                "Usage Manager Memory Limit reached ({} MB). Stopping producer to {dest}",
+                self.memory.limit / (1024 * 1024)
+            ),
+        })
+    }
+
+    /// The destination a producer message goes to: created on first use, except temporary ones.
+    pub fn target(&self, dest: &Destination) -> Result<Arc<Dest>, Rejection> {
+        if dest.kind.is_temporary() {
+            self.get_dest(dest).ok_or_else(|| Rejection::Error {
+                class: "javax.jms.InvalidDestinationException",
+                message: format!("Cannot publish to a deleted Destination: {dest}"),
+            })
+        } else {
+            Ok(self.get_or_create(dest, None))
+        }
+    }
+
+    /// Deletes a message that is already expired before it enters `d` (on arrival or at commit).
+    pub fn expire_before_storing(&self, d: &Dest, msg: &Message) {
+        self.stats.expired_on_arrival.fetch_add(1, Ordering::Relaxed);
+        d.expired_before_storing(msg);
     }
 
     pub fn memory_limited(&self) -> bool {
@@ -370,37 +463,15 @@ impl Broker {
                 message: "Message has no destination".into(),
             });
         };
-        let d = if dest.kind.is_temporary() {
-            match self.get_dest(&dest) {
-                Some(d) => d,
-                None => {
-                    return Err(Rejection::Error {
-                        class: "javax.jms.InvalidDestinationException",
-                        message: format!("Cannot publish to a deleted Destination: {dest}"),
-                    })
-                }
-            }
-        } else {
-            self.get_or_create(&dest, None)
-        };
+        let d = self.target(&dest)?;
         if d.is_duplicate(&msg) {
             self.stats.duplicates.fetch_add(1, Ordering::Relaxed);
             tracing::debug!("duplicate message {} ignored", msg.message_id_text());
             return Ok(());
         }
-        let size = msg.content_len() as u64 + msg.properties_len() as u64 + ENTRY_OVERHEAD;
-        if check_memory && !self.admit_memory(size) {
-            if !sync {
-                self.dropped_while_limited.fetch_add(1, Ordering::Relaxed);
-                self.stats.dropped_async.fetch_add(1, Ordering::Relaxed);
-            }
-            return Err(Rejection::Error {
-                class: "javax.jms.ResourceAllocationException",
-                message: format!(
-                    "Usage Manager Memory Limit reached ({} MB). Stopping producer to {dest}",
-                    self.memory.limit / (1024 * 1024)
-                ),
-            });
+        if check_memory {
+            let size = msg.content_len() as u64 + msg.properties_len() as u64 + ENTRY_OVERHEAD;
+            self.check_memory(size, sync, &dest, Some(&d))?;
         }
         let seq = self.next_seq();
         if let Some(id) = msg.message_id.as_mut() {
@@ -408,12 +479,45 @@ impl Broker {
         }
         msg.header = Header::default();
         msg.broker_in_time = now;
+        let expiring = msg.expiration > 0;
         let meta = Meta::new(self.memory.clone(), &msg);
         let entry = Entry { seq, msg: Arc::new(msg), meta, redelivery: 0 };
         self.stats.messages_in.fetch_add(1, Ordering::Relaxed);
         let effects = d.enqueue(entry, now);
+        if expiring {
+            self.register_expiring(&d);
+        }
         self.run_effects(effects, now);
         Ok(())
+    }
+
+    /// Adds a destination that has just stored a message with an expiration to the sweeper's set.
+    fn register_expiring(&self, d: &Arc<Dest>) {
+        if !d.mark_expiring() {
+            self.expiring.lock().insert(d.dest.clone(), d.clone());
+        }
+    }
+
+    /// Number of destinations the sweeper currently visits.
+    pub fn expiring_destinations(&self) -> usize {
+        self.expiring.lock().len()
+    }
+
+    /// One sweeper round: deletes expired messages in the destinations of the set, at most
+    /// `max_per_destination` per destination, releasing each lock before the next one.
+    /// A round with an empty set locks no destination. Returns the number of deleted messages.
+    pub fn sweep_expired(&self, now: i64, max_per_destination: usize) -> usize {
+        let dests: Vec<Arc<Dest>> = self.expiring.lock().values().cloned().collect();
+        let mut removed = 0;
+        for d in dests {
+            removed += d.sweep_expired(now, max_per_destination);
+            // Lock order set -> destination, so that a concurrent store re-registers after the removal.
+            let mut set = self.expiring.lock();
+            if d.unmark_expiring_if_none() && set.get(&d.dest).is_some_and(|x| Arc::ptr_eq(x, &d)) {
+                set.remove(&d.dest);
+            }
+        }
+        removed
     }
 
     pub fn run_effects(&self, effects: Vec<Effect>, now: i64) {
@@ -440,10 +544,14 @@ impl Broker {
         if let Some(id) = msg.message_id.as_mut() {
             id.broker_sequence_id = seq as i64;
         }
+        let expiring = msg.expiration > 0;
         let meta = Meta::new(self.memory.clone(), &msg);
         let e = Entry { seq, msg: Arc::new(msg), meta, redelivery: entry.redelivery };
         let d = self.get_or_create(&dlq, None);
         let effects = d.enqueue(e, now);
+        if expiring {
+            self.register_expiring(&d);
+        }
         self.run_effects(effects, now);
     }
 
@@ -456,41 +564,52 @@ impl Broker {
 
     /// Periodic expiry sweep, idle-destination removal and expiry summaries.
     pub async fn housekeeping(self: Arc<Self>, mut shutdown: tokio::sync::watch::Receiver<bool>) {
-        let interval = Duration::from_millis(self.cfg.expiry_check_interval_ms.max(1));
-        let mut summary: HashMap<Destination, u64> = HashMap::new();
+        let sweep_every = Duration::from_millis(self.cfg.expiry_check_interval_ms.max(1));
+        // Idle destinations are checked at least once per second.
+        let tick = sweep_every.min(Duration::from_secs(1));
+        let mut last_sweep = std::time::Instant::now();
         let mut last_summary = std::time::Instant::now();
         loop {
             tokio::select! {
-                _ = tokio::time::sleep(interval) => {}
+                _ = tokio::time::sleep(tick) => {}
                 _ = shutdown.changed() => return,
             }
-            let now = now_ms();
-            for d in self.destinations() {
-                if !d.has_expiring() {
-                    continue;
-                }
-                let n = d.sweep_expired(now, 10_000);
-                if n > 0 {
-                    *summary.entry(d.dest.clone()).or_default() += n as u64;
-                }
+            if last_sweep.elapsed() >= sweep_every {
+                last_sweep = std::time::Instant::now();
+                self.sweep_expired(now_ms(), SWEEP_BATCH);
             }
             if last_summary.elapsed() >= Duration::from_secs(60) {
-                for (d, n) in summary.drain() {
-                    tracing::info!("{d}: {n} messages expired in the last minute");
-                }
                 last_summary = std::time::Instant::now();
+                self.log_expiry_summary();
             }
             let secs = self.cfg.auto_delete_empty_after_secs;
             if secs > 0 {
-                let idle: Vec<Destination> = self
-                    .destinations()
-                    .into_iter()
-                    .filter(|d| !d.dest.kind.is_temporary() && d.dest.name.as_ref() != DLQ_NAME && d.idle_for(secs))
-                    .map(|d| d.dest.clone())
-                    .collect();
-                for d in idle {
-                    let _ = self.delete_dest(&d);
-                }
+                self.delete_idle_destinations(secs);
+            }
+        }
+    }
+
+    /// Logs one line per destination where messages expired since the previous summary.
+    pub fn log_expiry_summary(&self) {
+        for d in self.destinations() {
+            let n = d.take_expired_since_summary();
+            if n > 0 {
+                tracing::info!("{}: {n} messages expired in the last minute", d.dest);
+            }
+        }
+    }
+
+    /// Removes non-temporary destinations idle for at least `secs`; `ActiveMQ.DLQ` is never removed.
+    pub fn delete_idle_destinations(&self, secs: u64) {
+        let idle: Vec<Destination> = self
+            .destinations()
+            .into_iter()
+            .filter(|d| !d.dest.kind.is_temporary() && d.dest.name.as_ref() != DLQ_NAME && d.idle_for(secs))
+            .map(|d| d.dest.clone())
+            .collect();
+        for d in idle {
+            if let Ok(true) = self.delete_dest(&d) {
+                tracing::debug!("idle destination removed: {d}");
             }
         }
     }
