@@ -14,3 +14,4 @@ pub mod openwire;
 pub mod selector;
 pub mod server;
 pub mod service;
+pub mod setup;

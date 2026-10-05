@@ -1,0 +1,75 @@
+ActiveMQRust <version>: in-memory OpenWire message broker compatible with Apache ActiveMQ
+
+Usage: mqrust.exe [OPTIONS] [COMMAND]
+
+Getting started:
+  1. mqrust.exe init-config       create mqrust.toml next to the executable
+  2. mqrust.exe set-admin         choose the admin console user and password
+  3. mqrust.exe user add <name>   create a user for the JMS/OpenWire clients
+  4. mqrust.exe                   start the broker
+                                  (or mqrust.exe service install to run it as a Windows service)
+
+Setup:
+  init-config    Write a commented mqrust.toml (never overwrites)
+  set-admin      Set the admin console user and password
+  user           Manage the messaging users: add, passwd, remove, list
+  hash-password  Print the Argon2id hash of a password
+  check-config   Validate the configuration and exit
+
+Windows service:
+  service        Install, uninstall, start, stop the Windows service or show its state
+
+Options:
+  -h, --help
+          Print help (see a summary with '-h')
+
+  -V, --version
+          Print version
+
+Configuration:
+      --config <FILE>
+          Configuration file [default: mqrust.toml next to mqrust.exe, else built-in defaults]
+
+Network:
+      --bind <IP>
+          OpenWire listen address [default: 0.0.0.0]
+
+      --port <PORT>
+          OpenWire port [default: 61616]
+
+      --admin-bind <IP>
+          Admin console listen address [default: 127.0.0.1]
+
+      --admin-port <PORT>
+          Admin console port [default: 8161]
+
+Performance:
+      --processors <N>
+          Processors to use [default: 0 = all available to the process], like the JVM's                      -XX:ActiveProcessorCount
+
+Two kinds of users:
+  admin console user  [admin], one user, for the web console at http://127.0.0.1:8161
+                      set it with: mqrust.exe set-admin
+  messaging users     [[users]], one or more, for JMS/OpenWire clients (tcp://host:61616)
+                      manage them with: mqrust.exe user add | passwd | remove | list
+  Without a configuration file both use admin/admin. Anyone who can reach the ports can then
+  log in: change them before exposing the broker on a network.
+
+Configuration file, searched in this order:
+  1. --config <FILE>
+  2. mqrust.toml next to mqrust.exe
+  3. built-in defaults (no file)
+  Changes to the file apply when the broker (or the Windows service) is restarted.
+
+Examples:
+  mqrust.exe init-config
+  mqrust.exe set-admin --username ops
+  mqrust.exe user add app1
+  Get-Content secret.txt | mqrust.exe user add app2 --password-stdin
+  mqrust.exe --config D:\mq\mqrust.toml --port 61617
+  mqrust.exe service install --config D:\mq\mqrust.toml
+
+Exit codes:
+  0  success
+  1  runtime error (for example the port is already in use)
+  2  configuration or usage error
