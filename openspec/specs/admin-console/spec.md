@@ -68,7 +68,7 @@ The console SHALL NOT change broker state. Only `GET` and `HEAD` SHALL be accept
 - **THEN** a consumer created afterwards receives all 10 messages in FIFO order with `JMSRedelivered=false`, and the queue counters are unchanged by the views
 
 ### Requirement: Server-side HTML with embedded assets
-Pages SHALL be generated server-side as HTML, with CSS embedded in the executable and no JavaScript. Every value taken from broker data (destination names, IDs, properties, bodies, usernames) SHALL be HTML-escaped. Responses SHALL carry `Content-Security-Policy: default-src 'none'; style-src 'self'; form-action 'self'; frame-ancestors 'none'`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: same-origin` and, on pages behind login, `Cache-Control: no-store`. Every page behind login SHALL show the logged-in username, the theme selector and a logout button in its top bar. Every page SHALL support optional auto-refresh every 5 seconds, enabled with the query parameter `refresh=5` and kept on the page's links.
+Pages SHALL be generated server-side as HTML, with CSS embedded in the executable and no JavaScript. Every value taken from broker data (destination names, IDs, properties, bodies, usernames) SHALL be HTML-escaped. Responses SHALL carry `Content-Security-Policy: default-src 'none'; style-src 'self'; form-action 'self'; frame-ancestors 'none'`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: same-origin` and, on pages behind login, `Cache-Control: no-store`. Every page behind login SHALL show the logged-in username and a logout button in its top bar. Every page SHALL support optional auto-refresh every 5 seconds, enabled with the query parameter `refresh=5` and kept on the page's links.
 
 #### Scenario: Escaped content
 - **WHEN** a queue named `Q<script>` holds a TextMessage whose text and a property value are `<script>alert(1)</script>`
@@ -91,7 +91,7 @@ Pages SHALL be generated server-side as HTML, with CSS embedded in the executabl
 - **THEN** the response carries `Cache-Control: no-store`
 
 ### Requirement: Overview page
-`/` SHALL show: `ActiveMQRust <version>` with the crate version; uptime; the OpenWire and admin listen addresses; the number of active connections; the number of queues and of topics; the message memory in use and the configured limit (or "no limit"); and the process memory, as Working Set (RSS) and Private Bytes, read from the operating system at request time.
+`/` SHALL show: `ActiveMQRust <version>` with the crate version; the OpenWire listen address and the admin console URL as two labelled lines directly below the page title, outside the figure cards; and, as cards, uptime; the number of active connections; the number of queues and of topics; the message memory in use and the configured limit (or "no limit"); and the process memory, as Working Set (RSS) and Private Bytes, read from the operating system at request time.
 
 #### Scenario: Product identity and counts
 - **WHEN** an authenticated client requests `/` while two OpenWire connections are open and three queues exist
@@ -100,6 +100,10 @@ Pages SHALL be generated server-side as HTML, with CSS embedded in the executabl
 #### Scenario: Memory values
 - **WHEN** an authenticated client requests `/`
 - **THEN** the page shows the process Working Set in MB within 5% of the value reported by `Get-Process -Id <pid>` at the same time, and the message memory limit as "no limit" when `max_memory_mb = 0`
+
+#### Scenario: Addresses under the title
+- **WHEN** an authenticated client requests `/` on a broker listening on `0.0.0.0:61616` with the console on `127.0.0.1:8161`
+- **THEN** right below the `<h1>` the page shows one line `OpenWire tcp://0.0.0.0:61616` and one line `Admin console http://127.0.0.1:8161`, and no figure card contains either address
 
 ### Requirement: Queues page
 `/queues` SHALL list every queue, including temporary queues and `ActiveMQ.DLQ`, and SHALL NOT list advisory destinations. Each row SHALL show: name (linking to the queue detail), pending messages, inflight messages, consumers, producers, total enqueued, total consumed, and expired (when message expiration is present). The table SHALL be sortable by any column through `sort=<column>` and `order=asc|desc`, with name ascending as the default.
