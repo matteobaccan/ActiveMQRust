@@ -48,6 +48,10 @@ public final class Main {
             case "integration":
                 code = new Integration(url, user, password, opts.containsKey("long")).runAll(opts.get("only"));
                 break;
+            case "console":
+                code = new ConsoleCheck(url, user, password, opts.getOrDefault("admin", "http://127.0.0.1:8161"),
+                        opts.getOrDefault("admin-user", "admin"), opts.getOrDefault("admin-password", "admin")).run();
+                break;
             case "compression":
                 code = new CompressionChecks(url, user, password, opts).run();
                 break;

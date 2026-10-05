@@ -49,6 +49,30 @@ impl Drop for MemTicket {
     }
 }
 
+/// Running usage of one destination: bytes and compressed messages it holds, each stored
+/// message counted once however many subscriptions hold a copy (read by the admin console).
+#[derive(Default)]
+pub struct DestUsage {
+    pub bytes: AtomicU64,
+    pub compressed: AtomicU64,
+}
+
+/// Charges a message to its destination's usage for as long as any copy of it is held.
+struct UsageTicket {
+    usage: Arc<DestUsage>,
+    size: u64,
+    compressed: bool,
+}
+
+impl Drop for UsageTicket {
+    fn drop(&mut self) {
+        self.usage.bytes.fetch_sub(self.size, Ordering::Relaxed);
+        if self.compressed {
+            self.usage.compressed.fetch_sub(1, Ordering::Relaxed);
+        }
+    }
+}
+
 /// Decoded application properties of a message.
 enum Props {
     /// No `marshalledProperties` (or a null map).
@@ -62,13 +86,25 @@ enum Props {
 pub struct Meta {
     pub size: u64,
     _ticket: MemTicket,
+    usage: OnceLock<UsageTicket>,
     props: OnceLock<Props>,
 }
 
 impl Meta {
     pub fn new(memory: Arc<Memory>, msg: &Message) -> Arc<Meta> {
         let size = msg.content_len() as u64 + msg.properties_len() as u64 + ENTRY_OVERHEAD;
-        Arc::new(Meta { size, _ticket: MemTicket::new(memory, size), props: OnceLock::new() })
+        Arc::new(Meta { size, _ticket: MemTicket::new(memory, size), usage: OnceLock::new(), props: OnceLock::new() })
+    }
+
+    /// Charges the message to a destination's usage (once; later calls do nothing).
+    pub fn charge(&self, usage: &Arc<DestUsage>, compressed: bool) {
+        self.usage.get_or_init(|| {
+            usage.bytes.fetch_add(self.size, Ordering::Relaxed);
+            if compressed {
+                usage.compressed.fetch_add(1, Ordering::Relaxed);
+            }
+            UsageTicket { usage: usage.clone(), size: self.size, compressed }
+        });
     }
 }
 

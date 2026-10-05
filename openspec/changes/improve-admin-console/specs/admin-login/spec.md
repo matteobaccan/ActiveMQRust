@@ -42,7 +42,7 @@ An HTML page requested without a valid session SHALL be answered with `303 See O
 - **THEN** no log line at any level contains the token, and the session store is keyed by the token's SHA-256 hash
 
 ### Requirement: Failed login
-A `POST /login` with a wrong username, a wrong password or a missing field SHALL answer `200` with the login page and the single message "Invalid username or password", the same for every cause, and SHALL keep the typed username but not the password. The response time SHALL NOT reveal whether the username exists: the password check SHALL run (against a fixed dummy hash) even when the username is wrong.
+A `POST /login` with a wrong username, a wrong password or a missing field SHALL answer `200` with the login page and the single message "Invalid username or password", the same for every cause, and SHALL keep the typed username but not the password. The response time SHALL NOT reveal whether the username exists: the password check SHALL run against the configured admin secret even when the username is wrong, and its result SHALL then be discarded.
 
 #### Scenario: Wrong password
 - **WHEN** a client posts the admin username with a wrong password
@@ -97,7 +97,11 @@ Every page SHALL show the logged-in username and a logout button, which is a for
 - **THEN** the response is `403` and the session stays open
 
 ### Requirement: API authentication
-Paths under `/api/` SHALL accept either a valid session cookie or HTTP Basic credentials for the `[admin]` user, checked as today, including the cache of verified credentials. Without valid credentials they SHALL answer `401` with a JSON body `{"error":"unauthorized"}` and SHALL NOT send `WWW-Authenticate`, so browsers never show a credential pop-up. Failed Basic attempts SHALL count toward the login throttling of the client IP.
+Paths under `/api/` SHALL accept either a valid session cookie or HTTP Basic credentials for the `[admin]` user, checked as today, including the cache of verified credentials. Without valid credentials they SHALL answer `401` with a JSON body `{"error":"unauthorized"}` and SHALL NOT send `WWW-Authenticate`, so browsers never show a credential pop-up. Failed Basic attempts SHALL count toward the login throttling of the client IP, and while that IP is locked out its Basic requests SHALL be refused with `429` and `{"error":"too many failed logins"}` without checking the credentials; a valid session cookie SHALL keep working.
+
+#### Scenario: Basic during a lockout
+- **WHEN** a client IP has sent 5 wrong Basic credentials to `/api/overview` and then sends the correct ones
+- **THEN** the response is `429` until the lockout ends, and `200` afterwards
 
 #### Scenario: Script with Basic
 - **WHEN** a script requests `/api/overview` with correct Basic credentials and no cookie

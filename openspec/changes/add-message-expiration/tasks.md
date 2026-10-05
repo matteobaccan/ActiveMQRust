@@ -35,7 +35,7 @@
 ## 6. Statistics, admin data and logging
 
 - [x] 6.1 Expose the `expired` counter, the number of messages with an expiration and the next expiration in destination snapshots
-- [ ] 6.2 Provide the expired marking for queue contents and the readable expiration with remaining time or "expired" for message detail (rendered by `add-admin-console`, also in the JSON API)
+- [x] 6.2 Provide the expired marking for queue contents and the readable expiration with remaining time or "expired" for message detail (rendered by `add-admin-console`, also in the JSON API)
 - [x] 6.3 Log each expired message at debug level and at most one info summary per minute per destination
 
 ## 7. Verification

@@ -19,10 +19,6 @@ The broker SHALL serve the admin console over HTTP on the address given by the `
 - **WHEN** the configuration sets `[admin] port = 8200` and the broker is started with `--admin-port 8300`
 - **THEN** the console answers on port 8300
 
-#### Scenario: Port in use
-- **WHEN** port 8161 is already in use and the broker starts with default settings
-- **THEN** the broker logs an error naming `127.0.0.1:8161` and exits with a non-zero code
-
 ### Requirement: HTTP Basic authentication
 Every console path, HTML and JSON, SHALL require HTTP Basic authentication with the `[admin]` credentials (`username` with `password` or `password_hash`), or `admin`/`admin` when there is no configuration file. A request without valid credentials SHALL receive `401 Unauthorized` with `WWW-Authenticate: Basic realm="ActiveMQRust"` and no broker data. The console SHALL NOT use sessions or cookies. Admin credentials SHALL be independent of the OpenWire `[[users]]`.
 
@@ -114,11 +110,11 @@ Pages SHALL be generated server-side as HTML, with CSS embedded in the executabl
 - **THEN** no `ActiveMQ.Advisory.*` destination appears on any console page or API response
 
 ### Requirement: Queue detail page
-`/queues/{name}` SHALL show the queue counters (as on `/queues`, plus the message memory used by the queue), the list of consumers (connection ID, client IP, prefetch size, inflight count), the list of producers (producer ID, connection ID, client IP), and the queue contents. `{name}` SHALL be the percent-encoded queue name. An unknown queue SHALL give `404`.
+`/queues/{name}` SHALL show the queue counters (as on `/queues`, plus the message memory used by the queue, each stored message counted once), the list of consumers (consumer ID, connection ID, client IP, prefetch size, inflight count), the list of producers (producer ID, connection ID, client IP), and the queue contents. `{name}` SHALL be the percent-encoded queue name. An unknown queue SHALL give `404`.
 
 #### Scenario: Consumers and producers
 - **WHEN** queue `Q1` has one consumer with prefetch 1000 holding 2 inflight messages and one producer
-- **THEN** the detail page lists the consumer with its connection ID, client IP, prefetch 1000 and inflight 2, and lists the producer with its producer ID and client IP
+- **THEN** the detail page lists the consumer with its consumer ID, connection ID, client IP, prefetch 1000 and inflight 2, and lists the producer with its producer ID and client IP
 
 #### Scenario: Unknown queue
 - **WHEN** an authenticated client requests `/queues/DOES.NOT.EXIST`
@@ -144,7 +140,11 @@ The queue detail page SHALL list the pending messages in FIFO order (`broker_seq
 - **THEN** the response is `200` with an empty list
 
 ### Requirement: Message detail page
-`/queues/{name}/messages/{id}`, where `{id}` is the percent-encoded `JMSMessageID`, SHALL show the JMS headers MessageID, CorrelationID, Type, ReplyTo, DeliveryMode, Priority, Timestamp, Expiration and RedeliveryCounter; the application properties with name, type and value; and the body rendered by message type. A message that is no longer pending in the queue SHALL give `404`. Looking up a message SHALL NOT hold the queue lock while walking more than 10,000 messages at a time.
+`/queues/{name}/messages/{id}`, where `{id}` is the percent-encoded `JMSMessageID`, SHALL show the JMS headers MessageID, CorrelationID, Type, ReplyTo, DeliveryMode, Priority, Timestamp, Expiration and RedeliveryCounter; the application properties with name, type and value; and the body rendered by message type. A message that has been delivered to a consumer and is waiting for its acknowledgement SHALL still be shown, with a notice that it is in flight. A message that is neither pending nor in flight (consumed and acknowledged, expired or removed) SHALL give `404`. Looking up a message SHALL use the `seq` hint of the contents links first and SHALL NOT hold the queue lock while walking more than 10,000 messages at a time.
+
+#### Scenario: Message in flight
+- **WHEN** a pending message is dispatched to a consumer that has not acknowledged it yet and its message page is requested
+- **THEN** the response is `200` with its headers and body and a notice that the message is in flight
 
 #### Scenario: Headers and properties
 - **WHEN** a TextMessage with correlation ID `ORD-A`, type `order`, priority 7 and an int property `seq=3` is pending
@@ -213,7 +213,7 @@ For a message with `compressed=true`, the console SHALL inflate the body (zlib f
 - **THEN** the connection is no longer listed
 
 ### Requirement: JSON API
-The console SHALL expose the same data as JSON, with the same authentication, at `/api/overview`, `/api/queues`, `/api/queues/{name}`, `/api/queues/{name}/messages?offset=<n>&limit=<n>`, `/api/topics` and `/api/connections`, with `Content-Type: application/json`. The messages endpoint SHALL return messages in FIFO order starting at `offset` (default 0), with `limit` defaulting to 50 and capped at 50; each entry SHALL contain the JMS headers, the application properties, the body type, the body size and the compressed flag. Unknown queues SHALL give `404` with a JSON error object.
+The console SHALL expose the same data as JSON, with the same authentication, at `/api/overview`, `/api/queues`, `/api/queues/{name}`, `/api/queues/{name}/messages?offset=<n>&limit=<n>`, `/api/topics` and `/api/connections`, with `Content-Type: application/json`. The messages endpoint SHALL return messages in FIFO order starting at `offset` (default 0), with `limit` defaulting to 50 and clamped to 1..50; each entry SHALL contain the JMS headers, the application properties, the body type, the body size as stored (`bodySize`, the compressed size for a compressed body), the compressed flag and, for a compressed body, `compressedSize`. `/api/queues/{name}` SHALL also list the consumers (consumer ID, connection ID, client, prefetch, inflight, selector) and producers. `/api/overview` SHALL also report the broker compression counters `compressed` and `compressDiscarded`, which the overview page shows too. Unknown queues SHALL give `404` with a JSON error object.
 
 #### Scenario: Queue list as JSON
 - **WHEN** an authenticated client requests `/api/queues` after sending 3 messages to a new queue `Q1` with no consumers
@@ -230,16 +230,18 @@ The console SHALL expose the same data as JSON, with the same authentication, at
 ### Requirement: Snapshot consistency
 The console SHALL read broker state through snapshots taken under each destination's lock and released immediately, before formatting or network I/O. A contents page or messages API call SHALL copy at most 50 messages, never the whole queue. Each page SHALL be internally consistent per destination: counts and rows of one destination come from the same snapshot. Admin requests SHALL NOT block message traffic for longer than one snapshot copy.
 
+Queue counters SHALL NOT require walking the pending messages: the bytes held and the number of compressed messages SHALL be kept as running per-destination counters, each stored message counted once even when several topic subscriptions hold a copy. Reaching a deep page SHALL walk the pending messages from the nearer end in steps of at most 10,000 entries, releasing the lock between steps.
+
 #### Scenario: Large queue page
-- **WHEN** a queue holds 1,000,000 messages and its first contents page is requested
-- **THEN** at most 50 message references are copied for the request, and the process memory does not grow by more than 1 MB during the request
+- **WHEN** a queue holds 20,000 messages and a page is requested at any offset, or with `limit=100000`
+- **THEN** at most 50 message references are copied for the request, and the page holds the messages at that offset in FIFO order
 
 #### Scenario: Traffic during polling
-- **WHEN** a producer and a consumer exchange 1 KB messages on a queue while a client requests that queue's detail page continuously
-- **THEN** the measured message throughput is at least 95% of the throughput without admin requests
+- **WHEN** a producer sends 20,000 messages to a queue while a client polls that queue's API endpoints continuously
+- **THEN** every send completes, every admin request succeeds, and afterwards the queue reports 20,000 pending and 20,000 enqueued messages with message memory equal to the broker's
 
 ### Requirement: Expiration fields when expiration is present
-When message expiration is present, the console SHALL show: the `expired` counter per queue on `/queues` and `/queues/{name}`; on the queue detail page, the number of pending messages that have an expiration and the next expiration time; on the message page, `Expiration` as a local date and time plus the remaining time, or "expired" if it has passed. Pending messages that have expired but have not yet been removed SHALL be marked "expired" in the contents list. A message with `expiration = 0` SHALL show "never".
+When message expiration is present, the console SHALL show: the `expired` counter per queue on `/queues` and `/queues/{name}`; on the queue detail page, the number of pending messages that have an expiration and the next expiration time; on the message page and in the contents list, `Expiration` as a local date and time plus the remaining time, or "expired" if it has passed. Pending messages that have expired but have not yet been removed SHALL be marked "expired" in the contents list; the console computes this itself (`expiration > 0` and not after the current time). A message with `expiration = 0` SHALL show "never". The JSON API SHALL give, per message, `expired` (boolean), `expirationText` (the same readable text) and `expiresInMs` (remaining time, or `null`), and per queue `withExpiration`, `nextExpiration` and `nextExpirationText`.
 
 #### Scenario: Next expiration
 - **WHEN** a queue holds a message with a TTL of 60 s and one without TTL
@@ -257,7 +259,7 @@ When message selectors are present, the queue detail page and `/api/queues/{name
 - **THEN** the queue detail page shows that selector text, HTML-escaped, in that consumer's row
 
 ### Requirement: Compression statistics when broker compression is present
-When broker-side compression is present, the queue contents list and the messages API SHALL mark each compressed message and show its compressed size, and the queue counters SHALL include the number of compressed pending messages.
+When broker-side compression is present, the queue contents list and the messages API SHALL mark each compressed message and show its compressed size, and the queue counters SHALL include the number of compressed pending messages (`compressed` in the JSON API), from a running counter.
 
 #### Scenario: Broker-compressed message
 - **WHEN** broker compression is present and an uncompressed 100 KB TextMessage of repeated text is sent

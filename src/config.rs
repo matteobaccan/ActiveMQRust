@@ -70,6 +70,10 @@ pub struct AdminSection {
     pub username: String,
     pub password: Option<String>,
     pub password_hash: Option<String>,
+    pub session_idle_minutes: i64,
+    pub session_max_hours: i64,
+    pub login_max_failures: i64,
+    pub login_lockout_seconds: i64,
 }
 
 impl Default for AdminSection {
@@ -80,6 +84,10 @@ impl Default for AdminSection {
             username: DEFAULT_USER.into(),
             password: None,
             password_hash: None,
+            session_idle_minutes: 30,
+            session_max_hours: 8,
+            login_max_failures: 5,
+            login_lockout_seconds: 60,
         }
     }
 }
@@ -152,6 +160,13 @@ pub struct Config {
     pub admin_bind: IpAddr,
     pub admin_port: u16,
     pub admin_user: User,
+    /// Console session idle timeout, in minutes.
+    pub admin_session_idle_minutes: u64,
+    /// Console session absolute lifetime, in hours.
+    pub admin_session_max_hours: u64,
+    /// Failed console logins from one IP before a lockout; 0 = no throttling.
+    pub admin_login_max_failures: u32,
+    pub admin_login_lockout_seconds: u64,
     pub users: Vec<User>,
     pub log_level: String,
     /// True when built-in default credentials are in use.
@@ -298,6 +313,15 @@ fn parse_port(field: &str, value: i64) -> Result<u16, ConfigError> {
     }
 }
 
+/// An integer that must lie in `min..=max`; the error names the key.
+fn in_range(field: &str, value: i64, min: i64, max: i64) -> Result<u64, ConfigError> {
+    if (min..=max).contains(&value) {
+        Ok(value as u64)
+    } else {
+        Err(ConfigError(format!("configuration error: {field} = {value} must be between {min} and {max}")))
+    }
+}
+
 fn non_negative(field: &str, value: i64) -> Result<u64, ConfigError> {
     if value < 0 {
         Err(ConfigError(format!("configuration error: {field} = {value} must not be negative")))
@@ -357,6 +381,10 @@ pub fn build(file: FileConfig, source: ConfigSource, overrides: &Overrides) -> R
         Some(p) => p,
         None => parse_port("admin.port", a.port)?,
     };
+    let session_idle = in_range("admin.session_idle_minutes", a.session_idle_minutes, 1, 1440)?;
+    let session_max = in_range("admin.session_max_hours", a.session_max_hours, 1, 168)?;
+    let max_failures = in_range("admin.login_max_failures", a.login_max_failures, 0, 100)?;
+    let lockout = in_range("admin.login_lockout_seconds", a.login_lockout_seconds, 1, 86_400)?;
 
     let level = file.log.level.to_ascii_lowercase();
     if !["error", "warn", "info", "debug", "trace"].contains(&level.as_str()) {
@@ -431,6 +459,10 @@ pub fn build(file: FileConfig, source: ConfigSource, overrides: &Overrides) -> R
         admin_bind,
         admin_port,
         admin_user,
+        admin_session_idle_minutes: session_idle,
+        admin_session_max_hours: session_max,
+        admin_login_max_failures: max_failures as u32,
+        admin_login_lockout_seconds: lockout,
         users,
         log_level: level,
         default_credentials,
@@ -475,6 +507,10 @@ pub const TEMPLATE: &str = r#"# ActiveMQRust by Matteo Baccan
 # port = 8161
 username = "admin"
 password = "admin"                     # replace with password_hash = "..." (mqrust.exe hash-password)
+# session_idle_minutes = 30            # console session ends after this idle time (1-1440)
+# session_max_hours = 8                # and in any case this long after login (1-168)
+# login_max_failures = 5               # failed logins per IP in 15 minutes before a lockout; 0 = off
+# login_lockout_seconds = 60           # lockout length (1-86400)
 
 [log]
 # level = "info"                       # error | warn | info | debug | trace
@@ -504,6 +540,36 @@ mod tests {
         assert_eq!(c.users[0].username, "admin");
         assert!(c.default_credentials);
         assert_eq!(c.broker_name, "ActiveMQRust");
+        assert_eq!(c.admin_user.username, "admin");
+        assert_eq!(c.admin_user.secret, Secret::Plain("admin".into()));
+        assert_eq!(c.admin_session_idle_minutes, 30);
+        assert_eq!(c.admin_session_max_hours, 8);
+        assert_eq!(c.admin_login_max_failures, 5);
+        assert_eq!(c.admin_login_lockout_seconds, 60);
+    }
+
+    #[test]
+    fn admin_session_keys() {
+        let keys = "session_idle_minutes = 5\nsession_max_hours = 1\nlogin_max_failures = 0\nlogin_lockout_seconds = 86400\n";
+        let c = cfg(&MIN.replace("password = \"a\"\n", &format!("password = \"a\"\n{keys}"))).unwrap();
+        assert_eq!(c.admin_session_idle_minutes, 5);
+        assert_eq!(c.admin_session_max_hours, 1);
+        assert_eq!(c.admin_login_max_failures, 0);
+        assert_eq!(c.admin_login_lockout_seconds, 86_400);
+        for (key, bad) in [
+            ("session_idle_minutes", "0"),
+            ("session_idle_minutes", "1441"),
+            ("session_max_hours", "0"),
+            ("session_max_hours", "169"),
+            ("login_max_failures", "-1"),
+            ("login_max_failures", "101"),
+            ("login_lockout_seconds", "0"),
+            ("login_lockout_seconds", "86401"),
+        ] {
+            let text = MIN.replace("password = \"a\"\n", &format!("password = \"a\"\n{key} = {bad}\n"));
+            let e = cfg(&text).unwrap_err();
+            assert!(e.0.contains(&format!("admin.{key}")), "{}", e.0);
+        }
     }
 
     #[test]
@@ -663,5 +729,9 @@ mod tests {
     fn template_is_valid() {
         let c = cfg(TEMPLATE).unwrap();
         assert_eq!(c.port, 61616);
+        let commented = TEMPLATE.replace("# session_", "session_").replace("# login_", "login_");
+        let c = cfg(&commented).unwrap();
+        assert_eq!((c.admin_session_idle_minutes, c.admin_session_max_hours), (30, 8));
+        assert_eq!((c.admin_login_max_failures, c.admin_login_lockout_seconds), (5, 60));
     }
 }

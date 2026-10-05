@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: XML detection
-The message page SHALL treat a body as XML when it is shown as text (a TextMessage, after inflating a compressed body) and its text, after skipping a byte-order mark and leading whitespace, starts with `<?xml`, `<!--` or `<` followed by a letter or `_`, and the whole text is well-formed. Detection SHALL run only when the message page is rendered, never on the message path.
+The message page SHALL treat a body as XML when it is shown as text (a TextMessage, after inflating a compressed body) and its text, after skipping a byte-order mark and leading whitespace, starts with `<?xml`, `<!--`, `<!DOCTYPE` or `<` followed by a letter or `_`, and the whole text is well-formed. Detection SHALL run only when the message page is rendered, never on the message path.
 
 #### Scenario: XML text
 - **WHEN** a pending TextMessage contains `<?xml version="1.0"?><order id="7"><item qty="2">A</item></order>`

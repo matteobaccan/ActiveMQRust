@@ -14,7 +14,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use super::conn::ConnHandle;
-use super::entry::Entry;
+use super::entry::{DestUsage, Entry};
 use crate::openwire::model::*;
 use crate::selector::Selector;
 
@@ -240,6 +240,8 @@ pub struct Dest {
     pub created: chrono::DateTime<chrono::Local>,
     topic_max_pending: usize,
     state: Mutex<State>,
+    /// Bytes and compressed messages held, maintained without the lock (admin console).
+    usage: Arc<DestUsage>,
     /// True while the destination is in the broker's set of destinations with expiring messages.
     expiring_marked: AtomicBool,
     /// Messages expired since the last per-minute summary (read without the lock).
@@ -250,6 +252,7 @@ pub struct Dest {
 #[derive(Debug, Clone)]
 pub struct SubSnapshot {
     pub consumer_id: String,
+    pub connection_id: String,
     pub remote: String,
     pub prefetch: usize,
     pub inflight: usize,
@@ -270,8 +273,16 @@ pub struct DestSnapshot {
     pub stats: Stats,
     pub with_expiry: usize,
     pub next_expiry: Option<i64>,
+    /// Bytes held by the destination, each stored message counted once.
     pub memory: u64,
+    /// Compressed messages waiting in the queue (not yet delivered).
+    pub compressed: u64,
 }
+
+/// Most messages copied for one admin page.
+pub const PAGE_MAX: usize = 50;
+/// Most entries walked while holding the lock in one step of an admin page or lookup.
+pub const WALK_CHUNK: usize = 10_000;
 
 impl Dest {
     pub fn new(dest: Destination, owner: Option<u64>, topic_max_pending: usize) -> Dest {
@@ -291,6 +302,7 @@ impl Dest {
                 idle_since: Some(Instant::now()),
                 reserved: HashMap::new(),
             }),
+            usage: Arc::new(DestUsage::default()),
             expiring_marked: AtomicBool::new(false),
             expired_minute: AtomicU64::new(0),
         }
@@ -371,6 +383,7 @@ impl Dest {
 
     /// Stores a message (queue) or fans it out (topic), then dispatches.
     pub fn enqueue(&self, entry: Entry, now_ms: i64) -> Vec<Effect> {
+        entry.meta.charge(&self.usage, entry.msg.compressed);
         let mut st = self.state.lock();
         st.stats.enqueued += 1;
         if self.is_queue() {
@@ -974,17 +987,21 @@ impl Dest {
 
     // -- admin --------------------------------------------------------------
 
+    /// Counters, consumers and producers. Cost under the lock: O(consumers + inflight),
+    /// never O(pending): memory and compressed counts come from running counters.
     pub fn snapshot(&self) -> DestSnapshot {
         let st = self.state.lock();
-        let mut memory: u64 = st.pending.values().map(|e| e.meta.size).sum();
+        let mut compressed_out = 0u64;
         let consumers = st
             .subs
             .iter()
             .map(|s| {
-                memory += s.inflight.values().map(|i| i.entry.meta.size).sum::<u64>();
-                memory += s.tpending.values().map(|e| e.meta.size).sum::<u64>();
+                if s.browser.is_none() {
+                    compressed_out += s.inflight.values().filter(|i| i.entry.msg.compressed).count() as u64;
+                }
                 SubSnapshot {
                     consumer_id: s.id.to_string(),
+                    connection_id: s.id.connection_id.to_string(),
                     remote: s.conn.remote.to_string(),
                     prefetch: s.prefetch,
                     inflight: s.inflight.len(),
@@ -995,6 +1012,7 @@ impl Dest {
                 }
             })
             .collect();
+        compressed_out += st.reserved.values().flatten().filter(|e| e.msg.compressed).count() as u64;
         let with_expiry = st.expiry.len() + st.subs.iter().map(|s| s.texpiry.len()).sum::<usize>();
         let next_expiry = st
             .expiry
@@ -1003,6 +1021,12 @@ impl Dest {
             .into_iter()
             .chain(st.subs.iter().filter_map(|s| s.texpiry.first().map(|x| x.0)))
             .min();
+        let compressed = if self.is_queue() {
+            let held = self.usage.compressed.load(Ordering::Relaxed);
+            held.saturating_sub(compressed_out).min(st.pending.len() as u64)
+        } else {
+            0
+        };
         DestSnapshot {
             dest: self.dest.clone(),
             pending: st.pending.len() + st.subs.iter().map(|s| s.tpending.len()).sum::<usize>(),
@@ -1012,35 +1036,94 @@ impl Dest {
             stats: st.stats,
             with_expiry,
             next_expiry,
-            memory,
+            memory: self.usage.bytes.load(Ordering::Relaxed),
+            compressed,
         }
     }
 
-    /// A page of pending messages in FIFO order: (total, entries).
-    pub fn page(&self, offset: usize, limit: usize) -> (usize, Vec<Entry>) {
-        let st = self.state.lock();
-        let total = st.pending.len();
-        (total, st.pending.values().skip(offset).take(limit).cloned().collect())
+    /// Sequence of the pending message at FIFO position `index`, found by walking at most
+    /// `WALK_CHUNK` entries per lock hold, from the nearer end of the queue.
+    fn seq_at(&self, index: usize) -> Option<u64> {
+        let (len, first, last) = {
+            let st = self.state.lock();
+            (st.pending.len(), *st.pending.keys().next()?, *st.pending.keys().next_back()?)
+        };
+        if index >= len {
+            return None;
+        }
+        let forward = index <= len / 2;
+        let (mut at, mut left) = if forward { (first, index) } else { (last, len - 1 - index) };
+        while left > 0 {
+            let step = left.min(WALK_CHUNK);
+            let st = self.state.lock();
+            let next = if forward {
+                st.pending.range(at..).nth(step)
+            } else {
+                st.pending.range(..=at).rev().nth(step)
+            };
+            at = *next?.0;
+            left -= step;
+        }
+        Some(at)
     }
 
-    /// Finds a pending or inflight message by sequence or JMS message id.
-    pub fn find(&self, seq_hint: Option<u64>, message_id: &str) -> Option<(Entry, bool)> {
+    /// A page of pending messages in FIFO order: (total pending, entries). Copies at most
+    /// `PAGE_MAX` entries (`Arc` clones); the walk to `offset` releases the lock every
+    /// `WALK_CHUNK` entries, so concurrent traffic may shift the page slightly.
+    pub fn page(&self, offset: usize, limit: usize) -> (usize, Vec<Entry>) {
+        let limit = limit.min(PAGE_MAX);
+        let start = match offset {
+            0 => None,
+            _ => match self.seq_at(offset) {
+                Some(seq) => Some(seq),
+                None => return (self.state.lock().pending.len(), Vec::new()),
+            },
+        };
         let st = self.state.lock();
+        let entries = match start {
+            Some(seq) => st.pending.range(seq..).take(limit).map(|(_, e)| e.clone()).collect(),
+            None => st.pending.values().take(limit).cloned().collect(),
+        };
+        (st.pending.len(), entries)
+    }
+
+    /// Finds a message by JMS message id: `(entry, inflight)`. The sequence hint gives an
+    /// O(log n) lookup; otherwise pending messages are scanned `WALK_CHUNK` at a time with the
+    /// lock released in between, then the messages in flight to consumers.
+    pub fn find(&self, seq_hint: Option<u64>, message_id: &str) -> Option<(Entry, bool)> {
+        let matches = |e: &Entry| e.msg.message_id_text() == message_id;
         if let Some(seq) = seq_hint {
-            if let Some(e) = st.pending.get(&seq) {
-                if e.msg.message_id_text() == message_id {
-                    return Some((e.clone(), false));
+            let st = self.state.lock();
+            if let Some(e) = st.pending.get(&seq).filter(|e| matches(e)) {
+                return Some((e.clone(), false));
+            }
+            for s in st.subs.iter().filter(|s| s.browser.is_none()) {
+                if let Some(i) = s.by_seq.get(&seq).and_then(|d| s.inflight.get(d)).filter(|i| matches(&i.entry)) {
+                    return Some((i.entry.clone(), true));
                 }
             }
         }
-        if let Some(e) = st.pending.values().find(|e| e.msg.message_id_text() == message_id) {
-            return Some((e.clone(), false));
+        let mut from = 0u64;
+        loop {
+            let st = self.state.lock();
+            let mut last = None;
+            for (seq, e) in st.pending.range(from..).take(WALK_CHUNK) {
+                if matches(e) {
+                    return Some((e.clone(), false));
+                }
+                last = Some(*seq);
+            }
+            match last {
+                Some(seq) if seq < u64::MAX => from = seq + 1,
+                _ => break,
+            }
         }
-        for s in &st.subs {
-            if let Some(i) = s.inflight.values().find(|i| i.entry.msg.message_id_text() == message_id) {
+        let st = self.state.lock();
+        for s in st.subs.iter().filter(|s| s.browser.is_none()) {
+            if let Some(i) = s.inflight.values().find(|i| matches(&i.entry)) {
                 return Some((i.entry.clone(), true));
             }
-            if let Some(e) = s.tpending.values().find(|e| e.msg.message_id_text() == message_id) {
+            if let Some(e) = s.tpending.values().find(|e| matches(e)) {
                 return Some((e.clone(), false));
             }
         }

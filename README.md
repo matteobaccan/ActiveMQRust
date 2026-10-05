@@ -108,6 +108,46 @@ password_hash = "$argon2id$..."
 
 All options (memory, compression, expiration, logging) are described in the OpenSpec changes under [`openspec/changes/`](openspec/changes/).
 
+## Admin console
+
+The read-only web console answers on `http://127.0.0.1:8161/` (keys `[admin] bind` / `port`, or `--admin-bind` / `--admin-port`). If the port cannot be bound, the broker logs an error and keeps running without the console.
+
+- **Login**: pages open a login form; a successful login starts a session held in memory, in an `HttpOnly`, `SameSite=Strict` cookie. The top bar shows the user and a **Log out** button. Sessions end after `session_idle_minutes` without requests, `session_max_hours` after login, or when the broker restarts. The login page warns when the built-in `admin` / `admin` credentials are in use.
+- **Throttling**: after `login_max_failures` failed logins from one IP within 15 minutes, that IP is refused (`429`) for `login_lockout_seconds`. Failed logins are logged with IP and username, never the password.
+- **Pages**: overview (version, uptime, connections, memory, broker compression counters), queues (every column sortable, numeric order, ties by name), queue detail with consumers, producers and paginated contents (50 per page), message detail (headers, properties, body by JMS type), topics and connections. Add `?refresh=5` to refresh every 5 seconds.
+- **XML bodies**: a TextMessage holding well-formed XML gets a **Formatted** view (indented and coloured) next to the unchanged **Raw** view. DTDs and entities are never resolved; bodies above 1 MB are not formatted.
+- **Theme**: light or dark following the operating system, or forced with the Auto / Light / Dark selector (remembered in a cookie). No JavaScript and no external resources are loaded.
+
+```toml
+[admin]
+session_idle_minutes = 30    # 1-1440
+session_max_hours = 8        # 1-168
+login_max_failures = 5       # 0 disables the lockout
+login_lockout_seconds = 60   # 1-86400
+```
+
+The console uses plain HTTP and binds to `127.0.0.1` by default. To reach it from other machines, put a TLS reverse proxy in front of it rather than binding it to a public address.
+
+### JSON API
+
+The same data is available as JSON for scripts and monitoring. API paths accept HTTP Basic with the `[admin]` credentials (or a browser session cookie); without valid credentials they answer `401 {"error":"unauthorized"}`, with no browser pop-up.
+
+```
+curl -u admin:admin http://127.0.0.1:8161/api/queues?sort=pending&order=desc
+```
+
+| Path | Returns |
+| --- | --- |
+| `/api/overview` | `{product, version, uptimeSeconds, openwire, admin, connections, queues, topics, messageMemory, memoryLimit, memoryLimitReached, compressed, compressDiscarded, workingSet, privateBytes}` |
+| `/api/queues?sort=&order=` | `[{name, temporary, pending, inflight, consumers, producers, enqueued, consumed, expired, discarded, memory, compressed}]` (`sort`: name, pending, inflight, consumers, producers, enqueued, consumed, expired; `order`: asc, desc) |
+| `/api/queues/{name}` | the queue fields plus `consumers: [{consumerId, connectionId, client, prefetch, inflight, selector, browser}]`, `producers: [{producerId, connectionId, client}]`, `withExpiration`, `nextExpiration`, `nextExpirationText` |
+| `/api/queues/{name}/messages?offset=&limit=` | `{total, offset, limit, messages: [message]}` in FIFO order; `limit` defaults to 50 and is clamped to 1..50 |
+| `/api/queues/{name}/messages/{id}?view=xml` | one message plus `inflight` and `body` (`{kind: text, text, truncated}`, `{kind: bytes, hex, size, truncated}`, `{kind: map, entries}`, `{kind: stream, values}`, `{kind: object, size}`, `{kind: none}`); with `view=xml`, `formattedBody` or `formatError` |
+| `/api/topics` | `[{name, temporary, consumers, producers, published, discarded, pending, memory}]` |
+| `/api/connections` | `[{connectionId, clientId, user, client, openwireVersion, connectedAt, sessions, consumers, producers}]` |
+
+A `message` is `{position, messageId, correlationId, type, replyTo, deliveryMode, priority, timestamp, expiration, expirationText, expired, expiresInMs, redeliveryCounter, properties, bodyType, bodySize, compressed}`, plus `compressedSize` for a compressed body. `bodySize` is the size as stored (compressed size for a compressed body). Unknown queues and messages answer `404 {"error": "... not found"}`.
+
 ## Build
 
 You need stable Rust with the `x86_64-pc-windows-msvc` target and Visual Studio Build Tools. The Build Tools are needed only to compile, not to run.
