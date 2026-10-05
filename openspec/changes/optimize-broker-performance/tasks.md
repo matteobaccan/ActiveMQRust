@@ -42,7 +42,7 @@
 
 - [ ] 7.1 Run every target scenario on loopback (warm-up plus at least 3 runs, median) and over a LAN when a second machine is available
 - [ ] 7.2 Measure idle Working Set and Working Set with 100,000 messages of 1 KB
-- [ ] 7.3 Write `docs/benchmarks/performance-<date>.md` with machine details, commands, runs, medians and met/not met per target; add the README summary
+- [ ] 7.3 Write the results in the README (machine details, commands, runs, medians and met/not met per target) and update "Performance at a glance"
 - [ ] 7.4 Open a follow-up task for every target not met
 
 ## 8. Verification

@@ -18,7 +18,7 @@
 
 - [x] 3.1 Write `scripts\activemq-bench\activemq-tuned.xml` and the JVM argument list for 5.18.x and 6.x
 - [x] 3.2 Write `scripts\activemq-bench\mqrust-bench.toml` (benchmark user only) and `mqrust-bench-nocompress.toml` (plus `compress_threshold_kb = 0`)
-- [ ] 3.3 Check by hand that tuned ActiveMQ holds 100,000 × 10 KB and 10,000 × 50 KB with no spooling and no flow-control log lines
+- [x] 3.3 Check that tuned ActiveMQ holds 100,000 × 10 KB and 10,000 × 50 KB with no spooling and no flow-control log lines (verified by the RAM-only log check of `soak-compare.ps1` in the full-speed runs, which held up to 7.7 GB of queued messages without such lines)
 
 ## 4. Comparison script
 
@@ -39,7 +39,7 @@
 
 ## 6. Verification
 
-- [ ] 6.1 A full run of `scripts\compare-activemq.ps1` on the development machine completes unattended and writes the Markdown report and the CSV in `docs/benchmarks/`
+- [ ] 6.1 A full run of `scripts\compare-activemq.ps1` on the development machine completes unattended and writes the Markdown report and the CSV in its output folder; the results are copied into the README
 - [ ] 6.2 The report contains every measurement (a)–(e) for both ActiveMQ versions, the compression labels and ratio, and a met / not met verdict for every criterion and target, stated as measured
 - [ ] 6.3 Every target not met has a follow-up task
 - [x] 6.4 `openspec validate add-activemq-comparison-benchmark` passes

@@ -202,12 +202,12 @@ On the development machine, with broker and client on the same machine and then 
 - **THEN** its Working Set is below 20 MB
 
 ### Requirement: Published performance results
-The results of the end-to-end benchmarks SHALL be written to `docs/benchmarks/performance-<yyyy-MM-dd>.md`, with the machine details (CPU, cores, RAM, Windows version, JDK version, ActiveMQRust version, client profile), the command lines used, the median and the individual runs, and "met" or "not met" for each target. The report SHALL also give the broker's Working Set when idle and when holding 100,000 messages of 1 KB. The README SHALL summarize the latest results and link to the report. A missed target SHALL be reported as not met, never omitted.
+The results of the end-to-end benchmarks SHALL be written in the README's "Tests and results" section (the only place where results are documented; no separate result documents), with the machine details (CPU, cores, RAM, Windows version, JDK version, ActiveMQRust version, client profile), the command lines used, the median and the individual runs, and "met" or "not met" for each target. The report SHALL also give the broker's Working Set when idle and when holding 100,000 messages of 1 KB. The README's "Performance at a glance" table SHALL summarize the latest results. A missed target SHALL be reported as not met, never omitted.
 
 #### Scenario: Report content
-- **WHEN** the benchmarks have been run and the report is written
+- **WHEN** the benchmarks have been run and the README is updated
 - **THEN** it contains the machine details, every target with its measured value and met/not met status, and the idle and 100,000 × 1 KB memory figures
 
 #### Scenario: Missed target
 - **WHEN** a measured value misses its target
-- **THEN** the report shows it as "not met" with the measured value
+- **THEN** the README shows it as "not met" with the measured value
