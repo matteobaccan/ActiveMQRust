@@ -3,8 +3,11 @@ REM ActiveMQRust by Matteo Baccan
 REM SPDX-License-Identifier: MIT
 REM
 REM Builds the program with the Maven Wrapper and runs a benchmark scenario.
-REM Usage: run-bench.cmd [amq5|amq6] --scenario hold|throughput|latency [--messages n] [--size bytes]
-REM        [--send async|sync] [--producers n] [--rate n] [--warmup n] [--hold-seconds n]
+REM Usage: run-bench.cmd [amq5|amq6] --scenario hold|throughput|scale|latency [--messages n] [--size bytes]
+REM        [--send async|sync] [--producers n] [--consumers n] [--queues n] [--rate n] [--warmup n]
+REM        [--hold-seconds n] [--timeout-seconds n]
+REM throughput: producers and consumers share one queue (default 1 / 1).
+REM scale: producer i sends to queue i mod Q, consumer j reads queue j mod Q (default 10 / 10 / 10).
 
 setlocal
 set "PROFILE=amq5"

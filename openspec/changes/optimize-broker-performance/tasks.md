@@ -1,7 +1,7 @@
 ## 1. Baseline measurement
 
 - [x] 1.1 Add `criterion` as a dev-dependency and create `benches/codec.rs` (encode/decode 1 KB `ActiveMQTextMessage`, versions 12 and 9) and `benches/dispatch.rs` (enqueue and dispatch, 1 and 10 consumers)
-- [ ] 1.2 Implement the `bench` mode in `tests/java-it` (arguments, `throughput`, `latency` and `scale` scenarios, async/sync send, warm-up, `RESULT` line, missing-message check) and `run-bench.cmd`
+- [x] 1.2 Implement the `bench` mode in `tests/java-it` (arguments, `throughput`, `latency` and `scale` scenarios, async/sync send, warm-up, `RESULT` line, missing-message check) and `run-bench.cmd`
 - [ ] 1.3 Save the criterion baseline `v0.2.0` from the current code (`cargo bench -- --save-baseline v0.2.0`; the optimizations were implemented before a baseline was taken) and run the Java benchmark on the same version
 
 ## 2. Zero-copy receive path

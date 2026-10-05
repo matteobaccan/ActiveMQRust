@@ -10,6 +10,7 @@ import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.util.Base64;
 import java.util.SplittableRandom;
+import java.util.zip.Deflater;
 import javax.xml.stream.XMLInputFactory;
 import javax.xml.stream.XMLStreamConstants;
 import javax.xml.stream.XMLStreamReader;
@@ -90,6 +91,37 @@ public final class XmlPayload {
         }
     }
 
+    /** True for the messages kept for verification after timing: the first, the last and every 100th. */
+    public static boolean sampled(int seq, int last) {
+        return seq == 1 || seq == last || seq % 100 == 0;
+    }
+
+    /**
+     * Ratio between the size of the documents compressed with {@code Deflater} level 1 and their
+     * original UTF-8 size (0.75 means 25% saved); 1.0 for an empty set.
+     */
+    public static double deflateRatio(Iterable<String> docs) {
+        long original = 0;
+        long compressed = 0;
+        byte[] out = new byte[64 * 1024];
+        Deflater d = new Deflater(1);
+        try {
+            for (String doc : docs) {
+                byte[] in = doc.getBytes(StandardCharsets.UTF_8);
+                original += in.length;
+                d.reset();
+                d.setInput(in);
+                d.finish();
+                while (!d.finished()) {
+                    compressed += d.deflate(out);
+                }
+            }
+        } finally {
+            d.end();
+        }
+        return original == 0 ? 1.0 : (double) compressed / original;
+    }
+
     /** Parses a document and checks its structure, field kinds and base64 payload. */
     public static void verify(String doc) throws Exception {
         XMLStreamReader x = XMLInputFactory.newFactory().createXMLStreamReader(new StringReader(doc));
@@ -117,6 +149,12 @@ public final class XmlPayload {
             throw new IllegalStateException("payload encoding is not base64");
         }
         Base64.getDecoder().decode(x.getElementText());
+        // Nothing but </message> may follow; reading to the end also detects a truncated document.
+        while (x.hasNext()) {
+            if (x.next() == XMLStreamConstants.START_ELEMENT) {
+                throw new IllegalStateException("unexpected <" + x.getLocalName() + "> after <payload>");
+            }
+        }
     }
 
     private static void expectStart(XMLStreamReader x, String name) throws Exception {

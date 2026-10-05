@@ -161,6 +161,18 @@ The Java program in `tests/java-it` SHALL offer a `bench` mode, run as `java -ja
 - **WHEN** `bench --scenario latency --rate 1000 --messages 60000 --size 1024` runs
 - **THEN** the producer sends at 1,000 msg/s, each message carries its send time from `System.nanoTime()`, and the `RESULT` line reports p50, p99 and max end-to-end latency
 
+#### Scenario: Latency run that times out
+- **WHEN** the latency consumer has not received every message when `--timeout-seconds` expires
+- **THEN** the `RESULT` line is marked failed with the number of messages received, and the exit code is 1
+
+#### Scenario: Producers and consumers counted separately
+- **WHEN** `bench --scenario throughput --producers 2 --consumers 3` runs
+- **THEN** 2 producers and 3 consumers share one queue, every message carries its producer index and a per-producer `seq`, and the run fails if any message is missing or a consumer sees a producer's `seq` go backwards
+
+#### Scenario: Scale scenario
+- **WHEN** `bench --scenario scale` runs without client options
+- **THEN** 10 producers and 10 consumers run at the same time on 10 new queues (producer i sends to queue i mod Q, consumer j reads queue j mod Q, `--queues` defaults to the smaller of the two counts) and the `RESULT` line reports the aggregate msgs/s and MB/s
+
 ### Requirement: Measurable targets
 On the development machine, with broker and client on the same machine and then over a LAN when available, with `NON_PERSISTENT` 1 KB messages, the broker SHALL meet these targets, measured as the median of at least 3 runs after a warm-up:
 
