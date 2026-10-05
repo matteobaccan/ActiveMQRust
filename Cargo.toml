@@ -28,7 +28,7 @@ clap = { version = "4", features = ["derive"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
-argon2 = { version = "0.5", features = ["std"] }
+argon2 = { version = "0.6", features = ["std"] }
 rpassword = "7"
 parking_lot = "0.12"
 mimalloc = { version = "0.1", default-features = false }
