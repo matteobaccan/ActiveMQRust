@@ -4,7 +4,7 @@
   SPDX-License-Identifier: MIT
 
   Acceptance and benchmark program for ActiveMQRust, built on the original ActiveMQ client.
-  Profiles: amq5 (default, activemq-client 5.18.x, javax.jms) and amq6 (activemq-client 6.x, jakarta.jms).
+  Profiles: amq5 (default, activemq-client 5.19.x, javax.jms) and amq6 (activemq-client 6.x, jakarta.jms).
   Output: target/<profile>/mqrust-acceptance.jar
 -->
 <project xmlns="http://maven.apache.org/POM/4.0.0"
@@ -94,7 +94,7 @@
         <dependency>
           <groupId>org.apache.activemq</groupId>
           <artifactId>activemq-client</artifactId>
-          <version>5.18.7</version>
+          <version>5.19.11</version>
         </dependency>
         <dependency>
           <groupId>org.slf4j</groupId>

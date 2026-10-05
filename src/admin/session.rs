@@ -7,7 +7,6 @@
 //! URL-safe base64; the store keeps only their SHA-256, so a memory dump yields no usable
 //! cookie. Failed logins are counted per client IP in a bounded table.
 
-use argon2::password_hash::rand_core::{OsRng, RngCore};
 use base64::Engine;
 use parking_lot::Mutex;
 use sha2::{Digest, Sha256};
@@ -40,11 +39,16 @@ pub struct Sessions {
 
 impl Sessions {
     pub fn new(idle: Duration, max_age: Duration) -> Self {
-        Sessions { map: Mutex::new(HashMap::new()), idle, max_age }
+        Sessions {
+            map: Mutex::new(HashMap::new()),
+            idle,
+            max_age,
+        }
     }
 
     fn alive(&self, s: &Session, now: Instant) -> bool {
-        now.saturating_duration_since(s.last_seen) < self.idle && now.saturating_duration_since(s.created) < self.max_age
+        now.saturating_duration_since(s.last_seen) < self.idle
+            && now.saturating_duration_since(s.created) < self.max_age
     }
 
     /// Opens a session for `user` and returns its token (to be sent only in the cookie).
@@ -54,15 +58,24 @@ impl Sessions {
 
     pub fn create_at(&self, user: &str, now: Instant) -> String {
         let mut raw = [0u8; 32];
-        OsRng.fill_bytes(&mut raw);
+        getrandom::fill(&mut raw).expect("operating system random generator");
         let token = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(raw);
         let mut map = self.map.lock();
         map.retain(|_, s| self.alive(s, now));
         while map.len() >= MAX_SESSIONS {
-            let Some(oldest) = map.iter().min_by_key(|(_, s)| s.created).map(|(k, _)| *k) else { break };
+            let Some(oldest) = map.iter().min_by_key(|(_, s)| s.created).map(|(k, _)| *k) else {
+                break;
+            };
             map.remove(&oldest);
         }
-        map.insert(sha256(token.as_bytes()), Session { user: user.to_string(), created: now, last_seen: now });
+        map.insert(
+            sha256(token.as_bytes()),
+            Session {
+                user: user.to_string(),
+                created: now,
+                last_seen: now,
+            },
+        );
         token
     }
 
@@ -112,7 +125,10 @@ struct Failures {
 pub enum Gate {
     Open,
     /// Locked out for this long; `log` is true for the first refusal of the lockout.
-    Locked { remaining: Duration, log: bool },
+    Locked {
+        remaining: Duration,
+        log: bool,
+    },
 }
 
 pub struct Throttle {
@@ -123,7 +139,11 @@ pub struct Throttle {
 
 impl Throttle {
     pub fn new(max_failures: u32, lockout: Duration) -> Self {
-        Throttle { map: Mutex::new(HashMap::new()), max_failures, lockout }
+        Throttle {
+            map: Mutex::new(HashMap::new()),
+            max_failures,
+            lockout,
+        }
     }
 
     pub fn check(&self, ip: IpAddr) -> Gate {
@@ -135,12 +155,17 @@ impl Throttle {
             return Gate::Open;
         }
         let mut map = self.map.lock();
-        let Some(f) = map.get_mut(&ip) else { return Gate::Open };
+        let Some(f) = map.get_mut(&ip) else {
+            return Gate::Open;
+        };
         match f.locked_until {
             Some(until) if now < until => {
                 let log = !f.logged;
                 f.logged = true;
-                Gate::Locked { remaining: until - now, log }
+                Gate::Locked {
+                    remaining: until - now,
+                    log,
+                }
             }
             Some(_) => {
                 // The lockout is over: start counting again.
@@ -162,15 +187,29 @@ impl Throttle {
         }
         let mut map = self.map.lock();
         if !map.contains_key(&ip) && map.len() >= MAX_TRACKED_IPS {
-            map.retain(|_, f| now.saturating_duration_since(f.first) < FAILURE_WINDOW || f.locked_until.is_some_and(|u| now < u));
+            map.retain(|_, f| {
+                now.saturating_duration_since(f.first) < FAILURE_WINDOW || f.locked_until.is_some_and(|u| now < u)
+            });
             while map.len() >= MAX_TRACKED_IPS {
-                let Some(oldest) = map.iter().min_by_key(|(_, f)| f.first).map(|(k, _)| *k) else { break };
+                let Some(oldest) = map.iter().min_by_key(|(_, f)| f.first).map(|(k, _)| *k) else {
+                    break;
+                };
                 map.remove(&oldest);
             }
         }
-        let f = map.entry(ip).or_insert(Failures { count: 0, first: now, locked_until: None, logged: false });
+        let f = map.entry(ip).or_insert(Failures {
+            count: 0,
+            first: now,
+            locked_until: None,
+            logged: false,
+        });
         if now.saturating_duration_since(f.first) >= FAILURE_WINDOW {
-            *f = Failures { count: 0, first: now, locked_until: None, logged: false };
+            *f = Failures {
+                count: 0,
+                first: now,
+                locked_until: None,
+                logged: false,
+            };
         }
         f.count += 1;
         if f.count >= self.max_failures && f.locked_until.is_none() {
@@ -207,7 +246,13 @@ mod tests {
         let a = s.create("admin");
         let b = s.create("admin");
         assert_ne!(a, b);
-        assert_eq!(base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(&a).unwrap().len(), 32);
+        assert_eq!(
+            base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(&a)
+                .unwrap()
+                .len(),
+            32
+        );
         assert!(s.map.lock().contains_key(&sha256(a.as_bytes())));
         assert!(!s.map.lock().keys().any(|k| k.as_slice() == a.as_bytes()));
         assert_eq!(s.lookup(&a).as_deref(), Some("admin"));
@@ -255,8 +300,14 @@ mod tests {
             assert_eq!(t.check_at(ip(1), t0 + Duration::from_secs(i)), Gate::Open);
         }
         assert!(t.failure_at(ip(1), t0 + Duration::from_secs(5)));
-        assert!(matches!(t.check_at(ip(1), t0 + Duration::from_secs(6)), Gate::Locked { log: true, .. }));
-        assert!(matches!(t.check_at(ip(1), t0 + Duration::from_secs(7)), Gate::Locked { log: false, .. }));
+        assert!(matches!(
+            t.check_at(ip(1), t0 + Duration::from_secs(6)),
+            Gate::Locked { log: true, .. }
+        ));
+        assert!(matches!(
+            t.check_at(ip(1), t0 + Duration::from_secs(7)),
+            Gate::Locked { log: false, .. }
+        ));
         // Other clients are not affected.
         assert_eq!(t.check_at(ip(2), t0 + Duration::from_secs(7)), Gate::Open);
         // 61 seconds after the lockout started.

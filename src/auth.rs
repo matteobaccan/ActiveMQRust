@@ -3,7 +3,8 @@
 
 //! Credential checks for OpenWire users and the admin console.
 
-use argon2::password_hash::{rand_core::OsRng, PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
+use argon2::password_hash::phc::PasswordHash;
+use argon2::password_hash::{PasswordHasher, PasswordVerifier};
 use argon2::Argon2;
 
 use crate::config::{Secret, User};
@@ -33,9 +34,9 @@ pub fn verify(secret: &Secret, password: &str) -> bool {
 
 /// Produces an Argon2id hash for `hash-password`.
 pub fn hash_password(password: &str) -> Result<String, String> {
-    let salt = SaltString::generate(&mut OsRng);
+    // The salt comes from the operating system's random generator.
     Argon2::default()
-        .hash_password(password.as_bytes(), &salt)
+        .hash_password(password.as_bytes())
         .map(|h| h.to_string())
         .map_err(|e| e.to_string())
 }
@@ -61,7 +62,11 @@ impl Authenticator {
     pub fn login(&self, user: Option<&str>, password: Option<&str>) -> Login {
         let user = user.unwrap_or("");
         if user.is_empty() {
-            return if self.allow_anonymous { Login::Accepted } else { Login::Rejected };
+            return if self.allow_anonymous {
+                Login::Accepted
+            } else {
+                Login::Rejected
+            };
         }
         let password = password.unwrap_or("");
         // Always run one verification so unknown users cost the same as wrong passwords.
@@ -84,8 +89,14 @@ mod tests {
         let hash = hash_password("secret").unwrap();
         Authenticator::new(
             vec![
-                User { username: "a".into(), secret: Secret::Plain("pw".into()) },
-                User { username: "h".into(), secret: Secret::Hash(hash) },
+                User {
+                    username: "a".into(),
+                    secret: Secret::Plain("pw".into()),
+                },
+                User {
+                    username: "h".into(),
+                    secret: Secret::Hash(hash),
+                },
             ],
             anon,
         )
