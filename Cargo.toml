@@ -33,7 +33,6 @@ getrandom = "0.4"
 rpassword = "7"
 parking_lot = "0.12"
 mimalloc = { version = "0.1", default-features = false }
-windows-service = "0.7"
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "query", "json", "form"] }
 serde_json = "1"
 base64 = "0.23"
@@ -41,7 +40,15 @@ sha2 = "0.10"
 quick-xml = "0.41"
 flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
 toml_edit = "0.22"
+
+# Windows only: the service (Service Control Manager), process memory and affinity.
+[target.'cfg(windows)'.dependencies]
+windows-service = "0.7"
 windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_ProcessStatus", "Win32_System_Threading"] }
+
+# macOS only: process memory for the admin console (proc_pid_rusage).
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2"
 
 [dev-dependencies]
 criterion = { version = "0.5", default-features = false }
@@ -66,6 +73,7 @@ harness = false
 name = "expiry"
 harness = false
 
+# Used by build.rs only when the target is Windows (version resource).
 [build-dependencies]
 embed-resource = "2"
 

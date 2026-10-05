@@ -829,6 +829,7 @@ dependencies = [
  "embed-resource",
  "flate2",
  "getrandom",
+ "libc",
  "mimalloc",
  "parking_lot",
  "quick-xml",

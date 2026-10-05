@@ -393,7 +393,12 @@ async fn logout(State(state): State<AdminState>, headers: HeaderMap) -> Response
 
 // -- formatting ---------------------------------------------------------------
 
-/// Process Working Set and Private Bytes, in bytes.
+/// Process memory, in bytes: (resident, private), shown as Working Set and Private Bytes.
+///
+/// - Windows: Working Set and Private Bytes (`K32GetProcessMemoryInfo`).
+/// - macOS: resident size and physical footprint (`proc_pid_rusage`); the footprint is the
+///   memory charged to the process, the "Memory" column of Activity Monitor.
+/// - Other systems: (0, 0).
 pub fn process_memory() -> (u64, u64) {
     #[cfg(windows)]
     unsafe {
@@ -406,7 +411,17 @@ pub fn process_memory() -> (u64, u64) {
         }
         (0, 0)
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    // SAFETY: the buffer is a zeroed rusage_info_v2, the layout RUSAGE_INFO_V2 asks for.
+    unsafe {
+        let mut info: libc::rusage_info_v2 = std::mem::zeroed();
+        let buffer = &mut info as *mut libc::rusage_info_v2 as *mut libc::rusage_info_t;
+        if libc::proc_pid_rusage(libc::getpid(), libc::RUSAGE_INFO_V2, buffer) == 0 {
+            return (info.ri_resident_size, info.ri_phys_footprint);
+        }
+        (0, 0)
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         (0, 0)
     }

@@ -11,6 +11,11 @@ use tokio::sync::mpsc;
 use crate::openwire::model::Command;
 
 /// Something the connection writer task must do.
+///
+/// `Cmd` is kept inline on purpose: every dispatched message travels as an `Out`, and boxing
+/// the command would add one heap allocation per message on the hot path. The channel stores
+/// its slots in preallocated blocks, so the larger enum costs no extra allocation.
+#[allow(clippy::large_enum_variant)]
 pub enum Out {
     Cmd(Command),
     /// Send the commands, then close the socket.

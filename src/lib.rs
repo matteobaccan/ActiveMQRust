@@ -13,5 +13,6 @@ pub mod logging;
 pub mod openwire;
 pub mod selector;
 pub mod server;
+#[cfg(windows)]
 pub mod service;
 pub mod setup;

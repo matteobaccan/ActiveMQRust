@@ -3,7 +3,17 @@
 
 //! ActiveMQRust: an in-memory message broker speaking Apache ActiveMQ's OpenWire protocol.
 
-use mqrust::{config, cpu, logging, server, service, setup};
+use mqrust::{config, cpu, logging, server, setup};
+
+#[cfg(windows)]
+use mqrust::service;
+
+/// The Windows service is not built on other systems: only its default name is needed, for
+/// the `service` commands that report "available on Windows only" (exit code 2).
+#[cfg(not(windows))]
+mod service {
+    pub const DEFAULT_NAME: &str = "ActiveMQRust";
+}
 
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
@@ -277,6 +287,7 @@ fn overrides(cli: &Cli) -> config::Overrides {
     }
 }
 
+#[cfg(windows)]
 fn report(result: Result<(), String>, ok: &str) -> ExitCode {
     match result {
         Ok(()) => {
@@ -332,6 +343,12 @@ fn main() -> ExitCode {
                 ExitCode::from(2)
             }
         },
+        #[cfg(not(windows))]
+        Some(Cmd::Service { .. }) => {
+            eprintln!("error: the Windows service is available on Windows only");
+            ExitCode::from(2)
+        }
+        #[cfg(windows)]
         Some(Cmd::Service { action }) => match action {
             ServiceCmd::Install { name } => report(
                 service::install(name, cli.config.clone()),

@@ -153,6 +153,11 @@ fn listen(addr: std::net::SocketAddr, buffer: u32) -> std::io::Result<TcpListene
     } else {
         tokio::net::TcpSocket::new_v6()?
     };
+    // On Unix (macOS) a restarted broker could not bind while connections of the previous
+    // one are in TIME_WAIT; `TcpListener::bind` sets this option there too. Not on Windows,
+    // where SO_REUSEADDR would let another process take over the port.
+    #[cfg(not(windows))]
+    socket.set_reuseaddr(true)?;
     if buffer > 0 {
         socket.set_send_buffer_size(buffer)?;
         socket.set_recv_buffer_size(buffer)?;

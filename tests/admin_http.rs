@@ -1264,6 +1264,9 @@ fn single_version_source() {
         format!("ActiveMQRust {VERSION}")
     );
     // Windows file version resource.
+    if !cfg!(windows) {
+        return;
+    }
     let ps = std::process::Command::new("powershell")
         .args([
             "-NoProfile",
