@@ -1,0 +1,3 @@
+/target/
+tests/java-it/target/
+*.pdb
