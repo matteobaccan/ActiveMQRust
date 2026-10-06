@@ -45,6 +45,10 @@ jobs:
           if [ -z "$version" ]; then
             echo "::error::No version in Cargo.toml"; exit 1
           fi
+          # A pre-release version (0.4.0-dev) marks work in progress on main: never tagged.
+          case "$version" in
+            *-*) echo "$version is a development version: nothing to tag"; exit 0 ;;
+          esac
           tag="v$version"
           if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
             echo "$tag already exists: nothing to do"; exit 0
