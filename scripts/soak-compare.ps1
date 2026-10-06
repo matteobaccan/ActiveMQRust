@@ -19,6 +19,10 @@ param(
     [ValidateSet('amq5', 'amq6')][string]$ClientProfile = 'amq5',
     [string]$AmqHeap = '4g',
     [int]$AmqMemoryLimitGB = 3,
+    # Fixed memory for every broker: ActiveMQ gets -Xms = -Xmx with AlwaysPreTouch (the whole heap is
+    # committed at start), ActiveMQRust gets its allocator to reserve this many GB at start.
+    [switch]$PreallocateMemory,
+    [int]$MqrustReserveGB = 4,
     [string]$Results = (Join-Path $PSScriptRoot '..\docs\benchmarks\soak-results.csv')
 )
 $ErrorActionPreference = 'Stop'
@@ -46,13 +50,16 @@ function Start-Broker($name) {
     if ($name -eq 'ActiveMQRust') {
         $margs = @('--port', $Port, '--admin-port', $AdminPort)
         if ($MqrustConfig) { $margs += @('--config', (Resolve-Path $MqrustConfig).Path) }
+        # mimalloc reads its options from the environment at start; the child inherits them.
+        if ($PreallocateMemory) { $env:MIMALLOC_RESERVE_OS_MEMORY = "${MqrustReserveGB}GiB" } else { Remove-Item Env:MIMALLOC_RESERVE_OS_MEMORY -ErrorAction SilentlyContinue }
         return Start-Process "$root\target\release\mqrust.exe" -PassThru -WindowStyle Hidden -ArgumentList $margs `
             -RedirectStandardOutput "$scratch\soak-broker.out" -RedirectStandardError "$scratch\soak-broker.err"
     }
     $h = $homes[$name].Home
     $script:data = Join-Path $scratch ("soakdata-" + [guid]::NewGuid().ToString('N').Substring(0, 8))
     New-Item -ItemType Directory -Force "$data\tmp" | Out-Null
-    $jvm = @("-Xmx$AmqHeap", "-Djava.security.auth.login.config=$h\conf\login.config", "-Dactivemq.home=$h", "-Dactivemq.base=$h",
+    $heapArgs = if ($PreallocateMemory) { @("-Xms$AmqHeap", "-Xmx$AmqHeap", '-XX:+AlwaysPreTouch') } else { @("-Xmx$AmqHeap") }
+    $jvm = $heapArgs + @("-Djava.security.auth.login.config=$h\conf\login.config", "-Dactivemq.home=$h", "-Dactivemq.base=$h",
         "-Dactivemq.conf=$h\conf", "-Dactivemq.data=$data", "-Djava.io.tmpdir=$data\tmp", '-jar', "$h\bin\activemq.jar", 'start', "xbean:file:$($xml.Replace('\','/'))")
     Start-Process java -PassThru -WindowStyle Hidden -WorkingDirectory $h -ArgumentList $jvm -RedirectStandardOutput "$scratch\soak-broker.out" -RedirectStandardError "$scratch\soak-broker.err"
 }

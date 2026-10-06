@@ -57,3 +57,5 @@
 ## 9. Same memory ceiling as ActiveMQ (0.4.0)
 
 - [ ] 9.1 Re-run the ActiveMQRust full-speed runs (15 KB, 50 KB, 300 KB, 20 + 20 clients, 60 s) with `max_memory_mb = 4096` (and 8192), the same ceiling as the ActiveMQ heap, and report delivered, rejected and discarded messages next to the ActiveMQ results in the README
+- [ ] 9.2 Use Apache ActiveMQ 5.19.11 (latest 5.x, same version as the test client) instead of 5.18.7 as the 5.x reference; re-run every ActiveMQ 5 load test (soak 1 KB and 10 KB, full speed 15/50/300 KB, client compression, 8 GB heap) and update the README
+- [ ] 9.3 Publish in the README the "4 GB fixed for every broker" run (15 KB, 20 + 20 clients, full speed, 60 s; ActiveMQ `-Xms4g -Xmx4g -XX:+AlwaysPreTouch`, ActiveMQRust `MIMALLOC_RESERVE_OS_MEMORY=4GiB` and `max_memory_mb = 4096`). First run on 2026-10-06: ActiveMQRust ok 1,383,663/1,383,663, 337 MB/s, 36 ms CPU per 1,000 messages, peak 1.0 GB; ActiveMQ 5.18.7 failed out of memory 502,311/769,645; ActiveMQ 6.3.2 failed out of memory 80,808/348,092 — repeat with 5.19.11
