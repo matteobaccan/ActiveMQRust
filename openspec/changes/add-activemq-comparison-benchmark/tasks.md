@@ -53,3 +53,7 @@
 
 - [x] 8.1 Add the `soak` scenario to Bench.java: steady per-producer rate for a duration, shared or per-pair queues, checks for order, duplicates, losses and length, latency percentiles
 - [x] 8.2 Add `scripts/soak-compare.ps1` to run the soak scenario against every broker (startup, latency, broker and client CPU, broker memory), run it and publish the report in `docs/benchmarks/`
+
+## 9. Same memory ceiling as ActiveMQ (0.4.0)
+
+- [ ] 9.1 Re-run the ActiveMQRust full-speed runs (15 KB, 50 KB, 300 KB, 20 + 20 clients, 60 s) with `max_memory_mb = 4096` (and 8192), the same ceiling as the ActiveMQ heap, and report delivered, rejected and discarded messages next to the ActiveMQ results in the README
