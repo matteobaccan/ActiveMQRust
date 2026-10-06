@@ -115,7 +115,7 @@ The broker has **two kinds of users**:
 
 With no configuration file the broker still starts, on `0.0.0.0:61616` (OpenWire) and `http://127.0.0.1:8161` (admin console), with `admin` / `admin` for both kinds of users, and logs a warning naming the commands above. Set your own passwords before exposing it on a network.
 
-Passwords are typed twice with hidden input and stored only as Argon2id hashes. They need at least 8 characters, must differ from the username, and cannot be `admin` or `password`. Usernames are 1–64 letters, digits, `.`, `_`, `-` or `@`.
+Passwords are typed twice with hidden input and stored only as Argon2id hashes. A password with fewer than 8 characters, equal to the username, or `admin`/`password` is insecure: the prompt warns and asks `Use it anyway? [y/N]` (default No); answer `y` to keep it. Empty passwords are always refused, and `--password-stdin` refuses insecure ones. Usernames are 1–64 letters, digits, `.`, `_`, `-` or `@`.
 
 The commands edit the file in place: comments, key order and the other settings are kept, the result is validated before it is written, and the file is replaced atomically. A changed file applies when the broker is restarted (`mqrust.exe service stop` and `service start` for the Windows service).
 

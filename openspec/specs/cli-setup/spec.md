@@ -64,11 +64,15 @@ Defines the broker command line for help output, admin and messaging user setup,
 - **THEN** the usernames are printed and no password or hash appears
 
 ### Requirement: Password rules
-A password set by `set-admin`, `user add` or `user passwd` SHALL have at least 8 characters, SHALL differ from the username, and SHALL NOT be `admin` or `password`. A refused password SHALL be explained in one line and asked again. Usernames SHALL be 1–64 characters of letters, digits, `.`, `_`, `-` or `@`.
+A password set by `set-admin`, `user add` or `user passwd` is insecure when it has fewer than 8 characters, equals the username, or is `admin` or `password`. At the interactive prompt an insecure password SHALL be explained in one line followed by `Use it anyway? [y/N]`: only `y` or `yes` accepts it (then it is repeated as usual), any other answer asks again. An empty password SHALL always be refused. With `--password-stdin` an insecure password SHALL be refused, since nobody can confirm it. Usernames SHALL be 1–64 characters of letters, digits, `.`, `_`, `-` or `@`.
 
 #### Scenario: Weak password
-- **WHEN** the operator types `admin` as the new admin password
-- **THEN** the command explains why it is refused and asks again
+- **WHEN** the operator types `admin` as the new admin password and presses Enter at `Use it anyway? [y/N]`
+- **THEN** the command explains why it is insecure and asks again
+
+#### Scenario: Insecure password confirmed
+- **WHEN** the operator types `password` as the new admin password and answers `y`
+- **THEN** the password is asked a second time and, if it matches, it is used
 
 #### Scenario: Invalid username
 - **WHEN** the operator runs `mqrust.exe user add "bad name"`

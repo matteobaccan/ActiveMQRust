@@ -54,35 +54,54 @@ pub fn check_username(name: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Checks a new password: at least 8 characters, different from the username, not a common one.
-pub fn check_password(username: Option<&str>, password: &str) -> Result<(), String> {
+/// Describes why a password is weak: fewer than 8 characters, equal to the username or a common one.
+pub fn password_weakness(username: Option<&str>, password: &str) -> Option<String> {
     if password.chars().count() < MIN_PASSWORD_CHARS {
-        return Err(format!(
-            "password refused: it must have at least {MIN_PASSWORD_CHARS} characters"
-        ));
+        return Some(format!("it has fewer than {MIN_PASSWORD_CHARS} characters"));
     }
     if username.is_some_and(|u| u == password) {
-        return Err("password refused: it must differ from the username".into());
+        return Some("it is the same as the username".into());
     }
     if COMMON_PASSWORDS.iter().any(|c| c.eq_ignore_ascii_case(password)) {
-        return Err("password refused: \"admin\" and \"password\" are not allowed".into());
+        return Some("\"admin\" and \"password\" are too easy to guess".into());
     }
-    Ok(())
+    None
 }
 
-/// Asks for a new password twice, up to three attempts. `read` reads one hidden line after a prompt.
+/// Checks a password read without a terminal (`--password-stdin`): a weak one is refused, since
+/// nobody can confirm it.
+pub fn check_password(username: Option<&str>, password: &str) -> Result<(), String> {
+    match password_weakness(username, password) {
+        Some(reason) => Err(format!(
+            "password refused: {reason}; to use it anyway, type it at the interactive prompt and confirm"
+        )),
+        None => Ok(()),
+    }
+}
+
+/// Asks for a new password twice, up to three attempts. `read` reads one hidden line after a prompt,
+/// `confirm` one visible line. A weak password is used only when the operator answers `y` (default N).
 pub fn ask_new_password(
     username: Option<&str>,
     read: &mut dyn FnMut(&str) -> std::io::Result<String>,
+    confirm: &mut dyn FnMut(&str) -> std::io::Result<String>,
     out: &mut dyn Write,
 ) -> Result<String, Failure> {
     let who = username.map(|u| format!(" for {u}")).unwrap_or_default();
     for _ in 0..ATTEMPTS {
         let first = read(&format!("New password{who}: "))
             .map_err(|e| Failure::runtime(format!("cannot read the password: {e}")))?;
-        if let Err(reason) = check_password(username, &first) {
-            let _ = writeln!(out, "{reason}");
+        if first.is_empty() {
+            let _ = writeln!(out, "password refused: it cannot be empty");
             continue;
+        }
+        if let Some(reason) = password_weakness(username, &first) {
+            let _ = writeln!(out, "Warning: insecure password: {reason}.");
+            let answer = confirm("Use it anyway? [y/N]: ")
+                .map_err(|e| Failure::runtime(format!("cannot read the answer: {e}")))?;
+            if !matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
+                continue;
+            }
         }
         let second =
             read("Repeat the password: ").map_err(|e| Failure::runtime(format!("cannot read the password: {e}")))?;
@@ -129,6 +148,11 @@ pub fn new_password(username: Option<&str>, password_stdin: bool) -> Result<Stri
     ask_new_password(
         username,
         &mut |prompt| rpassword::prompt_password(prompt),
+        &mut |prompt| {
+            prompt_line(prompt)
+                .map(Option::unwrap_or_default)
+                .map_err(|f| std::io::Error::other(f.message))
+        },
         &mut std::io::stderr(),
     )
 }
@@ -669,18 +693,20 @@ mod tests {
         let pw = ask_new_password(
             Some("ops"),
             &mut scripted(&["admin", "S3cure-pass", "other-pass", "S3cure-pass", "S3cure-pass"]),
+            &mut scripted(&[""]),
             &mut out,
         )
         .unwrap();
         assert_eq!(pw, "S3cure-pass");
         let text = String::from_utf8(out).unwrap();
-        assert!(text.contains("at least 8"), "{text}");
+        assert!(text.contains("fewer than 8"), "{text}");
         assert!(text.contains("Passwords do not match"), "{text}");
 
         let mut out = Vec::new();
         let e = ask_new_password(
             Some("ops"),
             &mut scripted(&["S3cure-pass", "x1", "S3cure-pass", "x2", "S3cure-pass", "x3"]),
+            &mut scripted(&[]),
             &mut out,
         )
         .unwrap_err();
@@ -692,6 +718,44 @@ mod tests {
                 .count(),
             3
         );
+    }
+
+    #[test]
+    fn weak_password_used_only_when_confirmed() {
+        // Default (empty answer) and "n" decline; "y" accepts after the usual repeat.
+        let mut out = Vec::new();
+        let pw = ask_new_password(
+            Some("admin"),
+            &mut scripted(&["password", "password", "password", "password"]),
+            &mut scripted(&["", "n", "Y"]),
+            &mut out,
+        )
+        .unwrap();
+        assert_eq!(pw, "password");
+        let text = String::from_utf8(out).unwrap();
+        assert_eq!(text.matches("Warning: insecure password").count(), 3, "{text}");
+
+        let mut out = Vec::new();
+        let pw = ask_new_password(
+            Some("admin"),
+            &mut scripted(&["admin", "admin"]),
+            &mut scripted(&["yes"]),
+            &mut out,
+        )
+        .unwrap();
+        assert_eq!(pw, "admin");
+
+        // An empty password is never accepted, not even confirmed.
+        let mut out = Vec::new();
+        let e = ask_new_password(
+            None,
+            &mut scripted(&["", "", ""]),
+            &mut scripted(&["y", "y", "y"]),
+            &mut out,
+        )
+        .unwrap_err();
+        assert_eq!(e.code, 2);
+        assert!(String::from_utf8(out).unwrap().contains("cannot be empty"));
     }
 
     #[test]

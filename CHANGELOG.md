@@ -8,6 +8,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-10-06
+
+### Changed
+
+- **Insecure passwords can be confirmed.** `set-admin`, `user add` and `user passwd` no
+  longer refuse a password with fewer than 8 characters, equal to the username, or
+  `admin`/`password`: the prompt explains why it is insecure and asks
+  `Use it anyway? [y/N]` (default No); answering `y` keeps it. Empty passwords are still
+  refused, and `--password-stdin` still refuses insecure passwords (exit code 2), since
+  nobody can confirm them.
+
 ## [0.3.0] - 2026-10-06
 
 The first release with downloadable binaries: Windows x86_64 and, new, macOS on Apple
