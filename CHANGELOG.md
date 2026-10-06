@@ -8,6 +8,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **Server-side table sorting in admin console and API**: every list table in the admin
+  console is sortable by clicking column headers, with no JavaScript and CSP unchanged.
+  Columns support typed comparisons: numeric, chronological for connection timestamps,
+  IP address and port for client addresses, and case-insensitive natural order for names
+  and identifiers (`Q2` before `Q10`, `ID:h-1:1:1:2` before `ID:h-1:1:1:10`).
+  Ties are broken stably by the table's first column ascending.
+  - Queues (`sort`/`order`), Topics (`sort`/`order`), Connections (`sort`/`order`).
+  - Queue detail: Consumers (`csort`/`corder`) and Producers (`psort`/`porder`).
+  - Message detail: Properties (`prsort`/`prorder`) and MapMessage entries (`msort`/`morder`).
+  - Sorting parameters are preserved across auto-refresh (`?refresh=`), queue contents
+    pagination, and XML Raw/Formatted view toggles.
+  - JSON API endpoints `/api/topics?sort=&order=` and `/api/connections?sort=&order=`
+    accept the same column keys as the console pages.
+  - Queue message contents (FIFO), message headers, and StreamMessage bodies remain
+    unsorted with plain headers.
+
 ## [0.3.1] - 2026-10-06
 
 ### Changed

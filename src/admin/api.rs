@@ -11,7 +11,9 @@ use serde_json::{json, Value as J};
 use std::collections::HashMap;
 
 use super::body::{render, stored_size, BodyView, HEX_LIMIT};
-use super::pages::{find_queue, sort_params, sort_queues, visible, xml_view, XmlView, PAGE_SIZE};
+use super::pages::{
+    find_queue, visible, xml_view, ConnRow, XmlView, CONNECTIONS_TABLE, PAGE_SIZE, QUEUES_TABLE, TOPICS_TABLE,
+};
 use super::{fmt_expiration, process_memory, AdminState};
 use crate::broker::destination::DestSnapshot;
 use crate::broker::entry::Entry;
@@ -126,8 +128,11 @@ pub async fn queues(State(s): State<AdminState>, Query(p): Params) -> Json<J> {
         .filter(|d| d.dest.kind.is_queue())
         .map(|d| d.snapshot())
         .collect();
-    let (col, desc) = sort_params(p.get("sort").map(String::as_str), p.get("order").map(String::as_str));
-    sort_queues(&mut rows, col, desc);
+    QUEUES_TABLE.sort(
+        &mut rows,
+        p.get("sort").map(String::as_str),
+        p.get("order").map(String::as_str),
+    );
     Json(json!(rows.iter().map(queue_json).collect::<Vec<_>>()))
 }
 
@@ -246,17 +251,25 @@ pub async fn message(
     Json(v).into_response()
 }
 
-pub async fn topics(State(s): State<AdminState>) -> Json<J> {
-    let list: Vec<J> = s
+pub async fn topics(State(s): State<AdminState>, Query(p): Params) -> Json<J> {
+    let mut rows: Vec<DestSnapshot> = s
         .broker
         .destinations()
         .iter()
         .filter(|d| d.dest.kind.is_topic() && visible(d))
-        .map(|d| {
-            let snap = d.snapshot();
+        .map(|d| d.snapshot())
+        .collect();
+    TOPICS_TABLE.sort(
+        &mut rows,
+        p.get("sort").map(String::as_str),
+        p.get("order").map(String::as_str),
+    );
+    let list: Vec<J> = rows
+        .into_iter()
+        .map(|snap| {
             json!({
-                "name": d.dest.name.as_ref(),
-                "temporary": d.dest.kind.is_temporary(),
+                "name": snap.dest.name.as_ref(),
+                "temporary": snap.dest.kind.is_temporary(),
                 "consumers": snap.consumers.len(),
                 "producers": snap.producers.len(),
                 "published": snap.stats.enqueued,
@@ -269,23 +282,26 @@ pub async fn topics(State(s): State<AdminState>) -> Json<J> {
     Json(json!(list))
 }
 
-pub async fn connections(State(s): State<AdminState>) -> Json<J> {
-    let list: Vec<J> = s
-        .broker
-        .connections()
-        .iter()
+pub async fn connections(State(s): State<AdminState>, Query(p): Params) -> Json<J> {
+    let mut rows: Vec<ConnRow> = s.broker.connections().iter().map(|c| ConnRow::of(c)).collect();
+    CONNECTIONS_TABLE.sort(
+        &mut rows,
+        p.get("sort").map(String::as_str),
+        p.get("order").map(String::as_str),
+    );
+    let list: Vec<J> = rows
+        .into_iter()
         .map(|c| {
-            let i = c.info.lock().clone();
             json!({
-                "connectionId": i.connection_id,
-                "clientId": i.client_id,
-                "user": i.user,
-                "client": c.remote.to_string(),
-                "openwireVersion": i.version,
+                "connectionId": c.info.connection_id,
+                "clientId": c.info.client_id,
+                "user": c.info.user,
+                "client": c.remote,
+                "openwireVersion": c.info.version,
                 "connectedAt": c.connected_at.to_rfc3339(),
-                "sessions": i.sessions,
-                "consumers": i.consumers,
-                "producers": i.producers,
+                "sessions": c.info.sessions,
+                "consumers": c.info.consumers,
+                "producers": c.info.producers,
             })
         })
         .collect();
