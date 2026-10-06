@@ -68,7 +68,7 @@ After a restart the broker starts empty. Clients that use a `failover:` URL reco
 - **Compression**: messages compressed by the client (`useCompression=true`) pass through untouched. The broker can also compress large bodies itself to save RAM (`compress_threshold_kb`); this is off by default because it costs CPU and throughput (see [Load tests](#load-tests)).
 - **Non-durable topics**, **local transactions**, **temporary queues** (request/reply), **QueueBrowser**.
 - **Authentication** with username and password (plain text or Argon2 hash).
-- **Web admin console** with a login form and sessions: queues (every column sortable), consumers, producers, connections and queue contents, a formatted view of XML bodies, a responsive layout with light and dark themes that follow the system, plus a JSON API.
+- **Web admin console** with a login form and sessions: queues (every column sortable, filterable by name and state), consumers, producers, connections and queue contents, a formatted view of XML bodies, a responsive layout with light and dark themes that follow the system, plus a JSON API.
 - **Guided setup from the command line**: `mqrust.exe -h` shows the four steps to get started; `set-admin` and `user add` / `passwd` / `remove` / `list` manage the console user and the messaging users without editing the file by hand.
 - The broker identifies itself as **`ActiveMQRust <version>`**.
 
@@ -197,6 +197,7 @@ The read-only web console answers on `http://127.0.0.1:8161/` (keys `[admin] bin
   - Queue detail: Consumers table (`csort`/`corder`: Consumer ID, Connection ID, Client, Prefetch, Inflight, Selector; default: Consumer ID ascending), Producers table (`psort`/`porder`: Producer ID, Connection ID, Client; default: Producer ID ascending).
   - Message detail: Properties table (`prsort`/`prorder`: Name, Type, Value; default: Name ascending), MapMessage body table (`msort`/`morder`: Key, Type, Value; default: Key ascending).
   - Queue contents (FIFO), message headers, and StreamMessage body maintain their fixed order with plain headers.
+- **Queue filter**: a filter bar above the queues table narrows the list by name (`q`, case-insensitive contains, up to 200 characters) and state checkboxes (`pending=1` for queues with pending messages, `noconsumers=1` for queues without consumers), combined with AND. Works server-side with no JavaScript: sort links and auto-refresh keep the active filter, and the filter form keeps the current sort and refresh. While a filter is active, the page shows "Showing N of M queues" and a "Clear filter" link; if no queues match, the table displays "No queues match the filter".
 - **XML bodies**: a TextMessage holding well-formed XML gets a **Formatted** view (indented and coloured) next to the unchanged **Raw** view. DTDs and entities are never resolved; bodies above 1 MB are not formatted.
 - **Theme**: follows the system light/dark setting. No JavaScript and no external resources are loaded.
 
@@ -221,7 +222,7 @@ curl -u admin:admin http://127.0.0.1:8161/api/queues?sort=pending&order=desc
 | Path | Returns |
 | --- | --- |
 | `/api/overview` | `{product, version, uptimeSeconds, openwire, admin, connections, queues, topics, messageMemory, memoryLimit, memoryLimitReached, compressed, compressDiscarded, workingSet, privateBytes}` |
-| `/api/queues?sort=&order=` | `[{name, temporary, pending, inflight, consumers, producers, enqueued, consumed, expired, discarded, memory, compressed}]` (`sort`: name, pending, inflight, consumers, producers, enqueued, consumed, expired; `order`: asc, desc) |
+| `/api/queues?q=&pending=&noconsumers=&sort=&order=` | `[{name, temporary, pending, inflight, consumers, producers, enqueued, consumed, expired, discarded, memory, compressed}]` (`q`: name contains, `pending=1`: pending messages, `noconsumers=1`: no consumers; `sort`: name, pending, inflight, consumers, producers, enqueued, consumed, expired; `order`: asc, desc) |
 | `/api/queues/{name}` | the queue fields plus `consumers: [{consumerId, connectionId, client, prefetch, inflight, selector, browser}]`, `producers: [{producerId, connectionId, client}]`, `withExpiration`, `nextExpiration`, `nextExpirationText` |
 | `/api/queues/{name}/messages?offset=&limit=` | `{total, offset, limit, messages: [message]}` in FIFO order; `limit` defaults to 50 and is clamped to 1..50 |
 | `/api/queues/{name}/messages/{id}?view=xml` | one message plus `inflight` and `body` (`{kind: text, text, truncated}`, `{kind: bytes, hex, size, truncated}`, `{kind: map, entries}`, `{kind: stream, values}`, `{kind: object, size}`, `{kind: none}`); with `view=xml`, `formattedBody` or `formatError` |

@@ -12,7 +12,8 @@ use std::collections::HashMap;
 
 use super::body::{render, stored_size, BodyView, HEX_LIMIT};
 use super::pages::{
-    find_queue, visible, xml_view, ConnRow, XmlView, CONNECTIONS_TABLE, PAGE_SIZE, QUEUES_TABLE, TOPICS_TABLE,
+    find_queue, visible, xml_view, ConnRow, QueueFilter, XmlView, CONNECTIONS_TABLE, PAGE_SIZE, QUEUES_TABLE,
+    TOPICS_TABLE,
 };
 use super::{fmt_expiration, process_memory, AdminState};
 use crate::broker::destination::DestSnapshot;
@@ -121,12 +122,14 @@ pub async fn overview(State(s): State<AdminState>) -> Json<J> {
 }
 
 pub async fn queues(State(s): State<AdminState>, Query(p): Params) -> Json<J> {
+    let filter = QueueFilter::from_params(&p);
     let mut rows: Vec<DestSnapshot> = s
         .broker
         .destinations()
         .iter()
         .filter(|d| d.dest.kind.is_queue())
         .map(|d| d.snapshot())
+        .filter(|snap| filter.matches(snap))
         .collect();
     QUEUES_TABLE.sort(
         &mut rows,

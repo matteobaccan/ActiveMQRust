@@ -28,9 +28,24 @@ pub const REPOSITORY: &str = env!("CARGO_PKG_REPOSITORY");
 /// Messages per contents page.
 pub const PAGE_SIZE: usize = 50;
 /// Query parameters a page keeps on its own links, in this order.
-const KEPT: [&str; 14] = [
-    "page", "sort", "order", "csort", "corder", "psort", "porder", "prsort", "prorder", "msort", "morder", "view",
-    "seq", "refresh",
+const KEPT: [&str; 17] = [
+    "page",
+    "q",
+    "pending",
+    "noconsumers",
+    "sort",
+    "order",
+    "csort",
+    "corder",
+    "psort",
+    "porder",
+    "prsort",
+    "prorder",
+    "msort",
+    "morder",
+    "view",
+    "seq",
+    "refresh",
 ];
 
 pub fn esc(s: &str) -> String {
@@ -333,6 +348,43 @@ pub async fn overview(State(s): State<AdminState>, ctx: Ctx) -> Response {
     layout(&ctx, "Overview", "/", &c)
 }
 
+/// The filter of the queues page and `/api/queues`: name contains `q` (any case), and optionally
+/// only queues with pending messages and only queues without consumers, combined with AND.
+#[derive(Debug, Default)]
+pub struct QueueFilter {
+    /// Trimmed, at most 200 characters; empty = no name filter.
+    pub q: String,
+    needle: String,
+    pub pending: bool,
+    pub noconsumers: bool,
+}
+
+impl QueueFilter {
+    pub fn from_params(p: &HashMap<String, String>) -> Self {
+        let q: String = p
+            .get("q")
+            .map(|q| q.trim().chars().take(200).collect())
+            .unwrap_or_default();
+        let on = |k: &str| p.get(k).map(String::as_str) == Some("1");
+        QueueFilter {
+            needle: q.to_lowercase(),
+            q,
+            pending: on("pending"),
+            noconsumers: on("noconsumers"),
+        }
+    }
+
+    pub fn is_active(&self) -> bool {
+        !self.q.is_empty() || self.pending || self.noconsumers
+    }
+
+    pub fn matches(&self, s: &DestSnapshot) -> bool {
+        (!self.pending || s.pending > 0)
+            && (!self.noconsumers || s.consumers.is_empty())
+            && (self.needle.is_empty() || s.dest.name.to_lowercase().contains(&self.needle))
+    }
+}
+
 pub static QUEUES_TABLE: Table<DestSnapshot> = Table {
     prefix: "",
     default: "name",
@@ -445,7 +497,36 @@ pub async fn queues(State(s): State<AdminState>, ctx: Ctx) -> Response {
         .filter(|d| d.dest.kind.is_queue())
         .map(|d| d.snapshot())
         .collect();
-    let mut c = String::from("<h1>Queues</h1><div class=\"table-wrap\"><table><thead><tr>");
+    let total = rows.len();
+    let filter = QueueFilter::from_params(&ctx.q);
+    rows.retain(|q| filter.matches(q));
+    let checked = |on: bool| if on { " checked" } else { "" };
+    let mut form = format!(
+        "<form method=\"get\" action=\"/queues\" role=\"search\" class=\"filter-bar\">         <div class=\"filter-field\"><label for=\"q\">Name</label>         <input id=\"q\" name=\"q\" type=\"text\" value=\"{}\"></div>         <label class=\"filter-check\"><input type=\"checkbox\" name=\"pending\" value=\"1\"{}> Only with pending messages</label>         <label class=\"filter-check\"><input type=\"checkbox\" name=\"noconsumers\" value=\"1\"{}> Only without consumers</label>",
+        esc(&filter.q),
+        checked(filter.pending),
+        checked(filter.noconsumers)
+    );
+    for k in ["sort", "order", "refresh"] {
+        if let Some(v) = ctx.get(k) {
+            let _ = write!(form, "<input type=\"hidden\" name=\"{k}\" value=\"{}\">", esc(v));
+        }
+    }
+    form.push_str("<button type=\"submit\">Filter</button></form>");
+
+    let count_line = if filter.is_active() {
+        let clear_href = ctx.with_kept(&[("q", None), ("pending", None), ("noconsumers", None)]);
+        format!(
+            "<p class=\"filter-status\">Showing {} of {} queues <span class=\"sep\" aria-hidden=\"true\">&middot;</span> <a href=\"{}\">Clear filter</a></p>",
+            rows.len(),
+            total,
+            esc(&clear_href)
+        )
+    } else {
+        String::new()
+    };
+
+    let mut c = format!("<h1>Queues</h1>{form}{count_line}<div class=\"table-wrap\"><table><thead><tr>");
     c.push_str(&QUEUES_TABLE.sort_page(&mut rows, &ctx));
     c.push_str("</tr></thead><tbody>");
     for q in &rows {
@@ -469,7 +550,12 @@ pub async fn queues(State(s): State<AdminState>, ctx: Ctx) -> Response {
         );
     }
     if rows.is_empty() {
-        c.push_str("<tr><td colspan=\"8\" class=\"muted\">No queues</td></tr>");
+        let empty = if filter.is_active() {
+            "No queues match the filter"
+        } else {
+            "No queues"
+        };
+        let _ = write!(c, "<tr><td colspan=\"8\" class=\"muted\">{empty}</td></tr>");
     }
     c.push_str("</tbody></table></div>");
     layout(&ctx, "Queues", "/queues", &c)
@@ -949,5 +1035,131 @@ mod tests {
             u,
             "/queues/test?page=3&csort=inflight&corder=asc&psort=client&porder=asc&refresh=5"
         );
+    }
+
+    fn test_snap(name: &str, pending: usize, consumers: usize) -> DestSnapshot {
+        DestSnapshot {
+            dest: crate::openwire::model::Destination::queue(name),
+            pending,
+            inflight: 0,
+            consumers: (0..consumers)
+                .map(|i| SubSnapshot {
+                    consumer_id: format!("c{i}"),
+                    connection_id: "conn1".into(),
+                    remote: "127.0.0.1:50000".into(),
+                    prefetch: 10,
+                    inflight: 0,
+                    pending: 0,
+                    selector: None,
+                    browser: false,
+                    dispatched: 0,
+                })
+                .collect(),
+            producers: Vec::new(),
+            stats: Default::default(),
+            with_expiry: 0,
+            next_expiry: None,
+            memory: 0,
+            compressed: 0,
+        }
+    }
+
+    #[test]
+    fn queue_filter_case_insensitive_contains() {
+        let filter = QueueFilter::from_params(&HashMap::from([("q".to_string(), "orders".to_string())]));
+        assert!(filter.is_active());
+        assert!(filter.matches(&test_snap("ORDERS.DLQ", 0, 0)));
+        assert!(filter.matches(&test_snap("app.orders.in", 0, 0)));
+        assert!(filter.matches(&test_snap("my.Orders", 0, 0)));
+        assert!(!filter.matches(&test_snap("billing", 0, 0)));
+    }
+
+    #[test]
+    fn queue_filter_empty_and_long_q() {
+        let p_empty = HashMap::from([("q".to_string(), "".to_string())]);
+        let f_empty = QueueFilter::from_params(&p_empty);
+        assert!(!f_empty.is_active());
+        assert!(f_empty.q.is_empty());
+        assert!(f_empty.matches(&test_snap("any.queue", 0, 0)));
+
+        let p_spaces = HashMap::from([("q".to_string(), "   \t  ".to_string())]);
+        let f_spaces = QueueFilter::from_params(&p_spaces);
+        assert!(!f_spaces.is_active());
+        assert!(f_spaces.q.is_empty());
+
+        let p_trimmed = HashMap::from([("q".to_string(), "  orders  ".to_string())]);
+        let f_trimmed = QueueFilter::from_params(&p_trimmed);
+        assert_eq!(f_trimmed.q, "orders");
+
+        let long_str = "a".repeat(250);
+        let p_long = HashMap::from([("q".to_string(), long_str)]);
+        let f_long = QueueFilter::from_params(&p_long);
+        assert_eq!(f_long.q.len(), 200);
+        let matching_queue = "a".repeat(200);
+        assert!(f_long.matches(&test_snap(&matching_queue, 0, 0)));
+        let shorter_queue = "a".repeat(199);
+        assert!(!f_long.matches(&test_snap(&shorter_queue, 0, 0)));
+    }
+
+    #[test]
+    fn queue_filter_checkboxes() {
+        let p_pending = HashMap::from([("pending".to_string(), "1".to_string())]);
+        let f_pending = QueueFilter::from_params(&p_pending);
+        assert!(f_pending.is_active());
+        assert!(f_pending.matches(&test_snap("q1", 5, 0)));
+        assert!(f_pending.matches(&test_snap("q2", 1, 1)));
+        assert!(!f_pending.matches(&test_snap("q3", 0, 0)));
+
+        let p_bogus = HashMap::from([("pending".to_string(), "true".to_string())]);
+        assert!(!QueueFilter::from_params(&p_bogus).is_active());
+
+        let p_nocons = HashMap::from([("noconsumers".to_string(), "1".to_string())]);
+        let f_nocons = QueueFilter::from_params(&p_nocons);
+        assert!(f_nocons.is_active());
+        assert!(f_nocons.matches(&test_snap("q1", 0, 0)));
+        assert!(f_nocons.matches(&test_snap("q2", 5, 0)));
+        assert!(!f_nocons.matches(&test_snap("q3", 0, 1)));
+    }
+
+    #[test]
+    fn queue_filter_and_combination() {
+        let p = HashMap::from([
+            ("q".to_string(), "order".to_string()),
+            ("pending".to_string(), "1".to_string()),
+            ("noconsumers".to_string(), "1".to_string()),
+        ]);
+        let f = QueueFilter::from_params(&p);
+        assert!(f.is_active());
+        assert!(f.matches(&test_snap("new.orders", 3, 0)));
+        assert!(!f.matches(&test_snap("billing", 3, 0)));
+        assert!(!f.matches(&test_snap("new.orders", 0, 0)));
+        assert!(!f.matches(&test_snap("new.orders", 3, 1)));
+    }
+
+    #[test]
+    fn with_kept_filter_parameters_and_clear() {
+        let q: HashMap<String, String> = [
+            ("q", "orders"),
+            ("pending", "1"),
+            ("noconsumers", "1"),
+            ("sort", "pending"),
+            ("order", "desc"),
+            ("refresh", "5"),
+        ]
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+        let ctx = Ctx {
+            user: None,
+            path: "/queues".into(),
+            q,
+        };
+        let u = ctx.with_kept(&[("sort", Some("consumers")), ("order", Some("asc"))]);
+        assert_eq!(
+            u,
+            "/queues?q=orders&pending=1&noconsumers=1&sort=consumers&order=asc&refresh=5"
+        );
+        let u_clear = ctx.with_kept(&[("q", None), ("pending", None), ("noconsumers", None)]);
+        assert_eq!(u_clear, "/queues?sort=pending&order=desc&refresh=5");
     }
 }
