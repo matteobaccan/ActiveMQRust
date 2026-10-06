@@ -1,6 +1,6 @@
 ## Context
 
-`/queues` renders server-side HTML with no JavaScript (the CSP has no `script-src`). Sorting uses the `sort`/`order` query parameters, and `Ctx::link` keeps the parameters listed in `KEPT` (`page`, `sort`, `order`, `view`, `seq`, `refresh`) on every link. `/api/queues` shares `sort_params`/`sort_queues` with the page.
+`/queues` renders server-side HTML with no JavaScript (the CSP has no `script-src`). Sorting uses the `sort`/`order` query parameters through `QUEUES_TABLE` (`src/admin/sort.rs`, shared by the page and `/api/queues`), and `Ctx::with_kept` keeps the parameters listed in `KEPT` (sort parameters of every table, `page`, `view`, `seq`, `refresh`) on every link.
 
 ## Goals / Non-Goals
 
@@ -24,7 +24,7 @@ A `<form method="get" action="/queues" role="search">` with a labelled text inpu
 *Alternative*: prefix match or `*` wildcards. Rejected: "contains" finds both `ORDERS.DLQ` and `app.orders.in` with `orders`, and matches the ActiveMQ console.
 
 ### D3. Filters combine with AND, filtering before sorting
-Rows are filtered on the snapshot, then sorted by the existing `sort_queues`. "Only with pending messages" keeps `pending > 0`; "Only without consumers" keeps queues with zero consumers (queue browsers count as consumers, as in the Consumers column).
+Rows are filtered on the snapshot, then sorted by `QUEUES_TABLE.sort`. "Only with pending messages" keeps `pending > 0`; "Only without consumers" keeps queues with zero consumers (queue browsers count as consumers, as in the Consumers column).
 *Alternative*: OR between the checkboxes. Rejected: the useful question is "messages waiting and nobody reading", which is AND.
 
 ### D4. One helper for page and API

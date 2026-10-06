@@ -1,7 +1,7 @@
 ## 1. Filter logic
 
 - [ ] 1.1 `QueueFilter` in `src/admin/pages.rs`: parse `q` (trim, 200-character cap), `pending`, `noconsumers`; `matches(&DestSnapshot)` with case-insensitive "contains" and AND
-- [ ] 1.2 Add `q`, `pending`, `noconsumers` to `KEPT` so sort links keep the filter
+- [ ] 1.2 Add `q`, `pending`, `noconsumers` to `KEPT` so sort links (`Table::sort_page`) keep the filter
 - [ ] 1.3 Unit tests: case-insensitive contains, empty and long `q`, each checkbox, AND combination
 
 ## 2. Queues page
