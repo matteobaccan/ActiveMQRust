@@ -13,11 +13,14 @@ use std::fmt::Write;
 use std::sync::Arc;
 
 use super::body::{full_text, hex_dump, render, stored_size, BodyView, HEX_LIMIT};
+use super::sort::{Column, Table};
 use super::xml::{self, XmlError};
 use super::{fmt_bytes, fmt_duration, fmt_expiration, fmt_time_ms, process_memory, AdminState, CurrentUser, CSS};
-use crate::broker::destination::{Dest, DestSnapshot};
+use crate::broker::conn::{ConnHandle, ConnInfo};
+use crate::broker::destination::{Dest, DestSnapshot, ProducerMeta, SubSnapshot};
 use crate::broker::entry::Entry;
 use crate::broker::now_ms;
+use crate::openwire::props::Value;
 use crate::openwire::wireformat::{PROVIDER_NAME, PROVIDER_VERSION};
 
 /// Project repository, from the crate metadata.
@@ -25,7 +28,10 @@ pub const REPOSITORY: &str = env!("CARGO_PKG_REPOSITORY");
 /// Messages per contents page.
 pub const PAGE_SIZE: usize = 50;
 /// Query parameters a page keeps on its own links, in this order.
-const KEPT: [&str; 6] = ["page", "sort", "order", "view", "seq", "refresh"];
+const KEPT: [&str; 14] = [
+    "page", "sort", "order", "csort", "corder", "psort", "porder", "prsort", "prorder", "msort", "morder", "view",
+    "seq", "refresh",
+];
 
 pub fn esc(s: &str) -> String {
     let mut o = String::with_capacity(s.len());
@@ -83,7 +89,7 @@ impl Ctx {
         self.q.get("refresh").map(String::as_str) == Some("5")
     }
 
-    fn get(&self, k: &str) -> Option<&str> {
+    pub(super) fn get(&self, k: &str) -> Option<&str> {
         self.q.get(k).map(String::as_str)
     }
 
@@ -98,10 +104,16 @@ impl Ctx {
 
     /// The current page with one parameter changed (`None` removes it).
     fn with(&self, key: &str, value: Option<&str>) -> String {
+        self.with_kept(&[(key, value)])
+    }
+
+    /// The current page with the given parameters updated (`None` removes them),
+    /// keeping all other parameters present in `KEPT`.
+    pub(super) fn with_kept(&self, updates: &[(&str, Option<&str>)]) -> String {
         let mut params: Vec<(&str, &str)> = Vec::new();
         for k in KEPT {
-            if k == key {
-                if let Some(v) = value {
+            if let Some((_, opt_val)) = updates.iter().find(|(uk, _)| *uk == k) {
+                if let Some(v) = opt_val {
                     params.push((k, v));
                 }
             } else if let Some(v) = self.get(k) {
@@ -321,63 +333,109 @@ pub async fn overview(State(s): State<AdminState>, ctx: Ctx) -> Response {
     layout(&ctx, "Overview", "/", &c)
 }
 
-/// Sortable columns of the queues table: (key, label).
-pub const QUEUE_COLUMNS: [(&str, &str); 8] = [
-    ("name", "Name"),
-    ("pending", "Pending"),
-    ("inflight", "Inflight"),
-    ("consumers", "Consumers"),
-    ("producers", "Producers"),
-    ("enqueued", "Enqueued"),
-    ("consumed", "Consumed"),
-    ("expired", "Expired"),
-];
+pub static QUEUES_TABLE: Table<DestSnapshot> = Table {
+    prefix: "",
+    default: "name",
+    columns: &[
+        Column::text("name", "Name", |s| s.dest.name.as_ref().into()),
+        Column::number("pending", "Pending", |s| s.pending as u64),
+        Column::number("inflight", "Inflight", |s| s.inflight as u64),
+        Column::number("consumers", "Consumers", |s| s.consumers.len() as u64),
+        Column::number("producers", "Producers", |s| s.producers.len() as u64),
+        Column::number("enqueued", "Enqueued", |s| s.stats.enqueued),
+        Column::number("consumed", "Consumed", |s| s.stats.dequeued),
+        Column::number("expired", "Expired", |s| s.stats.expired),
+    ],
+};
 
-/// Normalized sort column and direction: unknown columns fall back to Name.
-pub fn sort_params(sort: Option<&str>, order: Option<&str>) -> (&'static str, bool) {
-    let col = QUEUE_COLUMNS
-        .iter()
-        .map(|c| c.0)
-        .find(|c| Some(*c) == sort)
-        .unwrap_or("name");
-    (col, order == Some("desc"))
+pub static TOPICS_TABLE: Table<DestSnapshot> = Table {
+    prefix: "",
+    default: "name",
+    columns: &[
+        Column::text("name", "Name", |s| s.dest.name.as_ref().into()),
+        Column::number("consumers", "Consumers", |s| s.consumers.len() as u64),
+        Column::number("producers", "Producers", |s| s.producers.len() as u64),
+        Column::number("published", "Published", |s| s.stats.enqueued),
+        Column::number("discarded", "Discarded", |s| s.stats.discarded),
+    ],
+};
+
+/// One row of the connections table: the connection's info and where it comes from.
+pub struct ConnRow {
+    pub info: ConnInfo,
+    pub remote: String,
+    pub connected_at: chrono::DateTime<chrono::Local>,
 }
 
-/// Server-side sort: numeric columns numerically, Name case-insensitively, ties by name.
-pub fn sort_queues(rows: &mut [DestSnapshot], col: &str, desc: bool) {
-    let key = |s: &DestSnapshot| -> u64 {
-        match col {
-            "pending" => s.pending as u64,
-            "inflight" => s.inflight as u64,
-            "consumers" => s.consumers.len() as u64,
-            "producers" => s.producers.len() as u64,
-            "enqueued" => s.stats.enqueued,
-            "consumed" => s.stats.dequeued,
-            "expired" => s.stats.expired,
-            _ => 0,
+impl ConnRow {
+    pub fn of(c: &ConnHandle) -> Self {
+        ConnRow {
+            info: c.info.lock().clone(),
+            remote: c.remote.to_string(),
+            connected_at: c.connected_at,
         }
-    };
-    let by_name = |a: &DestSnapshot, b: &DestSnapshot| {
-        a.dest
-            .name
-            .to_lowercase()
-            .cmp(&b.dest.name.to_lowercase())
-            .then_with(|| a.dest.name.cmp(&b.dest.name))
-    };
-    rows.sort_by(|a, b| {
-        let primary = if col == "name" {
-            by_name(a, b)
-        } else {
-            key(a).cmp(&key(b))
-        };
-        let primary = if desc { primary.reverse() } else { primary };
-        if col == "name" {
-            primary
-        } else {
-            primary.then_with(|| by_name(a, b))
-        }
-    });
+    }
 }
+
+pub static CONNECTIONS_TABLE: Table<ConnRow> = Table {
+    prefix: "",
+    default: "connected",
+    columns: &[
+        Column::text("connectionId", "Connection ID", |c| {
+            c.info.connection_id.as_str().into()
+        }),
+        Column::text("user", "User", |c| c.info.user.as_str().into()),
+        Column::address("client", "Client", |c| c.remote.as_str().into()),
+        Column::number("openwire", "OpenWire", |c| c.info.version as u64),
+        Column::time("connected", "Connected", |c| c.connected_at.timestamp_millis()),
+        Column::number("sessions", "Sessions", |c| c.info.sessions as u64),
+        Column::number("consumers", "Consumers", |c| c.info.consumers as u64),
+        Column::number("producers", "Producers", |c| c.info.producers as u64),
+    ],
+};
+
+pub static CONSUMERS_TABLE: Table<SubSnapshot> = Table {
+    prefix: "c",
+    default: "consumerId",
+    columns: &[
+        Column::text("consumerId", "Consumer ID", |c| c.consumer_id.as_str().into()),
+        Column::text("connectionId", "Connection ID", |c| c.connection_id.as_str().into()),
+        Column::address("client", "Client", |c| c.remote.as_str().into()),
+        Column::number("prefetch", "Prefetch", |c| c.prefetch as u64),
+        Column::number("inflight", "Inflight", |c| c.inflight as u64),
+        Column::text("selector", "Selector", |c| c.selector.as_deref().unwrap_or("").into()),
+    ],
+};
+
+pub static PRODUCERS_TABLE: Table<(String, ProducerMeta)> = Table {
+    prefix: "p",
+    default: "producerId",
+    columns: &[
+        Column::text("producerId", "Producer ID", |p| p.0.as_str().into()),
+        Column::text("connectionId", "Connection ID", |p| p.1.connection_id.as_str().into()),
+        Column::address("client", "Client", |p| p.1.remote.as_str().into()),
+    ],
+};
+
+pub static PROPERTIES_TABLE: Table<(String, Value)> = Table {
+    prefix: "pr",
+    default: "name",
+    columns: &[
+        Column::text("name", "Name", |p| p.0.as_str().into()),
+        Column::text("type", "Type", |p| super::body::java_type(&p.1).into()),
+        Column::text("value", "Value", |p| p.1.display().into()),
+    ],
+};
+
+pub static MAP_ENTRIES_TABLE: Table<(String, &'static str, String)> = Table {
+    prefix: "m",
+    default: "key",
+    columns: &[
+        Column::text("key", "Key", |m| m.0.as_str().into()),
+        Column::text("type", "Type", |m| m.1.into()),
+        Column::text("value", "Value", |m| m.2.as_str().into()),
+    ],
+};
 
 pub async fn queues(State(s): State<AdminState>, ctx: Ctx) -> Response {
     let mut rows: Vec<DestSnapshot> = s
@@ -387,35 +445,8 @@ pub async fn queues(State(s): State<AdminState>, ctx: Ctx) -> Response {
         .filter(|d| d.dest.kind.is_queue())
         .map(|d| d.snapshot())
         .collect();
-    let (col, desc) = sort_params(ctx.get("sort"), ctx.get("order"));
-    sort_queues(&mut rows, col, desc);
     let mut c = String::from("<h1>Queues</h1><div class=\"table-wrap\"><table><thead><tr>");
-    for (key, label) in QUEUE_COLUMNS {
-        let num = if key == "name" { "" } else { " class=\"num\"" };
-        let (next, aria, arrow) = if key == col {
-            if desc {
-                (
-                    "asc",
-                    " aria-sort=\"descending\"",
-                    " <span aria-hidden=\"true\">&#9660;</span>",
-                )
-            } else {
-                (
-                    "desc",
-                    " aria-sort=\"ascending\"",
-                    " <span aria-hidden=\"true\">&#9650;</span>",
-                )
-            }
-        } else {
-            ("asc", "", "")
-        };
-        let href = ctx.link("/queues", &[("sort", key), ("order", next)]);
-        let _ = write!(
-            c,
-            "<th scope=\"col\"{num}{aria}><a href=\"{}\">{label}{arrow}</a></th>",
-            esc(&href)
-        );
-    }
+    c.push_str(&QUEUES_TABLE.sort_page(&mut rows, &ctx));
     c.push_str("</tr></thead><tbody>");
     for q in &rows {
         let kind = if q.dest.kind.is_temporary() {
@@ -482,8 +513,11 @@ pub async fn queue_detail(State(s): State<AdminState>, Path(name): Path<String>,
     ] {
         c.push_str(&card(label, &esc(&value)));
     }
-    c.push_str("</div><h2>Consumers</h2><div class=\"table-wrap\"><table><thead><tr><th scope=\"col\">Consumer ID</th><th scope=\"col\">Connection ID</th><th scope=\"col\">Client</th><th scope=\"col\" class=\"num\">Prefetch</th><th scope=\"col\" class=\"num\">Inflight</th><th scope=\"col\">Selector</th></tr></thead><tbody>");
-    for x in &snap.consumers {
+    c.push_str("</div><h2>Consumers</h2><div class=\"table-wrap\"><table><thead><tr>");
+    let mut consumers = snap.consumers;
+    c.push_str(&CONSUMERS_TABLE.sort_page(&mut consumers, &ctx));
+    c.push_str("</tr></thead><tbody>");
+    for x in &consumers {
         let _ = write!(
             c,
             "<tr><td class=\"id\">{}{}</td><td class=\"id\">{}</td><td>{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td><td class=\"id\">{}</td></tr>",
@@ -496,11 +530,14 @@ pub async fn queue_detail(State(s): State<AdminState>, Path(name): Path<String>,
             esc(x.selector.as_deref().unwrap_or(""))
         );
     }
-    if snap.consumers.is_empty() {
+    if consumers.is_empty() {
         c.push_str("<tr><td colspan=\"6\" class=\"muted\">No consumers</td></tr>");
     }
-    c.push_str("</tbody></table></div><h2>Producers</h2><div class=\"table-wrap\"><table><thead><tr><th scope=\"col\">Producer ID</th><th scope=\"col\">Connection ID</th><th scope=\"col\">Client</th></tr></thead><tbody>");
-    for (pid, m) in &snap.producers {
+    c.push_str("</tbody></table></div><h2>Producers</h2><div class=\"table-wrap\"><table><thead><tr>");
+    let mut producers = snap.producers;
+    c.push_str(&PRODUCERS_TABLE.sort_page(&mut producers, &ctx));
+    c.push_str("</tr></thead><tbody>");
+    for (pid, m) in &producers {
         let _ = write!(
             c,
             "<tr><td class=\"id\">{}</td><td class=\"id\">{}</td><td>{}</td></tr>",
@@ -509,7 +546,7 @@ pub async fn queue_detail(State(s): State<AdminState>, Path(name): Path<String>,
             esc(&m.remote)
         );
     }
-    if snap.producers.is_empty() {
+    if producers.is_empty() {
         c.push_str("<tr><td colspan=\"3\" class=\"muted\">No producers</td></tr>");
     }
     let _ = write!(
@@ -549,7 +586,7 @@ pub async fn queue_detail(State(s): State<AdminState>, Path(name): Path<String>,
         let _ = write!(
             c,
             "<a href=\"{}\" rel=\"prev\">&larr; Previous</a>",
-            esc(&ctx.link(&qpath, &[("page", &p)]))
+            esc(&ctx.with_kept(&[("page", Some(&p))]))
         );
     }
     let _ = write!(
@@ -562,7 +599,7 @@ pub async fn queue_detail(State(s): State<AdminState>, Path(name): Path<String>,
         let _ = write!(
             c,
             "<a href=\"{}\" rel=\"next\">Next &rarr;</a>",
-            esc(&ctx.link(&qpath, &[("page", &p)]))
+            esc(&ctx.with_kept(&[("page", Some(&p))]))
         );
     }
     c.push_str("</nav>");
@@ -654,20 +691,22 @@ pub async fn message_detail(
     for (k, v) in rows {
         let _ = write!(c, "<tr><th scope=\"row\">{k}</th><td class=\"id\">{v}</td></tr>");
     }
-    c.push_str("</tbody></table></div><h2>Properties</h2><div class=\"table-wrap\"><table><thead><tr><th scope=\"col\">Name</th><th scope=\"col\">Type</th><th scope=\"col\">Value</th></tr></thead><tbody>");
-    match e.properties() {
-        Some(props) if !props.entries.is_empty() => {
-            for (k, v) in &props.entries {
-                let _ = write!(
-                    c,
-                    "<tr><td class=\"id\">{}</td><td>{}</td><td class=\"id\">{}</td></tr>",
-                    esc(k),
-                    super::body::java_type(v),
-                    esc(&v.display())
-                );
-            }
+    c.push_str("</tbody></table></div><h2>Properties</h2><div class=\"table-wrap\"><table><thead><tr>");
+    let mut prop_rows: Vec<(String, Value)> = e.properties().map(|p| p.entries.clone()).unwrap_or_default();
+    c.push_str(&PROPERTIES_TABLE.sort_page(&mut prop_rows, &ctx));
+    c.push_str("</tr></thead><tbody>");
+    if prop_rows.is_empty() {
+        c.push_str("<tr><td colspan=\"3\" class=\"muted\">No properties</td></tr>");
+    } else {
+        for (k, v) in &prop_rows {
+            let _ = write!(
+                c,
+                "<tr><td class=\"id\">{}</td><td>{}</td><td class=\"id\">{}</td></tr>",
+                esc(k),
+                super::body::java_type(v),
+                esc(&v.display())
+            );
         }
-        _ => c.push_str("<tr><td colspan=\"3\" class=\"muted\">No properties</td></tr>"),
     }
     c.push_str("</tbody></table></div><h2>Body</h2>");
     let rendered = render(m);
@@ -706,12 +745,12 @@ pub async fn message_detail(
                 c.push_str("<p class=\"notice\">Formatted view truncated at 256 KB.</p>");
             }
         }
-        _ => body_html(&mut c, rendered.view),
+        _ => body_html(&mut c, rendered.view, &ctx),
     }
     layout(&ctx, &format!("Message {id}"), "/queues", &c)
 }
 
-fn body_html(c: &mut String, view: BodyView) {
+fn body_html(c: &mut String, view: BodyView, ctx: &Ctx) {
     match view {
         BodyView::NoBody => c.push_str("<p class=\"muted\">no body</p>"),
         BodyView::Text { text, truncated } => {
@@ -729,8 +768,10 @@ fn body_html(c: &mut String, view: BodyView) {
                 );
             }
         }
-        BodyView::Map(entries) => {
-            c.push_str("<div class=\"table-wrap\"><table><thead><tr><th scope=\"col\">Key</th><th scope=\"col\">Type</th><th scope=\"col\">Value</th></tr></thead><tbody>");
+        BodyView::Map(mut entries) => {
+            c.push_str("<div class=\"table-wrap\"><table><thead><tr>");
+            c.push_str(&MAP_ENTRIES_TABLE.sort_page(&mut entries, ctx));
+            c.push_str("</tr></thead><tbody>");
             for (k, ty, v) in entries {
                 let _ = write!(
                     c,
@@ -761,17 +802,18 @@ fn body_html(c: &mut String, view: BodyView) {
 }
 
 pub async fn topics(State(s): State<AdminState>, ctx: Ctx) -> Response {
-    let mut c = String::from("<h1>Topics</h1><div class=\"table-wrap\"><table><thead><tr><th scope=\"col\">Name</th><th scope=\"col\" class=\"num\">Consumers</th><th scope=\"col\" class=\"num\">Producers</th><th scope=\"col\" class=\"num\">Published</th><th scope=\"col\" class=\"num\">Discarded</th></tr></thead><tbody>");
-    let mut any = false;
-    for d in s
+    let mut rows: Vec<DestSnapshot> = s
         .broker
         .destinations()
         .iter()
         .filter(|d| d.dest.kind.is_topic() && visible(d))
-    {
-        any = true;
-        let snap = d.snapshot();
-        let kind = if d.dest.kind.is_temporary() {
+        .map(|d| d.snapshot())
+        .collect();
+    let mut c = String::from("<h1>Topics</h1><div class=\"table-wrap\"><table><thead><tr>");
+    c.push_str(&TOPICS_TABLE.sort_page(&mut rows, &ctx));
+    c.push_str("</tr></thead><tbody>");
+    for q in &rows {
+        let kind = if q.dest.kind.is_temporary() {
             badge("info", "temporary")
         } else {
             String::new()
@@ -779,14 +821,14 @@ pub async fn topics(State(s): State<AdminState>, ctx: Ctx) -> Response {
         let _ = write!(
             c,
             "<tr><th scope=\"row\" class=\"id\">{}{kind}</th><td class=\"num\">{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td></tr>",
-            esc(&d.dest.name),
-            snap.consumers.len(),
-            snap.producers.len(),
-            snap.stats.enqueued,
-            snap.stats.discarded
+            esc(&q.dest.name),
+            q.consumers.len(),
+            q.producers.len(),
+            q.stats.enqueued,
+            q.stats.discarded
         );
     }
-    if !any {
+    if rows.is_empty() {
         c.push_str("<tr><td colspan=\"5\" class=\"muted\">No topics</td></tr>");
     }
     c.push_str("</tbody></table></div>");
@@ -794,24 +836,25 @@ pub async fn topics(State(s): State<AdminState>, ctx: Ctx) -> Response {
 }
 
 pub async fn connections(State(s): State<AdminState>, ctx: Ctx) -> Response {
-    let mut c = String::from("<h1>Connections</h1><div class=\"table-wrap\"><table><thead><tr><th scope=\"col\">Connection ID</th><th scope=\"col\">User</th><th scope=\"col\">Client</th><th scope=\"col\" class=\"num\">OpenWire</th><th scope=\"col\">Connected</th><th scope=\"col\" class=\"num\">Sessions</th><th scope=\"col\" class=\"num\">Consumers</th><th scope=\"col\" class=\"num\">Producers</th></tr></thead><tbody>");
-    let conns = s.broker.connections();
-    for x in &conns {
-        let i = x.info.lock().clone();
+    let mut rows: Vec<ConnRow> = s.broker.connections().iter().map(|c| ConnRow::of(c)).collect();
+    let mut c = String::from("<h1>Connections</h1><div class=\"table-wrap\"><table><thead><tr>");
+    c.push_str(&CONNECTIONS_TABLE.sort_page(&mut rows, &ctx));
+    c.push_str("</tr></thead><tbody>");
+    for x in &rows {
         let _ = write!(
             c,
             "<tr><td class=\"id\">{}</td><td>{}</td><td>{}</td><td class=\"num\">{}</td><td>{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td></tr>",
-            esc(&i.connection_id),
-            esc(&i.user),
-            esc(&x.remote.to_string()),
-            i.version,
+            esc(&x.info.connection_id),
+            esc(&x.info.user),
+            esc(&x.remote),
+            x.info.version,
             x.connected_at.format("%Y-%m-%d %H:%M:%S"),
-            i.sessions,
-            i.consumers,
-            i.producers
+            x.info.sessions,
+            x.info.consumers,
+            x.info.producers
         );
     }
-    if conns.is_empty() {
+    if rows.is_empty() {
         c.push_str("<tr><td colspan=\"8\" class=\"muted\">No connections</td></tr>");
     }
     c.push_str("</tbody></table></div>");
@@ -852,9 +895,59 @@ mod tests {
     }
 
     #[test]
-    fn sort_parameters() {
-        assert_eq!(sort_params(Some("pending"), Some("desc")), ("pending", true));
-        assert_eq!(sort_params(Some("bogus"), None), ("name", false));
-        assert_eq!(sort_params(None, Some("asc")), ("name", false));
+    fn table_defaults_and_fallbacks() {
+        assert_eq!(QUEUES_TABLE.params(None, None), ("name", false));
+        assert_eq!(QUEUES_TABLE.params(Some("pending"), Some("desc")), ("pending", true));
+        assert_eq!(QUEUES_TABLE.params(Some("pending"), Some("bogus")), ("pending", false));
+        assert_eq!(QUEUES_TABLE.params(Some("bogus"), None), ("name", false));
+
+        assert_eq!(TOPICS_TABLE.params(None, None), ("name", false));
+        assert_eq!(TOPICS_TABLE.params(Some("bogus"), None), ("name", false));
+
+        assert_eq!(CONNECTIONS_TABLE.params(None, None), ("connected", false));
+        assert_eq!(CONNECTIONS_TABLE.params(Some("bogus"), None), ("connected", false));
+
+        assert_eq!(CONSUMERS_TABLE.params(None, None), ("consumerId", false));
+        assert_eq!(CONSUMERS_TABLE.params(Some("bogus"), None), ("consumerId", false));
+
+        assert_eq!(PRODUCERS_TABLE.params(None, None), ("producerId", false));
+        assert_eq!(PRODUCERS_TABLE.params(Some("bogus"), None), ("producerId", false));
+
+        assert_eq!(PROPERTIES_TABLE.params(None, None), ("name", false));
+        assert_eq!(PROPERTIES_TABLE.params(Some("bogus"), None), ("name", false));
+
+        assert_eq!(MAP_ENTRIES_TABLE.params(None, None), ("key", false));
+        assert_eq!(MAP_ENTRIES_TABLE.params(Some("bogus"), None), ("key", false));
+    }
+
+    #[test]
+    fn with_kept_preserves_parameters() {
+        let q: HashMap<String, String> = [
+            ("page", "3"),
+            ("csort", "prefetch"),
+            ("corder", "desc"),
+            ("psort", "client"),
+            ("porder", "asc"),
+            ("refresh", "5"),
+            ("other", "junk"),
+        ]
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+        let ctx = Ctx {
+            user: None,
+            path: "/queues/test".into(),
+            q,
+        };
+        let u = ctx.with_kept(&[("page", Some("4"))]);
+        assert_eq!(
+            u,
+            "/queues/test?page=4&csort=prefetch&corder=desc&psort=client&porder=asc&refresh=5"
+        );
+        let u = ctx.with_kept(&[("csort", Some("inflight")), ("corder", Some("asc"))]);
+        assert_eq!(
+            u,
+            "/queues/test?page=3&csort=inflight&corder=asc&psort=client&porder=asc&refresh=5"
+        );
     }
 }

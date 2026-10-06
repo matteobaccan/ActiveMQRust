@@ -9,6 +9,7 @@ mod api;
 mod body;
 mod pages;
 mod session;
+mod sort;
 mod xml;
 
 use axum::body::Body;

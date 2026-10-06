@@ -189,7 +189,14 @@ The read-only web console answers on `http://127.0.0.1:8161/` (keys `[admin] bin
 
 - **Login**: pages open a login form; a successful login starts a session held in memory, in an `HttpOnly`, `SameSite=Strict` cookie. The top bar shows the user and a **Log out** button. Sessions end after `session_idle_minutes` without requests, `session_max_hours` after login, or when the broker restarts. The login page warns when the built-in `admin` / `admin` credentials are in use.
 - **Throttling**: after `login_max_failures` failed logins from one IP within 15 minutes, that IP is refused (`429`) for `login_lockout_seconds`. Failed logins are logged with IP and username, never the password.
-- **Pages**: overview (version, uptime, connections, memory, broker compression counters), queues (every column sortable, numeric order, ties by name), queue detail with consumers, producers and paginated contents (50 per page), message detail (headers, properties, body by JMS type), topics and connections. Add `?refresh=5` to refresh every 5 seconds.
+- **Pages**: overview (version, uptime, connections, memory, broker compression counters), queues, topics, connections, queue detail with consumers, producers and paginated contents (50 per page), message detail (headers, properties, body by JMS type). Add `?refresh=5` to refresh every 5 seconds.
+- **Sortable tables**: all list tables are sortable by clicking column headers (server-side, no JavaScript, typed comparison: numeric, chronological, IP/port, case-insensitive natural order for text and IDs; ties broken by the first column ascending). Sorting parameters are kept across auto-refresh, pagination, and between tables on the same page:
+  - Queues (`sort`/`order`): Name, Pending, Inflight, Consumers, Producers, Enqueued, Consumed, Expired (default: Name ascending).
+  - Topics (`sort`/`order`): Name, Consumers, Producers, Published, Discarded (default: Name ascending).
+  - Connections (`sort`/`order`): Connection ID, User, Client, OpenWire, Connected, Sessions, Consumers, Producers (default: Connected ascending).
+  - Queue detail: Consumers table (`csort`/`corder`: Consumer ID, Connection ID, Client, Prefetch, Inflight, Selector; default: Consumer ID ascending), Producers table (`psort`/`porder`: Producer ID, Connection ID, Client; default: Producer ID ascending).
+  - Message detail: Properties table (`prsort`/`prorder`: Name, Type, Value; default: Name ascending), MapMessage body table (`msort`/`morder`: Key, Type, Value; default: Key ascending).
+  - Queue contents (FIFO), message headers, and StreamMessage body maintain their fixed order with plain headers.
 - **XML bodies**: a TextMessage holding well-formed XML gets a **Formatted** view (indented and coloured) next to the unchanged **Raw** view. DTDs and entities are never resolved; bodies above 1 MB are not formatted.
 - **Theme**: follows the system light/dark setting. No JavaScript and no external resources are loaded.
 
@@ -218,8 +225,8 @@ curl -u admin:admin http://127.0.0.1:8161/api/queues?sort=pending&order=desc
 | `/api/queues/{name}` | the queue fields plus `consumers: [{consumerId, connectionId, client, prefetch, inflight, selector, browser}]`, `producers: [{producerId, connectionId, client}]`, `withExpiration`, `nextExpiration`, `nextExpirationText` |
 | `/api/queues/{name}/messages?offset=&limit=` | `{total, offset, limit, messages: [message]}` in FIFO order; `limit` defaults to 50 and is clamped to 1..50 |
 | `/api/queues/{name}/messages/{id}?view=xml` | one message plus `inflight` and `body` (`{kind: text, text, truncated}`, `{kind: bytes, hex, size, truncated}`, `{kind: map, entries}`, `{kind: stream, values}`, `{kind: object, size}`, `{kind: none}`); with `view=xml`, `formattedBody` or `formatError` |
-| `/api/topics` | `[{name, temporary, consumers, producers, published, discarded, pending, memory}]` |
-| `/api/connections` | `[{connectionId, clientId, user, client, openwireVersion, connectedAt, sessions, consumers, producers}]` |
+| `/api/topics?sort=&order=` | `[{name, temporary, consumers, producers, published, discarded, pending, memory}]` (`sort`: name, consumers, producers, published, discarded; `order`: asc, desc) |
+| `/api/connections?sort=&order=` | `[{connectionId, clientId, user, client, openwireVersion, connectedAt, sessions, consumers, producers}]` (`sort`: connectionId, user, client, openwire, connected, sessions, consumers, producers; `order`: asc, desc) |
 
 A `message` is `{position, messageId, correlationId, type, replyTo, deliveryMode, priority, timestamp, expiration, expirationText, expired, expiresInMs, redeliveryCounter, properties, bodyType, bodySize, compressed}`, plus `compressedSize` for a compressed body. `bodySize` is the size as stored (compressed size for a compressed body). Unknown queues and messages answer `404 {"error": "... not found"}`.
 

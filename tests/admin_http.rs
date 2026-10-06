@@ -1434,3 +1434,306 @@ async fn polling_while_producing_keeps_counts_right() {
         );
     }
 }
+
+// -- table sorting tests (OpenSpec add-admin-table-sorting) ----------------------------
+
+#[tokio::test]
+async fn natural_name_order_scenario() {
+    let c = start().await;
+    let token = login(&c).await;
+    for name in ["Q10", "q2", "Q1"] {
+        put(&c.broker, name, "data");
+    }
+    let order_natural = |body: &str| -> Vec<String> {
+        let mut v: Vec<(usize, &str)> = ["Q10", "q2", "Q1"]
+            .iter()
+            .map(|n| (body.find(&format!("href=\"/queues/{n}\"")).unwrap(), *n))
+            .collect();
+        v.sort();
+        v.into_iter().map(|x| x.1.to_string()).collect()
+    };
+    let r = get(&c, "/queues?sort=name&order=asc", &token).await.body;
+    assert_eq!(order_natural(&r), ["Q1", "q2", "Q10"]);
+}
+
+#[tokio::test]
+async fn connections_sorting_scenarios() {
+    let c = start().await;
+    let token = login(&c).await;
+
+    let (tx1, _) = mpsc::unbounded_channel();
+    let (tx2, _) = mpsc::unbounded_channel();
+    let (tx3, _) = mpsc::unbounded_channel();
+
+    let mut h1 = ConnHandle::new(c.broker.new_conn_id(), "10.0.0.10:5000".parse().unwrap(), tx1);
+    h1.connected_at = chrono::Local::now() - chrono::Duration::seconds(30);
+    h1.info.lock().connection_id = "ID:conn-1".into();
+    h1.info.lock().consumers = 0;
+
+    let mut h2 = ConnHandle::new(c.broker.new_conn_id(), "10.0.0.9:6000".parse().unwrap(), tx2);
+    h2.connected_at = chrono::Local::now() - chrono::Duration::seconds(10);
+    h2.info.lock().connection_id = "ID:conn-2".into();
+    h2.info.lock().consumers = 12;
+
+    let mut h3 = ConnHandle::new(c.broker.new_conn_id(), "10.0.0.9:5001".parse().unwrap(), tx3);
+    h3.connected_at = chrono::Local::now() - chrono::Duration::seconds(20);
+    h3.info.lock().connection_id = "ID:conn-3".into();
+    h3.info.lock().consumers = 3;
+
+    c.broker.register_conn(Arc::new(h1));
+    c.broker.register_conn(Arc::new(h2));
+    c.broker.register_conn(Arc::new(h3));
+
+    // Scenario: Connections by consumers (12, 3, 0)
+    let r = get(&c, "/connections?sort=consumers&order=desc", &token).await.body;
+    assert!(r.contains("aria-sort=\"descending\""));
+    assert!(r.contains("&#9660;"));
+    let pos_h2 = r.find("ID:conn-2").unwrap();
+    let pos_h3 = r.find("ID:conn-3").unwrap();
+    let pos_h1 = r.find("ID:conn-1").unwrap();
+    assert!(pos_h2 < pos_h3 && pos_h3 < pos_h1);
+    assert!(r[pos_h2..pos_h3].contains("<td class=\"num\">12</td>"));
+    assert!(r[pos_h3..pos_h1].contains("<td class=\"num\">3</td>"));
+
+    // Scenario: Connections by client address (10.0.0.9:5001, 10.0.0.9:6000, 10.0.0.10:5000)
+    let r = get(&c, "/connections?sort=client&order=asc", &token).await.body;
+    let pos_5001 = r.find("10.0.0.9:5001").unwrap();
+    let pos_6000 = r.find("10.0.0.9:6000").unwrap();
+    let pos_5000 = r.find("10.0.0.10:5000").unwrap();
+    assert!(pos_5001 < pos_6000 && pos_6000 < pos_5000);
+
+    // Scenario: Connections by time (connected desc -> most recent first: h2, h3, h1)
+    let r = get(&c, "/connections?sort=connected&order=desc", &token).await.body;
+    let pos_h2 = r.find("ID:conn-2").unwrap();
+    let pos_h3 = r.find("ID:conn-3").unwrap();
+    let pos_h1 = r.find("ID:conn-1").unwrap();
+    assert!(pos_h2 < pos_h3 && pos_h3 < pos_h1);
+
+    // Scenario: Unknown column falls back to Connected ascending
+    let r = get(&c, "/connections?sort=bogus", &token).await.body;
+    let pos_h1 = r.find("ID:conn-1").unwrap();
+    let pos_h3 = r.find("ID:conn-3").unwrap();
+    let pos_h2 = r.find("ID:conn-2").unwrap();
+    assert!(pos_h1 < pos_h3 && pos_h3 < pos_h2);
+
+    // Scenario: Connections API sort
+    let j = api(&c, "/api/connections?sort=consumers&order=desc").await.json();
+    let consumers_list: Vec<u64> = j
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| item["consumers"].as_u64().unwrap())
+        .collect();
+    assert_eq!(consumers_list, vec![12, 3, 0]);
+}
+
+#[tokio::test]
+async fn topics_sorting_scenarios() {
+    let c = start().await;
+    let token = login(&c).await;
+    for (name, published) in [("TOPIC-C", 5), ("TOPIC-A", 20), ("TOPIC-B", 10)] {
+        let dest = Destination::new(DestKind::Topic, name);
+        for i in 0..published {
+            put_msg(&c.broker, text_msg(&dest, &format!("msg {i}")));
+        }
+    }
+
+    // Scenario: Topics API sort by published desc
+    let j = api(&c, "/api/topics?sort=published&order=desc").await.json();
+    let pub_names: Vec<&str> = j
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| item["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(pub_names, vec!["TOPIC-A", "TOPIC-B", "TOPIC-C"]);
+
+    // HTML sort by Name asc (default)
+    let r = get(&c, "/topics", &token).await.body;
+    let pos_a = r.find(">TOPIC-A<").unwrap();
+    let pos_b = r.find(">TOPIC-B<").unwrap();
+    let pos_c = r.find(">TOPIC-C<").unwrap();
+    assert!(pos_a < pos_b && pos_b < pos_c);
+}
+
+#[tokio::test]
+async fn queue_detail_sorting_and_kept_page() {
+    let c = start().await;
+    let token = login(&c).await;
+    let q = Destination::queue("MULTI");
+    put_numbered(&c.broker, "MULTI", 180);
+
+    let client1 = Client::new(&c.broker);
+    let client2 = Client::new(&c.broker);
+
+    // Subscribe consumers: ID:h-1:1:1:2 and ID:h-1:1:1:10
+    let cid2 = ConsumerId {
+        connection_id: Arc::from("ID:h-1:1"),
+        session_id: 1,
+        value: 2,
+    };
+    c.broker.get_dest(&q).unwrap().add_sub(
+        SubSpec {
+            id: cid2,
+            conn: client1.handle.clone(),
+            prefetch: 10,
+            selector: None,
+            no_local: false,
+            browser: false,
+        },
+        now_ms(),
+    );
+
+    let cid10 = ConsumerId {
+        connection_id: Arc::from("ID:h-1:1"),
+        session_id: 1,
+        value: 10,
+    };
+    c.broker.get_dest(&q).unwrap().add_sub(
+        SubSpec {
+            id: cid10,
+            conn: client2.handle.clone(),
+            prefetch: 50,
+            selector: None,
+            no_local: false,
+            browser: false,
+        },
+        now_ms(),
+    );
+
+    // Add producers
+    let d = c.broker.get_dest(&q).unwrap();
+    let pid1 = ProducerId {
+        connection_id: Arc::from("ID:pconn-1"),
+        session_id: 1,
+        value: 1,
+    };
+    d.add_producer(
+        pid1,
+        ProducerMeta {
+            conn_id: 101,
+            remote: "10.0.0.2:5000".into(),
+            connection_id: "ID:pconn-1".into(),
+        },
+    );
+    let pid2 = ProducerId {
+        connection_id: Arc::from("ID:pconn-2"),
+        session_id: 1,
+        value: 2,
+    };
+    d.add_producer(
+        pid2,
+        ProducerMeta {
+            conn_id: 102,
+            remote: "10.0.0.1:5000".into(),
+            connection_id: "ID:pconn-2".into(),
+        },
+    );
+
+    // Scenario: Natural order of IDs (ID:h-1:1:1:2 before ID:h-1:1:1:10)
+    let r = get(&c, "/queues/MULTI?csort=consumerId&corder=asc", &token).await.body;
+    let pos_c2 = r.find("ID:h-1:1:1:2").unwrap();
+    let pos_c10 = r.find("ID:h-1:1:1:10").unwrap();
+    assert!(pos_c2 < pos_c10);
+
+    // Scenario: Two tables on one page (csort=prefetch&corder=desc and psort=client&porder=asc)
+    let r = get(
+        &c,
+        "/queues/MULTI?csort=prefetch&corder=desc&psort=client&porder=asc",
+        &token,
+    )
+    .await
+    .body;
+    // Consumers: prefetch 50 before 10
+    let pos_p50 = r.find("<td class=\"num\">50</td>").unwrap();
+    let pos_p10 = r.find("<td class=\"num\">10</td>").unwrap();
+    assert!(pos_p50 < pos_p10);
+    // Producers: 10.0.0.1:5000 before 10.0.0.2:5000
+    let pos_pr1 = r.find("10.0.0.1:5000").unwrap();
+    let pos_pr2 = r.find("10.0.0.2:5000").unwrap();
+    assert!(pos_pr1 < pos_pr2);
+
+    // Check header links preserve both parameters
+    assert!(r.contains("csort=prefetch&amp;corder=desc"));
+    assert!(r.contains("psort=client&amp;porder=asc"));
+
+    // Scenario: Contents page kept (page 3 still shows page 3 when sorting consumers)
+    let r = get(&c, "/queues/MULTI?page=3&csort=prefetch&corder=desc", &token)
+        .await
+        .body;
+    assert!(r.contains("<span class=\"muted\">Page 3 of 3</span>"));
+    assert!(r.contains("m-161"));
+    assert!(r.contains("csort=prefetch&amp;corder=desc"));
+
+    // Scenario: Contents not sortable (Messages table headers are not links and messages are in FIFO order)
+    let messages_start = r.find("<h2>Messages").unwrap();
+    let messages_table = &r[messages_start..r[messages_start..].find("</tbody>").unwrap() + messages_start];
+    assert!(
+        !messages_table.contains("<a href="),
+        "Messages headers must not be links"
+    );
+}
+
+#[tokio::test]
+async fn message_detail_properties_and_map_sorting() {
+    let c = start().await;
+    let token = login(&c).await;
+    let q = Destination::queue("PROPS");
+
+    let mut m = Message::new(t::ACTIVEMQ_MAP_MESSAGE);
+    m.destination = Some(q.clone());
+    let mut props = PrimitiveMap::new();
+    props.set("beta", Value::String("b-val".into()));
+    props.set("alpha", Value::String("a-val".into()));
+    props.set("gamma", Value::String("g-val".into()));
+    m.marshalled_properties = Some(props.encode());
+
+    // Map body
+    let mut map_body = PrimitiveMap::new();
+    map_body.set("z_key", Value::String("z_val".into()));
+    map_body.set("a_key", Value::String("a_val".into()));
+    map_body.set("m_key", Value::String("m_val".into()));
+    m.content = Some(map_body.encode());
+
+    let pid = producer();
+    m.producer_id = Some(pid.clone());
+    let mid_val = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    m.message_id = Some(MessageId {
+        text_view: None,
+        producer_id: Some(pid),
+        producer_sequence_id: mid_val,
+        broker_sequence_id: 0,
+    });
+    put_msg(&c.broker, m);
+
+    let page = api(&c, "/api/queues/PROPS/messages").await.json();
+    let msg_item = &page["messages"][0];
+    let msg_id = form_enc(msg_item["messageId"].as_str().unwrap());
+    let seq = msg_item["position"].as_i64().unwrap();
+
+    // Sort properties descending
+    let r = get(
+        &c,
+        &format!("/queues/PROPS/messages/{msg_id}?seq={seq}&prsort=name&prorder=desc"),
+        &token,
+    )
+    .await
+    .body;
+    let pos_gamma = r.find(">gamma<").unwrap();
+    let pos_beta = r.find(">beta<").unwrap();
+    let pos_alpha = r.find(">alpha<").unwrap();
+    assert!(pos_gamma < pos_beta && pos_beta < pos_alpha);
+
+    // Sort map body ascending
+    let r = get(
+        &c,
+        &format!("/queues/PROPS/messages/{msg_id}?seq={seq}&msort=key&morder=asc"),
+        &token,
+    )
+    .await
+    .body;
+    let pos_a = r.find(">a_key<").unwrap();
+    let pos_m = r.find(">m_key<").unwrap();
+    let pos_z = r.find(">z_key<").unwrap();
+    assert!(pos_a < pos_m && pos_m < pos_z);
+}
