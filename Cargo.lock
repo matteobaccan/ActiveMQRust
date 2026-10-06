@@ -817,7 +817,7 @@ dependencies = [
 
 [[package]]
 name = "mqrust"
-version = "0.3.1"
+version = "0.4.0-dev"
 dependencies = [
  "argon2",
  "axum",
