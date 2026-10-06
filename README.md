@@ -55,7 +55,7 @@ After a restart the broker starts empty. Clients that use a `failover:` URL reco
 
 ## Features
 
-- **OpenWire compatible**: transparently recognized by the ActiveMQ Java driver 5.18.x and 6.x (protocol versions 9–12).
+- **OpenWire compatible**: transparently recognized by the ActiveMQ Java driver 5.18.x, 5.19.x and 6.x (protocol versions 9–12).
 - **A single `mqrust.exe`** for Windows x64, with no runtime to install (no Visual C++, .NET or Java).
 - **Command-line program** that can **install and uninstall itself as a Windows service**.
 - **Port 61616 by default**, works even without a configuration file.
@@ -267,7 +267,7 @@ tests\java-it\run-acceptance.cmd amq6 --url tcp://127.0.0.1:61616 --user admin -
 
 ## Tests and results
 
-All suites below were run on 2026-10-05/06 on version 0.2.0 (Windows 11, Intel Xeon W-2123, JDK 21), and all of them pass.
+All suites below were run on 2026-10-06 on version 0.3.0 (Windows 11, Intel Xeon W-2123, JDK 21), and all of them pass. The Java suites use the ActiveMQ client 5.19.11 (`amq5` profile) and 6.3.2 (`amq6` profile); on every push the Rust suites also run on Windows and macOS in CI.
 
 ### Functional tests
 
@@ -277,17 +277,17 @@ All suites below were run on 2026-10-05/06 on version 0.2.0 (Windows 11, Intel X
 | `tests/broker_semantics.rs` | FIFO, round-robin, redelivery position, prefetch, acknowledgement types, DLQ, expiration, topics, browsers, transactions, memory limit, concurrent producers | 60 passed |
 | `tests/connection_semantics.rs` | the broker driven over a real socket by a small OpenWire client | 14 passed |
 | `tests/selector_semantics.rs` | 568 selectors checked against the results of ActiveMQ's own selector engine | 9 passed |
-| `tests/admin_http.rs` | login, sessions, lockout, logout, API with Basic, headers, escaping, paging | 18 passed |
+| `tests/admin_http.rs` | login, sessions, lockout, logout, API with Basic, headers, escaping, paging, system theme, addresses | 19 passed |
 | `tests/cli_setup.rs` | help, `set-admin`, `user` commands, safe file editing, start-up messages, end to end | 17 passed |
 | `tests/codec_golden.rs` | frames written by the real ActiveMQ client, OpenWire versions 9–12 | 4 passed |
 | `tests/compression.rs`, `tests/hot_path.rs` | compressed golden vectors of all 5 message types, allocations per message, batching | 9 passed |
-| **Rust total** | | **249 passed, 0 failed** |
+| **Rust total** | | **250 passed, 0 failed** |
 | Java unit tests (`mvnw test`) | payload generation and result parsing of the bench client | 16 passed |
-| Java `accept`, ActiveMQ client 5.18.x and 6.x | FIFO round trip, correlation-ID selectors, authentication | 3 + 3 passed |
-| Java `integration`, 5.18.x and 6.x | 10,000-message FIFO, all message types, request/reply on temporary queues and topics, client ack, browser, topics, redelivery after a dropped connection, transactions, DLQ, client and broker compression, expiration, selectors, selector parity | 15 + 15 passed |
-| Java `console`, 5.18.x and 6.x | form login, `ProviderVersion` equal to the console version, compressed message page, browsing does not consume | 4 + 4 passed |
-| Java `compression`, 5.18.x and 6.x | byte-identical bodies for the 5 message types at the threshold boundaries | 40 + 40 passed |
-| Java `expiry-options`, 5.18.x and 6.x | TTL ceiling, default TTL, broker clock | 5 + 5 passed |
+| Java `accept`, ActiveMQ client 5.19.11 and 6.3.2 | FIFO round trip, correlation-ID selectors, authentication | 3 + 3 passed |
+| Java `integration`, 5.19.11 and 6.3.2 | 10,000-message FIFO, all message types, request/reply on temporary queues and topics, client ack, browser, topics, redelivery after a dropped connection, transactions, DLQ, client and broker compression, expiration, selectors, selector parity | 15 + 15 passed |
+| Java `console`, 5.19.11 and 6.3.2 | form login, `ProviderVersion` equal to the console version, compressed message page, browsing does not consume | 4 + 4 passed |
+| Java `compression`, 5.19.11 and 6.3.2 | byte-identical bodies for the 5 message types at the threshold boundaries | 40 + 40 passed |
+| Java `expiry-options`, 5.19.11 and 6.3.2 | TTL ceiling, default TTL, broker clock | 5 + 5 passed |
 | Java `accept` against real **ActiveMQ 5.18.7 and 6.3.2** (tuned configuration) | the same three scenarios give the same results on ActiveMQ | 3 + 3 passed |
 
 While the soak scenario was being written, the multi-producer runs found a bug: with several producers on one queue a message could stay undelivered. It was fixed (`Fix lost queue messages with concurrent producers`) and is covered by a test.

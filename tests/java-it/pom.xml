@@ -14,7 +14,7 @@
 
   <groupId>com.github.matteobaccan.activemqrust</groupId>
   <artifactId>mqrust-acceptance</artifactId>
-  <version>0.2.0</version>
+  <version>0.3.0</version>
   <packaging>jar</packaging>
   <name>ActiveMQRust acceptance program</name>
 
