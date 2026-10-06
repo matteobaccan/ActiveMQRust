@@ -1737,3 +1737,137 @@ async fn message_detail_properties_and_map_sorting() {
     let pos_z = r.find(">z_key<").unwrap();
     assert!(pos_a < pos_m && pos_m < pos_z);
 }
+
+#[tokio::test]
+async fn queues_filter_name_contains_case_insensitive() {
+    let c = start().await;
+    let token = login(&c).await;
+    put(&c.broker, "app.ORDERS.in", "x");
+    put(&c.broker, "ORDERS.DLQ", "x");
+    put(&c.broker, "billing", "x");
+
+    let r = get(&c, "/queues?q=orders", &token).await;
+    assert_eq!(r.status, 200);
+    assert!(r.body.contains("href=\"/queues/app.ORDERS.in\""));
+    assert!(r.body.contains("href=\"/queues/ORDERS.DLQ\""));
+    assert!(!r.body.contains("href=\"/queues/billing\""));
+    assert!(r.body.contains("Showing 2 of 3 queues"));
+    assert!(r.body.contains("Clear filter"));
+
+    // Overview queue count is unaffected by filter
+    let ov = get(&c, "/", &token).await.body;
+    assert!(ov.contains("<span class=\"label\">Queues</span><span class=\"value\">3</span>"));
+    let api_ov = api(&c, "/api/overview").await.json();
+    assert_eq!(api_ov["queues"], 3);
+}
+
+#[tokio::test]
+async fn queues_filter_messages_waiting_and_nobody_reading() {
+    let c = start().await;
+    let token = login(&c).await;
+    put_numbered(&c.broker, "Q1", 5);
+    put_numbered(&c.broker, "Q2", 5);
+    let q2 = Destination::queue("Q2");
+    let client = Client::new(&c.broker);
+    client.subscribe(&c.broker, 1, &q2, 0, None);
+    let q3 = Destination::queue("Q3");
+    c.broker.get_or_create(&q3, None);
+
+    let r = get(&c, "/queues?pending=1&noconsumers=1", &token).await;
+    assert_eq!(r.status, 200);
+    assert!(r.body.contains("href=\"/queues/Q1\""));
+    assert!(!r.body.contains("href=\"/queues/Q2\""));
+    assert!(!r.body.contains("href=\"/queues/Q3\""));
+    assert!(r.body.contains("Showing 1 of 3 queues"));
+}
+
+#[tokio::test]
+async fn queues_filter_kept_by_sorting() {
+    let c = start().await;
+    let token = login(&c).await;
+    put(&c.broker, "app.one", "x");
+    put(&c.broker, "app.two", "x");
+
+    let r = get(&c, "/queues?q=app&sort=pending&order=desc", &token).await.body;
+    assert!(r.contains("q=app&amp;sort=consumers&amp;order=asc"));
+
+    let r_sorted = get(&c, "/queues?q=app&sort=consumers&order=asc", &token).await;
+    assert_eq!(r_sorted.status, 200);
+    assert!(r_sorted.body.contains("href=\"/queues/app.one\""));
+    assert!(r_sorted.body.contains("href=\"/queues/app.two\""));
+}
+
+#[tokio::test]
+async fn queues_filter_form_keeps_sort() {
+    let c = start().await;
+    let token = login(&c).await;
+    put(&c.broker, "orders.one", "x");
+
+    let r = get(&c, "/queues?sort=pending&order=desc&refresh=5", &token).await.body;
+    assert!(r.contains("<form method=\"get\" action=\"/queues\" role=\"search\""));
+    assert!(r.contains("<input type=\"hidden\" name=\"sort\" value=\"pending\">"));
+    assert!(r.contains("<input type=\"hidden\" name=\"order\" value=\"desc\">"));
+    assert!(r.contains("<input type=\"hidden\" name=\"refresh\" value=\"5\">"));
+    assert!(r.contains("Only with pending messages"));
+    assert!(r.contains("Only without consumers"));
+}
+
+#[tokio::test]
+async fn queues_filter_kept_on_refresh() {
+    let c = start().await;
+    let token = login(&c).await;
+    put(&c.broker, "orders.one", "x");
+    put(&c.broker, "other.two", "x");
+
+    let r = get(&c, "/queues?q=orders&refresh=5", &token).await.body;
+    assert!(r.contains("<meta http-equiv=\"refresh\" content=\"5\">"));
+    assert!(r.contains("href=\"/queues/orders.one?refresh=5\""));
+    assert!(!r.contains("other.two"));
+    assert!(r.contains("Showing 1 of 2 queues"));
+    assert!(r.contains("q=orders&amp;sort=name&amp;order=desc&amp;refresh=5"));
+}
+
+#[tokio::test]
+async fn queues_filter_no_match() {
+    let c = start().await;
+    let token = login(&c).await;
+    put(&c.broker, "existing.queue", "x");
+
+    let r = get(&c, "/queues?q=nothing-like-this", &token).await;
+    assert_eq!(r.status, 200);
+    assert!(r.body.contains("No queues match the filter"));
+    assert!(r.body.contains("Showing 0 of 1 queues"));
+    assert!(r.body.contains("Clear filter"));
+
+    let clear_resp = get(&c, "/queues", &token).await;
+    assert!(clear_resp.body.contains("href=\"/queues/existing.queue\""));
+    assert!(!clear_resp.body.contains("No queues match the filter"));
+    assert!(!clear_resp.body.contains("Showing"));
+}
+
+#[tokio::test]
+async fn queues_filter_escaped_input() {
+    let c = start().await;
+    let token = login(&c).await;
+
+    let r = get(&c, "/queues?q=%3Cscript%3E", &token).await;
+    assert_eq!(r.status, 200);
+    assert!(r.body.contains("&lt;script&gt;"));
+    assert!(!r.body.contains("<script>"));
+    assert!(!r.body.contains("</script>"));
+}
+
+#[tokio::test]
+async fn queues_filter_api() {
+    let c = start().await;
+    put_numbered(&c.broker, "app.dlq.low", 2);
+    put_numbered(&c.broker, "ORDERS.DLQ.HIGH", 10);
+    let dlq_empty = Destination::queue("EMPTY.DLQ");
+    c.broker.get_or_create(&dlq_empty, None);
+    put_numbered(&c.broker, "billing", 5);
+
+    let j = api(&c, "/api/queues?q=dlq&pending=1&sort=pending&order=desc")
+        .await
+        .json();
+    assert_eq!(names(&j), vec!["ORDERS.DLQ.HIGH", "app.dlq.low"]);
+}

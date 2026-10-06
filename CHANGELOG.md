@@ -10,6 +10,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Server-side queue filter in admin console and API**: a filter bar above the queues
+  table narrows the list by name (`q`, case-insensitive contains, up to 200 characters)
+  and state checkboxes (`pending=1` for queues with pending messages, `noconsumers=1`
+  for queues without consumers), combined with AND.
+  - Plain GET form with visible labels and `role="search"`, operating without JavaScript
+    and with CSP unchanged.
+  - Composes with sorting (`sort`/`order`) and auto-refresh (`refresh=5`): sort links
+    preserve active filter parameters, and the filter form preserves current sort and refresh.
+  - Shows "Showing N of M queues" and a "Clear filter" link while a filter is active;
+    displays "No queues match the filter" when no queues match.
+  - JSON API endpoint `/api/queues` supports the same filter parameters with identical semantics.
 - **Server-side table sorting in admin console and API**: every list table in the admin
   console is sortable by clicking column headers, with no JavaScript and CSP unchanged.
   Columns support typed comparisons: numeric, chronological for connection timestamps,

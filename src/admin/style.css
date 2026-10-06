@@ -139,6 +139,37 @@ main { flex: 1; width: 100%; max-width: 80rem; margin: 0 auto; padding: var(--sp
 .card .value { font-size: 1.3rem; font-weight: 600; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
 .card .value .id { font-size: .95rem; font-weight: 500; }
 
+.filter-bar {
+  display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2) var(--sp-3);
+  margin-bottom: var(--sp-3); padding: var(--sp-3); background: var(--surface);
+  border: 1px solid var(--line); border-radius: var(--radius);
+}
+.filter-field { display: inline-flex; align-items: center; gap: var(--sp-2); }
+.filter-field label { font-weight: 600; white-space: nowrap; }
+.filter-field input[type="text"] {
+  min-height: 2.5rem; padding: 0 var(--sp-2); font: inherit; color: var(--fg); background: var(--bg);
+  border: 1px solid var(--line); border-radius: var(--radius-sm);
+}
+.filter-check {
+  display: inline-flex; align-items: center; gap: var(--sp-1); cursor: pointer;
+  white-space: nowrap; font-size: .92rem;
+}
+.filter-check input[type="checkbox"] {
+  width: 1.1rem; height: 1.1rem; accent-color: var(--accent); cursor: pointer;
+}
+.filter-bar button { min-height: 2.5rem; }
+.filter-status {
+  display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2);
+  margin: calc(-1 * var(--sp-1)) 0 var(--sp-3); font-size: .92rem; color: var(--muted);
+}
+.filter-status a { font-weight: 500; }
+@media (max-width: 479.98px) {
+  .filter-bar { flex-direction: column; align-items: stretch; gap: var(--sp-2); }
+  .filter-field { flex-direction: column; align-items: stretch; }
+  .filter-field input[type="text"] { width: 100%; }
+  .filter-bar button { width: 100%; }
+}
+
 .table-wrap {
   max-width: 100%; max-height: 75vh; overflow: auto; margin-bottom: var(--sp-4);
   border: 1px solid var(--line); border-radius: var(--radius);
