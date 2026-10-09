@@ -39,7 +39,7 @@ base64 = "0.23"
 sha2 = "0.10"
 quick-xml = "0.41"
 flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
-toml_edit = "0.22"
+toml_edit = "0.25"
 
 # Windows only: the service (Service Control Manager), process memory and affinity.
 [target.'cfg(windows)'.dependencies]
