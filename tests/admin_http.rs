@@ -2447,3 +2447,47 @@ async fn the_history_api_returns_the_buckets() {
     );
     assert_eq!(req("GET", "/api/memory/history").send(c.port).await.status, 401);
 }
+
+// -- transport of a connection -----------------------------------------------------------
+
+#[tokio::test]
+async fn the_console_shows_the_transport_of_each_connection() {
+    let c = start().await;
+    let token = login(&c).await;
+    let (plain, _rx1) = fake_conn(&c.broker, "ID:tcp-1", "10.0.0.5:5000");
+    let (secure, _rx2) = fake_conn(&c.broker, "ID:ssl-1", "10.0.0.6:5000");
+    secure.info.lock().tls = Some(mqrust::tls::Negotiated {
+        version: "TLS 1.3".into(),
+        cipher: "TLS13_AES_128_GCM_SHA256".into(),
+        client_cert: Some("CN=client.example".into()),
+    });
+    assert!(plain.info.lock().tls.is_none());
+
+    let page = get(&c, "/connections", &token).await;
+    assert!(
+        page.body.contains("<th>Transport</th>") || page.body.contains(">Transport"),
+        "{}",
+        page.body
+    );
+    assert!(page.body.contains("TLS 1.3"), "{}", page.body);
+    assert!(page.body.contains("TLS13_AES_128_GCM_SHA256"), "{}", page.body);
+    assert!(page.body.contains("CN=client.example"), "{}", page.body);
+
+    let list = api(&c, "/api/connections").await.json();
+    let by_id = |id: &str| {
+        list.as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["connectionId"] == id)
+            .cloned()
+            .unwrap()
+    };
+    let tcp = by_id("ID:tcp-1");
+    assert_eq!(tcp["transport"], "tcp");
+    assert!(tcp["tlsVersion"].is_null() && tcp["clientCertificate"].is_null());
+    let ssl = by_id("ID:ssl-1");
+    assert_eq!(ssl["transport"], "ssl");
+    assert_eq!(ssl["tlsVersion"], "TLS 1.3");
+    assert_eq!(ssl["tlsCipher"], "TLS13_AES_128_GCM_SHA256");
+    assert_eq!(ssl["clientCertificate"], "CN=client.example");
+}

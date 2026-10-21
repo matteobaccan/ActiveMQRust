@@ -40,6 +40,11 @@ sha2 = "0.11"
 quick-xml = "0.42"
 flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
 toml_edit = "0.25"
+rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+tokio-rustls = { version = "0.26.6", default-features = false, features = ["ring", "tls12", "logging"] }
+rustls-pemfile = "2.2.0"
+p12-keystore = "0.4.1"
+x509-parser = "0.18.1"
 
 # Windows only: the service (Service Control Manager), process memory and affinity.
 [target.'cfg(windows)'.dependencies]
@@ -52,6 +57,11 @@ libc = "0.2"
 
 [dev-dependencies]
 criterion = { version = "0.8", default-features = false }
+rcgen = "0.14.10"
+rustls = "0.23.46"
+rustls-pemfile = "2.2.0"
+time = "0.3.55"
+tokio-rustls = "0.26.6"
 
 [[bench]]
 name = "codec"

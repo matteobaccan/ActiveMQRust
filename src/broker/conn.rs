@@ -32,6 +32,19 @@ pub struct ConnInfo {
     pub sessions: usize,
     pub consumers: usize,
     pub producers: usize,
+    /// What the TLS handshake negotiated; `None` on a plain connection.
+    pub tls: Option<crate::tls::Negotiated>,
+}
+
+impl ConnInfo {
+    /// `ssl` or `tcp`, as the admin console shows it.
+    pub fn transport(&self) -> &'static str {
+        if self.tls.is_some() {
+            "ssl"
+        } else {
+            "tcp"
+        }
+    }
 }
 
 pub struct ConnHandle {

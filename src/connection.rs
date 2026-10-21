@@ -240,7 +240,7 @@ fn loose_codec(version: i32) -> Box<dyn WireCodec> {
     Box::new(LooseCodec::new(version))
 }
 
-/// Serves one TCP connection until it closes.
+/// Serves one plain TCP connection until it closes.
 pub async fn serve(stream: TcpStream, remote: SocketAddr, broker: Arc<Broker>, shutdown: watch::Receiver<bool>) {
     serve_with_codec(stream, remote, broker, shutdown, loose_codec).await
 }
@@ -251,11 +251,43 @@ pub async fn serve_with_codec(
     stream: TcpStream,
     remote: SocketAddr,
     broker: Arc<Broker>,
-    mut shutdown: watch::Receiver<bool>,
+    shutdown: watch::Receiver<bool>,
     make_codec: CodecFactory,
 ) {
     let _ = stream.set_nodelay(true);
+    // The owned halves of a TCP socket need no lock: the plain path keeps them.
     let (r, w) = stream.into_split();
+    serve_halves(r, w, remote, broker, shutdown, make_codec, None).await
+}
+
+/// Serves one connection whose stream is already encrypted. `tls` is what the handshake
+/// negotiated, shown by the admin console.
+pub async fn serve_tls<S>(
+    stream: S,
+    remote: SocketAddr,
+    broker: Arc<Broker>,
+    shutdown: watch::Receiver<bool>,
+    tls: crate::tls::Negotiated,
+) where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    let (r, w) = tokio::io::split(stream);
+    serve_halves(r, w, remote, broker, shutdown, loose_codec, Some(tls)).await
+}
+
+/// The connection itself, over whatever carries it.
+async fn serve_halves<R, W>(
+    r: R,
+    w: W,
+    remote: SocketAddr,
+    broker: Arc<Broker>,
+    mut shutdown: watch::Receiver<bool>,
+    make_codec: CodecFactory,
+    tls: Option<crate::tls::Negotiated>,
+) where
+    R: AsyncRead + Unpin + Send + 'static,
+    W: AsyncWrite + Unpin + Send + 'static,
+{
     let mut r = FrameReader::new(r);
     let max_frame = broker.cfg.max_frame_size;
 
@@ -302,7 +334,11 @@ pub async fn serve_with_codec(
     let (tx, rx) = mpsc::unbounded_channel();
     let id = broker.new_conn_id();
     let handle = Arc::new(ConnHandle::new(id, remote, tx));
-    handle.info.lock().version = neg.version;
+    {
+        let mut info = handle.info.lock();
+        info.version = neg.version;
+        info.tls = tls;
+    }
     let keepalive =
         (neg.max_inactivity_ms > 0).then(|| Duration::from_millis((neg.max_inactivity_ms / 2).max(1) as u64));
     let closed = Arc::new(Notify::new());

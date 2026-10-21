@@ -37,6 +37,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - Queue message contents (FIFO), message headers, and StreamMessage bodies remain
     unsorted with plain headers.
 
+- **OpenWire over TLS**: a new `[tls]` section adds a second listener, by convention on port
+  61617, that ActiveMQ Java clients reach with `ssl://host:61617` and
+  `failover:(ssl://host:61617)` without any change beyond their truststore.
+  - The certificate comes from PEM files (`cert` and `key`) or from a PKCS#12 keystore
+    (`keystore`, `keystore_password`), with paths relative to the configuration file. A JKS
+    keystore is refused with the `keytool -importkeystore` command that converts it.
+  - TLS 1.2 and 1.3 only (`min_version`), with the safe cipher suites of rustls and no key to
+    enable others. `client_auth` (`none`, `optional`, `required`) with `client_ca` asks for a
+    client certificate, which never replaces the username and password.
+  - The handshake runs outside the accept loop and is abandoned after 10 seconds; failures are
+    logged at debug level with at most one warning a minute, so a port scan cannot flood the
+    log.
+  - Every TLS file is checked at startup and by `check-config`: a mismatched key, a JKS
+    keystore or an unreadable file exits with code 2 naming the key, while a certificate
+    expiring within 30 days is only a warning.
+  - New key `broker.plain` (default `true`): `false` leaves only the TLS listener. Both off is
+    a configuration error.
+  - The Connections page and `/api/connections` now carry `transport` (`tcp` or `ssl`),
+    `tlsVersion`, `tlsCipher` and `clientCertificate`.
 - **Instant Raw/Formatted switch** on the message page: the page now carries both views of an
   XML body and the switch is two radio buttons styled as the segmented control, so changing
   view sends no request, reloads nothing and keeps the scroll position. Still no JavaScript

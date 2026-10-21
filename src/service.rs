@@ -197,8 +197,18 @@ fn service_main(_args: Vec<OsString>) {
         Ok(cfg) => {
             // The service has no console: the log file is the only output, whatever log.file says.
             crate::logging::init_service(&cfg.log_level, &crate::logging::file_options(&cfg));
-            if let Err(e) = crate::bans::load(&cfg.bans_path) {
-                tracing::error!("configuration error: {e}");
+            let tls_ok = crate::bans::load(&cfg.bans_path)
+                .map(|_| ())
+                .map_err(|e| format!("configuration error: {e}"))
+                .and_then(|()| {
+                    if cfg.tls_enabled {
+                        crate::tls::prepare(&cfg).map(|_| ())
+                    } else {
+                        Ok(())
+                    }
+                });
+            if let Err(e) = tls_ok {
+                tracing::error!("{e}");
                 set(
                     ServiceState::Stopped,
                     2,

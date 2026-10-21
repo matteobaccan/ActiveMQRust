@@ -17,3 +17,4 @@ pub mod server;
 #[cfg(windows)]
 pub mod service;
 pub mod setup;
+pub mod tls;

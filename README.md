@@ -184,6 +184,56 @@ password_hash = "$argon2id$..."   # written by: mqrust.exe user add app1
 
 Check a file before starting the broker with `mqrust.exe check-config --config <file>`.
 
+### TLS
+
+OpenWire travels in clear text on port 61616. Turning on `[tls]` adds a second listener, by convention on port 61617, that Java clients reach with `ssl://host:61617` exactly as with ActiveMQ; the plain listener stays unless `broker.plain = false` turns it off.
+
+```toml
+[broker]
+plain = true                 # false leaves only the TLS listener
+
+[tls]
+enabled = true
+port = 61617                 # bind defaults to broker.bind
+keystore = "broker.p12"      # PKCS#12, or cert + key in PEM
+keystore_password = "secret"
+min_version = "1.2"          # 1.2 or 1.3
+client_auth = "none"         # none, optional or required
+# client_ca = "clients-ca.crt"
+```
+
+Paths are relative to the folder of `mqrust.toml`. Give **either** `cert` (PEM chain, leaf first) and `key` (PEM private key, unencrypted PKCS#8, PKCS#1 or SEC1), **or** `keystore` (PKCS#12 with exactly one key entry) and `keystore_password`.
+
+```
+# A keystore for the broker, and a truststore for the clients
+keytool -genkeypair -alias broker -keyalg RSA -keysize 2048 -validity 365 ^
+        -dname "CN=mybroker" -ext "SAN=dns:mybroker,ip:10.0.0.5" ^
+        -keystore broker.p12 -storetype PKCS12 -storepass secret -keypass secret
+keytool -exportcert -alias broker -keystore broker.p12 -storepass secret -rfc -file broker.crt
+keytool -importcert -noprompt -alias broker -file broker.crt ^
+        -keystore truststore.p12 -storetype PKCS12 -storepass secret
+
+# An existing JKS keystore is converted once (JKS itself is not read)
+keytool -importkeystore -srckeystore broker.jks -destkeystore broker.p12 -deststoretype PKCS12
+```
+
+The client points at that truststore and connects with `ssl://`:
+
+```
+java -Djavax.net.ssl.trustStore=truststore.p12 ^
+     -Djavax.net.ssl.trustStoreType=PKCS12 ^
+     -Djavax.net.ssl.trustStorePassword=secret -jar myapp.jar
+```
+
+with `ssl://mybroker:61617` or `failover:(ssl://mybroker:61617)`.
+
+- **Client certificates**: `client_auth = "optional"` (ActiveMQ's `wantClientAuth`) or `"required"` (`needClientAuth`) with `client_ca`, a PEM bundle of the accepted CAs. A certificate never replaces the username and password, which are still checked; the subject of a verified certificate is shown on the Connections page.
+- **Checks at startup**: every file is read and parsed by the broker and by `check-config`, and a certificate that does not match its key, a JKS keystore or an unreadable file is a configuration error with exit code 2. A certificate that has expired or expires within 30 days is only a warning.
+- **Moving to TLS only**: keep both listeners while the clients change their URL, then set `broker.plain = false`. Leaving both off is a configuration error.
+- A failed or timed-out handshake (10 seconds) is logged at debug level, with at most one warning per minute giving the count, so a port scan cannot flood the log.
+
+Deliberate differences from ActiveMQ: JKS keystores are not read (PKCS#12 and PEM are), only TLS 1.2 and 1.3 are offered with rustls's safe cipher suites and no key to enable others, certificates are reloaded by a restart, and the admin console stays on HTTP (put a TLS reverse proxy in front of it).
+
 ### Logging
 
 One line per event, with a local timestamp: `2026-10-21 09:15:04 INFO OpenWire listening on 0.0.0.0:61616`.

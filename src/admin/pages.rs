@@ -309,6 +309,22 @@ fn card(label: &str, value: &str) -> String {
     format!("<div class=\"card\"><span class=\"label\">{label}</span><span class=\"value\">{value}</span></div>")
 }
 
+/// The transport column: `tcp`, or `ssl` with the TLS version, the cipher suite and the
+/// subject of a verified client certificate.
+fn transport_cell(row: &ConnRow) -> String {
+    match &row.info.tls {
+        None => "tcp".to_string(),
+        Some(tls) => {
+            let mut out = format!("ssl <span class=\"tag\">{}</span>", esc(&tls.version));
+            let _ = write!(out, "<br><span class=\"muted\">{}</span>", esc(&tls.cipher));
+            if let Some(subject) = &tls.client_cert {
+                let _ = write!(out, "<br><span class=\"muted\">{}</span>", esc(subject));
+            }
+            out
+        }
+    }
+}
+
 /// A card with a line of explanation under its value.
 fn card_with(label: &str, value: &str, note: &str) -> String {
     format!(
@@ -455,6 +471,16 @@ pub struct ConnRow {
 }
 
 impl ConnRow {
+    /// `tcp`, or `ssl` with the version and suite the handshake chose.
+    pub fn transport_text(&self) -> String {
+        match &self.info.tls {
+            Some(tls) => format!("ssl {} {}", tls.version, tls.cipher),
+            None => "tcp".to_string(),
+        }
+    }
+}
+
+impl ConnRow {
     pub fn of(c: &ConnHandle) -> Self {
         ConnRow {
             info: c.info.lock().clone(),
@@ -474,6 +500,7 @@ pub static CONNECTIONS_TABLE: Table<ConnRow> = Table {
         }),
         Column::text("user", "User", |c| c.info.user.as_str().into()),
         Column::address("client", "Client", |c| c.remote.as_str().into()),
+        Column::text("transport", "Transport", |c| c.transport_text().into()),
         Column::number("openwire", "OpenWire", |c| c.info.version as u64),
         Column::time("connected", "Connected", |c| c.connected_at.timestamp_millis()),
         Column::number("sessions", "Sessions", |c| c.info.sessions as u64),
@@ -998,10 +1025,11 @@ pub async fn connections(State(s): State<AdminState>, ctx: Ctx) -> Response {
     for x in &rows {
         let _ = write!(
             c,
-            "<tr><td class=\"id\">{}</td><td>{}</td><td>{}</td><td class=\"num\">{}</td><td>{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td>",
+            "<tr><td class=\"id\">{}</td><td>{}</td><td>{}</td><td>{}</td><td class=\"num\">{}</td><td>{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td>",
             esc(&x.info.connection_id),
             esc(&x.info.user),
             esc(&x.remote),
+            transport_cell(x),
             x.info.version,
             x.connected_at.format("%Y-%m-%d %H:%M:%S"),
             x.info.sessions,
@@ -1020,7 +1048,7 @@ pub async fn connections(State(s): State<AdminState>, ctx: Ctx) -> Response {
         c.push_str("</tr>");
     }
     if rows.is_empty() {
-        let span = if writable { 9 } else { 8 };
+        let span = if writable { 10 } else { 9 };
         let _ = write!(c, "<tr><td colspan=\"{span}\" class=\"muted\">No connections</td></tr>");
     }
     c.push_str("</tbody></table></div>");
