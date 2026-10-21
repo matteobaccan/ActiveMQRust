@@ -544,6 +544,7 @@ impl Conn {
         match self.broker.auth.login(ci.user_name.as_deref(), ci.password.as_deref()) {
             Login::Accepted => {
                 self.authenticated = true;
+                self.broker.bans.login_ok(self.remote.ip());
                 self.user = if user.is_empty() { "(anonymous)".into() } else { user };
                 self.connection_id = ci.connection_id.clone();
                 {
@@ -562,6 +563,16 @@ impl Conn {
             }
             Login::Rejected => {
                 tracing::warn!("login failed: {} user={}", self.remote, user);
+                // Only wrong credentials count towards an automatic ban.
+                if let Some(auto) = self.broker.bans.login_failed(self.remote.ip()) {
+                    tracing::warn!(
+                        "automatic ban of {} for {} after {} failed logins",
+                        auto.target,
+                        crate::admin::fmt_duration(auto.seconds),
+                        auto.failures
+                    );
+                    self.broker.close_from(&auto.target);
+                }
                 let msg = format!("User name [{}] or password is invalid.", user);
                 let mut cmds = Vec::new();
                 if header.response_required {

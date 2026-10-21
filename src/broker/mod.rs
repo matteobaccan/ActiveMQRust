@@ -105,6 +105,8 @@ pub struct Broker {
     pub cfg: Arc<Config>,
     pub memory: Arc<Memory>,
     pub auth: Authenticator,
+    /// Addresses refused at `accept`, manual and automatic.
+    pub bans: Arc<crate::bans::Bans>,
     pub broker_id: BrokerId,
     pub started: chrono::DateTime<chrono::Local>,
     ids: IdGenerator,
@@ -150,10 +152,19 @@ impl Broker {
             value: Arc::from(ids.generate_id()),
         };
         let advisory_producer = Arc::from(ids.generate_id());
+        let bans = Arc::new(crate::bans::Bans::new(
+            cfg.bans_path.clone(),
+            // Already validated at startup; a file broken since then is reported and ignored.
+            crate::bans::load(&cfg.bans_path).unwrap_or_else(|e| {
+                tracing::warn!("{e}");
+                Vec::new()
+            }),
+        ));
         Arc::new(Broker {
             cfg,
             memory,
             auth,
+            bans,
             broker_id,
             started,
             ids,
@@ -192,6 +203,43 @@ impl Broker {
 
     pub fn unregister_conn(&self, id: u64) {
         self.conns.lock().remove(&id);
+    }
+
+    /// Closes one connection by its OpenWire connection ID, as a dropped network
+    /// connection would be. False when no such connection is open.
+    pub fn close_connection(&self, connection_id: &str) -> bool {
+        let found = self
+            .connections()
+            .into_iter()
+            .find(|c| c.info.lock().connection_id == connection_id);
+        match found {
+            Some(c) => {
+                c.close_by_admin();
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Closes every connection whose client address the target matches, and says how many.
+    pub fn close_from(&self, target: &crate::bans::Target) -> usize {
+        let matching: Vec<_> = self
+            .connections()
+            .into_iter()
+            .filter(|c| target.matches(c.remote.ip()))
+            .collect();
+        for c in &matching {
+            c.close_by_admin();
+        }
+        matching.len()
+    }
+
+    /// How many connections are open from the addresses the target matches.
+    pub fn count_from(&self, target: &crate::bans::Target) -> usize {
+        self.connections()
+            .iter()
+            .filter(|c| target.matches(c.remote.ip()))
+            .count()
     }
 
     pub fn connections(&self) -> Vec<Arc<ConnHandle>> {
@@ -634,6 +682,8 @@ impl Broker {
             if last_summary.elapsed() >= Duration::from_secs(60) {
                 last_summary = std::time::Instant::now();
                 self.log_expiry_summary();
+                // Expired bans leave the list and the file within a minute of their expiry.
+                self.bans.sweep();
             }
             let secs = self.cfg.auto_delete_empty_after_secs;
             if secs > 0 {

@@ -7,6 +7,7 @@
 
 mod api;
 mod body;
+mod control;
 mod pages;
 mod session;
 mod sort;
@@ -17,7 +18,7 @@ use axum::extract::{ConnectInfo, Request, State};
 use axum::http::{header, HeaderMap, HeaderValue, Method, Response, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::IntoResponse;
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post};
 use axum::{Form, Router};
 use base64::Engine;
 use parking_lot::Mutex;
@@ -110,6 +111,13 @@ fn router(state: AdminState) -> Router {
         .route("/queues/{name}/messages/{id}", get(pages::message_detail))
         .route("/topics", get(pages::topics))
         .route("/connections", get(pages::connections))
+        .route(
+            "/connections/{id}/close",
+            get(control::close_confirm).post(control::close),
+        )
+        .route("/bans", get(control::bans).post(control::ban))
+        .route("/bans/add", get(control::ban_confirm))
+        .route("/bans/remove", get(control::unban_confirm).post(control::unban))
         .route("/api/overview", get(api::overview))
         .route("/api/queues", get(api::queues))
         .route("/api/queues/{name}", get(api::queue_detail))
@@ -117,6 +125,9 @@ fn router(state: AdminState) -> Router {
         .route("/api/queues/{name}/messages/{id}", get(api::message))
         .route("/api/topics", get(api::topics))
         .route("/api/connections", get(api::connections))
+        .route("/api/connections/{id}/close", post(control::api_close))
+        .route("/api/bans", get(control::api_bans).post(control::api_add_ban))
+        .route("/api/bans/{address}", delete(control::api_remove_ban))
         .fallback(pages::not_found)
         .layer(middleware::from_fn_with_state(state.clone(), guard))
         .with_state(state)
@@ -167,7 +178,7 @@ pub fn safe_next(next: Option<&str>) -> String {
     }
 }
 
-fn redirect(location: &str) -> Response<Body> {
+pub(super) fn redirect(location: &str) -> Response<Body> {
     let mut r = Response::new(Body::empty());
     *r.status_mut() = StatusCode::SEE_OTHER;
     if let Ok(v) = HeaderValue::from_str(location) {
@@ -176,7 +187,15 @@ fn redirect(location: &str) -> Response<Body> {
     r
 }
 
-fn json_error(status: StatusCode, error: &str) -> Response<Body> {
+/// A `200` with a JSON body.
+pub(super) fn json_ok(value: serde_json::Value) -> Response<Body> {
+    let mut r = Response::new(Body::from(value.to_string()));
+    r.headers_mut()
+        .insert(header::CONTENT_TYPE, HeaderValue::from_static("application/json"));
+    r
+}
+
+pub(super) fn json_error(status: StatusCode, error: &str) -> Response<Body> {
     let mut r = Response::new(Body::from(serde_json::json!({ "error": error }).to_string()));
     *r.status_mut() = status;
     r.headers_mut()
@@ -283,17 +302,44 @@ async fn api_basic(state: &AdminState, headers: &HeaderMap, ip: IpAddr) -> Resul
 
 // -- guard --------------------------------------------------------------------
 
+/// The paths that change something, with the method that does it. Everything else answers
+/// `405`, so a typo in a path cannot reach a handler with an unexpected method.
+fn is_write(method: &Method, path: &str) -> bool {
+    let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+    match *method {
+        Method::POST => matches!(
+            segments.as_slice(),
+            ["bans"]
+                | ["bans", "remove"]
+                | ["api", "bans"]
+                | ["connections", _, "close"]
+                | ["api", "connections", _, "close"]
+        ),
+        Method::DELETE => matches!(segments.as_slice(), ["api", "bans", _]),
+        _ => false,
+    }
+}
+
+fn not_allowed() -> Response<Body> {
+    let mut r = Response::new(Body::from("Method Not Allowed"));
+    *r.status_mut() = StatusCode::METHOD_NOT_ALLOWED;
+    r.headers_mut()
+        .insert(header::ALLOW, HeaderValue::from_static("GET, HEAD"));
+    secure(r, true)
+}
+
 /// Methods, authentication and security headers for every request.
 async fn guard(State(state): State<AdminState>, mut req: Request, next: Next) -> Response<Body> {
     let path = req.uri().path().to_string();
     let method = req.method().clone();
     let login_post = method == Method::POST && (path == "/login" || path == "/logout");
-    if !(method == Method::GET || method == Method::HEAD || login_post) {
-        let mut r = Response::new(Body::from("Method Not Allowed"));
-        *r.status_mut() = StatusCode::METHOD_NOT_ALLOWED;
-        r.headers_mut()
-            .insert(header::ALLOW, HeaderValue::from_static("GET, HEAD"));
-        return secure(r, true);
+    let write = is_write(&method, &path);
+    if !(method == Method::GET || method == Method::HEAD || login_post || write) {
+        return not_allowed();
+    }
+    // A read-only console offers no write operation at all, and shows no link to one.
+    if write && state.broker.cfg.admin_read_only {
+        return not_allowed();
     }
     if path == "/style.css" {
         return secure(next.run(req).await, false);
@@ -327,6 +373,12 @@ async fn guard(State(state): State<AdminState>, mut req: Request, next: Next) ->
             }
         }
     };
+    // Only after the caller is known: a write from another site is refused.
+    if write && !same_origin(req.headers()) {
+        let mut r = Response::new(Body::from("Forbidden: cross-site request"));
+        *r.status_mut() = StatusCode::FORBIDDEN;
+        return secure(r, true);
+    }
     req.extensions_mut().insert(CurrentUser(user));
     secure(next.run(req).await, true)
 }

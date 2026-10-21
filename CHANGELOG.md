@@ -37,6 +37,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - Queue message contents (FIFO), message headers, and StreamMessage bodies remain
     unsorted with plain headers.
 
+- **Closing connections and banning addresses from the admin console**: every row of the
+  Connections page offers **Close** (the client is told "Connection closed by the administrator"
+  and the broker cleans up as for a dropped connection) and **Ban IP**, and a new **Bans** page
+  lists the addresses kept out of the OpenWire listeners.
+  - A ban is an address or a CIDR range, for 1 hour, 24 hours, 7 days or permanently, with an
+    optional reason; adding one offers to close the connections already open from it. Banned
+    addresses are refused right after `accept`, before any byte is read, and the refused
+    attempts are counted per ban.
+  - **Automatic bans**: 3 failed OpenWire logins from one address within 15 minutes ban it for
+    1 minute, doubling after each further failure up to 24 hours. A successful login or a day
+    without failures resets the escalation. Kept in memory only: a restart clears them.
+  - Manual bans are stored in `bans.toml` next to the configuration file, rewritten atomically;
+    a broken file stops the start with exit code 2 naming the line and the entry, and
+    `check-config` reports it.
+  - API: `POST /api/connections/{id}/close`, `GET`/`POST /api/bans` and
+    `DELETE /api/bans/{address}`.
+  - New key `admin.read_only` (default `false`): `true` removes every write action from the
+    pages and answers `405` to their paths. Every write needs a `POST` from the console's own
+    origin and is logged with the administrator and their address.
 - **Daily log files**: logging writes to a folder (`log.dir`, default `logs` next to the
   executable) into an active `mqrust.log` that is rotated at local midnight, named after the
   day it holds (`mqrust-2026-10-21.log`), compressed to `.log.gz` by a background thread and

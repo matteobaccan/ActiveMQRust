@@ -65,6 +65,20 @@ impl ConnHandle {
         let _ = self.tx.send(Out::CloseAfter(cmds));
     }
 
+    /// Tells the client an administrator closed it, then closes the socket. The connection
+    /// task then cleans up as for a dropped connection.
+    pub fn close_by_admin(&self) {
+        use crate::openwire::model::{ConnectionError, Header, Throwable};
+        self.close_after(vec![Command::ConnectionError(ConnectionError {
+            header: Header::default(),
+            exception: Some(Throwable::new(
+                "javax.jms.JMSException",
+                "Connection closed by the administrator",
+            )),
+            connection_id: None,
+        })]);
+    }
+
     pub fn count_dispatch(&self) {
         self.dispatched.fetch_add(1, Ordering::Relaxed);
     }

@@ -43,6 +43,11 @@ pub async fn run(cfg: Config, stop: StopSignal, on_ready: impl FnOnce()) -> Resu
             tokio::select! {
                 res = listener.accept() => match res {
                     Ok((stream, remote)) => {
+                        // Before any byte is read: a banned address costs one lookup.
+                        if accept_broker.bans.refuse(remote.ip()) {
+                            drop(stream);
+                            continue;
+                        }
                         tokio::spawn(crate::connection::serve(stream, remote, accept_broker.clone(), accept_shutdown.clone()));
                     }
                     Err(e) => {

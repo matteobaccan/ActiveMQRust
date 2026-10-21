@@ -5,6 +5,7 @@
 
 pub mod admin;
 pub mod auth;
+pub mod bans;
 pub mod broker;
 pub mod config;
 pub mod connection;

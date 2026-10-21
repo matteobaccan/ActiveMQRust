@@ -83,6 +83,68 @@ async fn start() -> Console {
     start_with(|_| {}).await
 }
 
+/// A console whose configuration file, and so whose `bans.toml`, lives in its own folder.
+async fn start_in(name: &str) -> (Console, std::path::PathBuf) {
+    let dir = std::env::temp_dir().join(format!("mqrust-admin-{}-{name}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut fc = FileConfig::default();
+    fc.admin.password = Some("admin".into());
+    fc.users.push(UserEntry {
+        username: "admin".into(),
+        password: Some("admin".into()),
+        password_hash: None,
+    });
+    let o = Overrides {
+        admin_port: Some(0),
+        ..Default::default()
+    };
+    let cfg = build(fc, ConfigSource::File(dir.join("mqrust.toml")), &o).unwrap();
+    let broker = Broker::new(Arc::new(cfg));
+    let (tx, rx) = tokio::sync::watch::channel(false);
+    std::mem::forget(tx);
+    let addr = mqrust::admin::start(broker.clone(), rx)
+        .await
+        .expect("admin console started");
+    (
+        Console {
+            broker,
+            port: addr.port(),
+        },
+        dir,
+    )
+}
+
+/// A connection the console can act on. The receiver shows what the writer task was told.
+fn fake_conn(b: &Broker, id: &str, remote: &str) -> (Arc<ConnHandle>, mpsc::UnboundedReceiver<Out>) {
+    let (tx, rx) = mpsc::unbounded_channel();
+    let handle = ConnHandle::new(b.new_conn_id(), remote.parse().unwrap(), tx);
+    {
+        let mut info = handle.info.lock();
+        info.connection_id = id.into();
+        info.user = "app1".into();
+    }
+    let handle = Arc::new(handle);
+    b.register_conn(handle.clone());
+    (handle, rx)
+}
+
+/// True when the connection was told an administrator closed it, and then to close.
+fn closed_by_admin(rx: &mut mpsc::UnboundedReceiver<Out>) -> bool {
+    while let Ok(out) = rx.try_recv() {
+        if let Out::CloseAfter(cmds) = out {
+            return cmds.iter().any(|c| match c {
+                Command::ConnectionError(e) => {
+                    e.exception.as_ref().and_then(|t| t.message.as_deref())
+                        == Some("Connection closed by the administrator")
+                }
+                _ => false,
+            });
+        }
+    }
+    false
+}
+
 #[derive(Debug)]
 struct Resp {
     status: u16,
@@ -145,6 +207,11 @@ impl<'a> Req<'a> {
         let body: Vec<String> = fields.iter().map(|(k, v)| format!("{k}={}", form_enc(v))).collect();
         self.body = Some(body.join("&"));
         self.header("Content-Type", "application/x-www-form-urlencoded")
+    }
+    /// A body sent as it is, for the JSON of the API.
+    fn body_text(mut self, text: &str) -> Self {
+        self.body = Some(text.to_string());
+        self
     }
     fn from(mut self, ip: &str) -> Self {
         self.from = Some(ip.parse().unwrap());
@@ -1870,4 +1937,351 @@ async fn queues_filter_api() {
         .await
         .json();
     assert_eq!(names(&j), vec!["ORDERS.DLQ.HIGH", "app.dlq.low"]);
+}
+
+// -- closing connections and bans -------------------------------------------------------
+
+#[tokio::test]
+async fn the_console_closes_one_connection() {
+    let c = start().await;
+    let token = login(&c).await;
+    let (_h, mut rx) = fake_conn(&c.broker, "ID:conn-close-1", "203.0.113.7:50001");
+
+    let page = get(&c, "/connections", &token).await;
+    assert!(
+        page.body.contains("/connections/ID%3Aconn-close-1/close"),
+        "{}",
+        page.body
+    );
+    assert!(page.body.contains("/bans/add?address=203.0.113.7"), "{}", page.body);
+
+    // The confirmation page changes nothing.
+    let confirm = get(&c, "/connections/ID%3Aconn-close-1/close", &token).await;
+    assert_eq!(confirm.status, 200);
+    assert!(confirm.body.contains("ID:conn-close-1"), "{}", confirm.body);
+    assert!(confirm.body.contains("203.0.113.7:50001"), "{}", confirm.body);
+    assert!(!closed_by_admin(&mut rx), "a GET closes nothing");
+
+    let done = req("POST", "/connections/ID%3Aconn-close-1/close")
+        .cookie(&token)
+        .send(c.port)
+        .await;
+    assert_eq!(done.status, 303, "{done:?}");
+    let location = done.header("location").unwrap();
+    assert!(location.starts_with("/connections?notice="), "{location}");
+    assert!(location.contains("closed"), "{location}");
+    assert!(closed_by_admin(&mut rx), "the client is told why");
+    assert!(logs().contains("closed connection ID:conn-close-1"), "{}", logs());
+}
+
+#[tokio::test]
+async fn closing_a_connection_that_is_gone_says_so() {
+    let c = start().await;
+    let token = login(&c).await;
+    let done = req("POST", "/connections/ID%3Anot-there/close")
+        .cookie(&token)
+        .send(c.port)
+        .await;
+    assert_eq!(done.status, 303);
+    let location = done.header("location").unwrap();
+    assert!(location.contains("no%20longer%20open"), "{location}");
+    assert_eq!(
+        get(&c, "/connections", &token).await.status,
+        200,
+        "the list still works"
+    );
+}
+
+#[tokio::test]
+async fn a_ban_from_the_console_closes_and_refuses() {
+    let (c, dir) = start_in("ban").await;
+    let token = login(&c).await;
+    let (_h, mut rx) = fake_conn(&c.broker, "ID:conn-ban-1", "203.0.113.7:50002");
+
+    let confirm = get(&c, "/bans/add?address=203.0.113.7", &token).await;
+    assert_eq!(confirm.status, 200);
+    assert!(confirm.body.contains("1 connection(s) are open"), "{}", confirm.body);
+    assert!(confirm.body.contains("value=\"24h\" checked"), "{}", confirm.body);
+    assert!(
+        !c.broker.bans.is_banned("203.0.113.7".parse().unwrap()),
+        "GET adds nothing"
+    );
+
+    let done = req("POST", "/bans")
+        .cookie(&token)
+        .form(&[
+            ("address", "203.0.113.7"),
+            ("duration", "24h"),
+            ("reason", "load test"),
+            ("close", "1"),
+        ])
+        .send(c.port)
+        .await;
+    assert_eq!(done.status, 303, "{done:?}");
+    assert!(c.broker.bans.is_banned("203.0.113.7".parse().unwrap()));
+    assert!(closed_by_admin(&mut rx), "the open connection is closed");
+
+    // The notice of the write travels in the redirect, so the page it points at shows it.
+    let page = get(&c, &done.header("location").unwrap(), &token).await;
+    assert!(page.body.contains("203.0.113.7"), "{}", page.body);
+    assert!(page.body.contains("load test"), "{}", page.body);
+    assert!(page.body.contains("1 connection(s) closed"), "{}", page.body);
+
+    // The ban outlives a restart: it is in the file.
+    let stored = std::fs::read_to_string(dir.join("bans.toml")).unwrap();
+    assert!(stored.contains("203.0.113.7"), "{stored}");
+    assert!(stored.contains("load test"), "{stored}");
+    assert!(logs().contains("banned 203.0.113.7 until"), "{}", logs());
+}
+
+#[tokio::test]
+async fn a_ban_without_closing_leaves_the_connections_alone() {
+    let (c, _dir) = start_in("bankeep").await;
+    let token = login(&c).await;
+    let (_h, mut rx) = fake_conn(&c.broker, "ID:conn-keep-1", "198.51.100.4:50003");
+    let done = req("POST", "/bans")
+        .cookie(&token)
+        .form(&[("address", "198.51.100.4"), ("duration", "1h")])
+        .send(c.port)
+        .await;
+    assert_eq!(done.status, 303);
+    assert!(c.broker.bans.is_banned("198.51.100.4".parse().unwrap()));
+    assert!(!closed_by_admin(&mut rx), "the open connection keeps working");
+}
+
+#[tokio::test]
+async fn a_range_ban_covers_only_its_addresses() {
+    let (c, _dir) = start_in("banrange").await;
+    let token = login(&c).await;
+    let done = req("POST", "/bans")
+        .cookie(&token)
+        .form(&[("address", "10.1.0.0/16"), ("duration", "permanent")])
+        .send(c.port)
+        .await;
+    assert_eq!(done.status, 303);
+    assert!(c.broker.bans.is_banned("10.1.2.3".parse().unwrap()));
+    assert!(!c.broker.bans.is_banned("10.2.0.1".parse().unwrap()));
+    let page = get(&c, "/bans", &token).await;
+    assert!(page.body.contains("10.1.0.0/16"), "{}", page.body);
+    assert!(page.body.contains("permanent"), "{}", page.body);
+}
+
+#[tokio::test]
+async fn an_invalid_address_adds_nothing() {
+    let (c, _dir) = start_in("baninvalid").await;
+    let token = login(&c).await;
+    let page = get(&c, "/bans/add?address=300.1.1.1", &token).await;
+    assert_eq!(page.status, 400);
+    assert!(page.body.contains("invalid address or range"), "{}", page.body);
+    assert!(c.broker.bans.list().is_empty());
+
+    let done = req("POST", "/bans")
+        .cookie(&token)
+        .form(&[("address", "300.1.1.1"), ("duration", "1h")])
+        .send(c.port)
+        .await;
+    assert_eq!(done.status, 303);
+    assert!(done.header("location").unwrap().contains("invalid"), "{done:?}");
+    assert!(c.broker.bans.list().is_empty());
+}
+
+#[tokio::test]
+async fn banning_your_own_address_warns_but_is_allowed() {
+    let (c, _dir) = start_in("banself").await;
+    let token = login(&c).await;
+    let page = get(&c, "/bans/add?address=127.0.0.1", &token).await;
+    assert!(page.body.contains("admin console stays reachable"), "{}", page.body);
+    let done = req("POST", "/bans")
+        .cookie(&token)
+        .form(&[("address", "127.0.0.1"), ("duration", "1h")])
+        .send(c.port)
+        .await;
+    assert_eq!(done.status, 303);
+    assert_eq!(get(&c, "/bans", &token).await.status, 200, "the console still answers");
+}
+
+#[tokio::test]
+async fn unbanning_lets_the_address_in_again() {
+    let (c, _dir) = start_in("unban").await;
+    let token = login(&c).await;
+    req("POST", "/bans")
+        .cookie(&token)
+        .form(&[("address", "203.0.113.9"), ("duration", "1h")])
+        .send(c.port)
+        .await;
+    let confirm = get(&c, "/bans/remove?address=203.0.113.9", &token).await;
+    assert_eq!(confirm.status, 200);
+    assert!(confirm.body.contains("203.0.113.9"), "{}", confirm.body);
+    assert!(
+        c.broker.bans.is_banned("203.0.113.9".parse().unwrap()),
+        "GET removes nothing"
+    );
+
+    let done = req("POST", "/bans/remove")
+        .cookie(&token)
+        .form(&[("address", "203.0.113.9")])
+        .send(c.port)
+        .await;
+    assert_eq!(done.status, 303);
+    assert!(!c.broker.bans.is_banned("203.0.113.9".parse().unwrap()));
+    assert!(logs().contains("removed ban 203.0.113.9"), "{}", logs());
+}
+
+#[tokio::test]
+async fn a_cross_site_write_is_refused() {
+    let (c, _dir) = start_in("crosssite").await;
+    let token = login(&c).await;
+    let done = req("POST", "/bans")
+        .cookie(&token)
+        .header("Origin", "https://evil.example")
+        .form(&[("address", "203.0.113.10"), ("duration", "1h")])
+        .send(c.port)
+        .await;
+    assert_eq!(done.status, 403, "{done:?}");
+    assert!(c.broker.bans.list().is_empty());
+}
+
+#[tokio::test]
+async fn a_read_only_console_shows_no_write_action() {
+    let c = start_with(|fc| fc.admin.read_only = true).await;
+    let token = login(&c).await;
+    let (_h, mut rx) = fake_conn(&c.broker, "ID:conn-ro-1", "203.0.113.11:50004");
+
+    let page = get(&c, "/connections", &token).await;
+    assert!(!page.body.contains("/close"), "{}", page.body);
+    assert!(!page.body.contains("/bans/add"), "{}", page.body);
+    let bans = get(&c, "/bans", &token).await;
+    assert_eq!(bans.status, 200);
+    assert!(!bans.body.contains("Add ban"), "{}", bans.body);
+    assert!(!bans.body.contains("Unban"), "{}", bans.body);
+
+    for (method, path) in [
+        ("POST", "/connections/ID%3Aconn-ro-1/close"),
+        ("POST", "/bans"),
+        ("POST", "/bans/remove"),
+        ("POST", "/api/connections/ID%3Aconn-ro-1/close"),
+        ("POST", "/api/bans"),
+        ("DELETE", "/api/bans/203.0.113.11"),
+    ] {
+        let r = req(method, path).cookie(&token).send(c.port).await;
+        assert_eq!(r.status, 405, "{method} {path}: {r:?}");
+        assert_eq!(r.header("allow").as_deref(), Some("GET, HEAD"));
+    }
+    assert!(!closed_by_admin(&mut rx));
+    assert!(c.broker.bans.list().is_empty());
+}
+
+#[tokio::test]
+async fn the_api_closes_a_connection() {
+    let c = start().await;
+    let (_h, mut rx) = fake_conn(&c.broker, "ID:api-close-1", "203.0.113.12:50005");
+    let r = req("POST", "/api/connections/ID%3Aapi-close-1/close")
+        .basic("admin:admin")
+        .send(c.port)
+        .await;
+    assert_eq!(r.status, 200, "{r:?}");
+    assert_eq!(r.json(), serde_json::json!({ "closed": "ID:api-close-1" }));
+    assert!(closed_by_admin(&mut rx));
+
+    let missing = req("POST", "/api/connections/ID%3Anope/close")
+        .basic("admin:admin")
+        .send(c.port)
+        .await;
+    assert_eq!(missing.status, 404);
+    assert_eq!(missing.json(), serde_json::json!({ "error": "connection not open" }));
+}
+
+#[tokio::test]
+async fn the_api_adds_lists_and_removes_bans() {
+    let (c, dir) = start_in("apibans").await;
+    assert_eq!(api(&c, "/api/bans").await.json(), serde_json::json!([]));
+
+    let added = req("POST", "/api/bans")
+        .basic("admin:admin")
+        .header("Content-Type", "application/json")
+        .body_text("{\"address\": \"198.51.100.0/24\", \"duration\": \"7d\", \"reason\": \"load test\"}")
+        .send(c.port)
+        .await;
+    assert_eq!(added.status, 200, "{added:?}");
+    let j = added.json();
+    assert_eq!(j["ban"]["address"], "198.51.100.0/24");
+    assert_eq!(j["ban"]["reason"], "load test");
+    assert_eq!(j["ban"]["createdBy"], "admin");
+    assert_eq!(j["ban"]["automatic"], false);
+    assert_eq!(j["closedConnections"], 0);
+    let expires = j["ban"]["expires"].as_str().unwrap().to_string();
+    let expires = chrono::DateTime::parse_from_rfc3339(&expires).unwrap();
+    let left = expires.timestamp() - chrono::Local::now().timestamp();
+    assert!((6 * 86_400..=7 * 86_400).contains(&left), "{left} seconds away");
+    assert!(std::fs::read_to_string(dir.join("bans.toml"))
+        .unwrap()
+        .contains("198.51.100.0/24"));
+
+    let list = api(&c, "/api/bans").await.json();
+    assert_eq!(list.as_array().unwrap().len(), 1);
+    assert_eq!(list[0]["address"], "198.51.100.0/24");
+    assert_eq!(list[0]["refusedAttempts"], 0);
+
+    let bad = req("POST", "/api/bans")
+        .basic("admin:admin")
+        .body_text("{\"address\": \"300.1.1.1\"}")
+        .send(c.port)
+        .await;
+    assert_eq!(bad.status, 400);
+    assert!(bad.json()["error"].as_str().unwrap().contains("invalid"), "{bad:?}");
+
+    let bad_length = req("POST", "/api/bans")
+        .basic("admin:admin")
+        .body_text("{\"address\": \"10.0.0.1\", \"duration\": \"5m\"}")
+        .send(c.port)
+        .await;
+    assert_eq!(bad_length.status, 400);
+
+    let removed = req("DELETE", "/api/bans/198.51.100.0%2F24")
+        .basic("admin:admin")
+        .send(c.port)
+        .await;
+    assert_eq!(removed.status, 200, "{removed:?}");
+    assert_eq!(removed.json(), serde_json::json!({ "removed": "198.51.100.0/24" }));
+    assert_eq!(api(&c, "/api/bans").await.json(), serde_json::json!([]));
+
+    let again = req("DELETE", "/api/bans/198.51.100.0%2F24")
+        .basic("admin:admin")
+        .send(c.port)
+        .await;
+    assert_eq!(again.status, 404);
+}
+
+#[tokio::test]
+async fn an_automatic_ban_is_listed_as_automatic() {
+    let (c, _dir) = start_in("autoban").await;
+    let from: IpAddr = "203.0.113.20".parse().unwrap();
+    for _ in 0..3 {
+        c.broker.bans.login_failed(from);
+    }
+    assert!(c.broker.bans.is_banned(from));
+    let list = api(&c, "/api/bans").await.json();
+    assert_eq!(list[0]["address"], "203.0.113.20");
+    assert_eq!(list[0]["automatic"], true);
+    assert_eq!(list[0]["createdBy"], "broker");
+    assert!(list[0]["expires"].is_string(), "{list}");
+
+    let token = login(&c).await;
+    let page = get(&c, "/bans", &token).await;
+    assert!(page.body.contains("automatic"), "{}", page.body);
+
+    // An automatic ban is not written to the file.
+    assert!(
+        !c.broker.cfg.bans_path.exists()
+            || !std::fs::read_to_string(&c.broker.cfg.bans_path)
+                .unwrap()
+                .contains("203.0.113.20")
+    );
+
+    let removed = req("DELETE", "/api/bans/203.0.113.20")
+        .basic("admin:admin")
+        .send(c.port)
+        .await;
+    assert_eq!(removed.status, 200);
+    assert!(!c.broker.bans.is_banned(from));
 }

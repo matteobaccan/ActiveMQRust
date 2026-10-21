@@ -79,6 +79,8 @@ pub struct AdminSection {
     pub session_max_hours: i64,
     pub login_max_failures: i64,
     pub login_lockout_seconds: i64,
+    /// Refuse every console and API write operation.
+    pub read_only: bool,
 }
 
 impl Default for AdminSection {
@@ -93,6 +95,7 @@ impl Default for AdminSection {
             session_max_hours: 8,
             login_max_failures: 5,
             login_lockout_seconds: 60,
+            read_only: false,
         }
     }
 }
@@ -185,6 +188,10 @@ pub struct Config {
     /// Failed console logins from one IP before a lockout; 0 = no throttling.
     pub admin_login_max_failures: u32,
     pub admin_login_lockout_seconds: u64,
+    /// The console and the API refuse every write operation.
+    pub admin_read_only: bool,
+    /// Where the bans are stored: next to the configuration file, or to the executable.
+    pub bans_path: PathBuf,
     pub users: Vec<User>,
     pub log_level: String,
     /// Folder of the log files, already resolved against the executable.
@@ -458,6 +465,13 @@ pub fn build(file: FileConfig, source: ConfigSource, overrides: &Overrides) -> R
     }
     let retention = in_range("log.retention_days", l.retention_days, 0, 3650)?;
 
+    let bans_path = match &source {
+        ConfigSource::File(path) => path
+            .parent()
+            .filter(|d| !d.as_os_str().is_empty())
+            .map_or_else(|| PathBuf::from(crate::bans::FILE), |d| d.join(crate::bans::FILE)),
+        ConfigSource::Defaults => resolve_from_exe(crate::bans::FILE),
+    };
     let is_file = matches!(source, ConfigSource::File(_));
     let mut default_credentials = false;
 
@@ -544,6 +558,8 @@ pub fn build(file: FileConfig, source: ConfigSource, overrides: &Overrides) -> R
         admin_session_max_hours: session_max,
         admin_login_max_failures: max_failures as u32,
         admin_login_lockout_seconds: lockout,
+        admin_read_only: a.read_only,
+        bans_path,
         users,
         log_level: level,
         log_dir: resolve_from_exe(&l.dir),
@@ -602,6 +618,7 @@ password = "admin"                     # replace with password_hash = "..." (mqr
 # session_max_hours = 8                # and in any case this long after login (1-168)
 # login_max_failures = 5               # failed logins per IP in 15 minutes before a lockout; 0 = off
 # login_lockout_seconds = 60           # lockout length (1-86400)
+# read_only = false                    # true refuses every write operation of the console and API
 
 [log]
 # level = "info"                       # error | warn | info | debug | trace (--log-level overrides it)

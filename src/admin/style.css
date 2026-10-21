@@ -238,6 +238,41 @@ body.login main { display: flex; align-items: center; justify-content: center; p
 }
 .login-form button { margin-top: var(--sp-3); width: 100%; }
 
+/* -- write operations: row actions, confirmation pages ------------------------- */
+.row-actions { white-space: nowrap; }
+.row-actions a {
+  display: inline-flex; align-items: center; min-height: 2.5rem; padding: 0 var(--sp-2);
+  font-size: .875rem;
+}
+.tag {
+  display: inline-block; margin-left: var(--sp-1); padding: 0 var(--sp-1); border-radius: var(--radius-sm);
+  background: var(--surface-2); color: var(--muted); font-size: .75rem; font-weight: 600; text-transform: uppercase;
+}
+.facts {
+  display: grid; grid-template-columns: max-content 1fr; gap: var(--sp-1) var(--sp-3);
+  margin: 0 0 var(--sp-4); padding: var(--sp-3) var(--sp-4);
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius);
+}
+.facts dt { color: var(--muted); font-weight: 600; }
+.facts dd { margin: 0; overflow-wrap: anywhere; }
+.confirm { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2) var(--sp-3); }
+.confirm fieldset {
+  display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-1) var(--sp-3);
+  margin: 0; padding: var(--sp-2) var(--sp-3); border: 1px solid var(--line); border-radius: var(--radius-sm);
+}
+.confirm legend { color: var(--muted); font-weight: 600; font-size: .875rem; }
+.confirm label { display: inline-flex; align-items: center; gap: var(--sp-1); }
+.confirm input[type="text"], .confirm input:not([type]) {
+  min-height: 2.5rem; padding: 0 var(--sp-2); background: var(--bg); color: var(--fg);
+  border: 1px solid var(--line); border-radius: var(--radius-sm); font: inherit;
+}
+button.danger { background: var(--err-fg); border-color: var(--err-fg); color: var(--bg); }
+button.danger:hover { filter: brightness(1.1); }
+@media (max-width: 479.98px) {
+  .confirm, .confirm fieldset { flex-direction: column; align-items: stretch; }
+  .confirm button { width: 100%; }
+}
+
 /* -- footer -------------------------------------------------------------------- */
 .foot {
   display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: var(--sp-1) var(--sp-2);

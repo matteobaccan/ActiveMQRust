@@ -3,7 +3,7 @@
 
 //! ActiveMQRust: an in-memory message broker speaking Apache ActiveMQ's OpenWire protocol.
 
-use mqrust::{config, cpu, logging, server, setup};
+use mqrust::{bans, config, cpu, logging, server, setup};
 
 #[cfg(windows)]
 use mqrust::service;
@@ -344,6 +344,10 @@ fn main() -> ExitCode {
         Some(Cmd::InitConfig) => setup_command(&cli, setup::init_config),
         Some(Cmd::CheckConfig) => match config::load(cli.config.as_deref(), &overrides(&cli)) {
             Ok(c) => {
+                if let Err(e) = bans::load(&c.bans_path) {
+                    eprintln!("configuration error: {e}");
+                    return ExitCode::from(2);
+                }
                 if let Err(e) = logging::probe_dir(&c.log_dir) {
                     eprintln!("warning: log.dir {} {e}", c.log_dir.display());
                 }
@@ -400,6 +404,11 @@ fn main() -> ExitCode {
                     return ExitCode::from(2);
                 }
             };
+            // A broken bans.toml stops the start, like a broken configuration.
+            if let Err(e) = bans::load(&cfg.bans_path) {
+                eprintln!("configuration error: {e}");
+                return ExitCode::from(2);
+            }
             logging::init_console(&cfg.log_level, log_options(&cfg).as_ref());
             let rt = match cpu::runtime(cfg.processors) {
                 Ok(rt) => rt,

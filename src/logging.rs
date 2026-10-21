@@ -303,7 +303,9 @@ impl RotatingFile {
         let path = self.dir.join(ACTIVE);
         match OpenOptions::new().create(true).append(true).open(&path) {
             Ok(mut file) => {
-                let line = format!("{} INFO {}\n", self.clock.now().format(TIME), self.header);
+                // The same shape as a tracing line: timestamp, level right-aligned in five
+                // columns, message.
+                let line = format!("{} {:>5} {}\n", self.clock.now().format(TIME), "INFO", self.header);
                 let _ = file.write_all(line.as_bytes());
                 self.file = Some(file);
                 self.failed = None;
@@ -579,7 +581,7 @@ mod tests {
         assert!(first[0].contains("ActiveMQRust"), "{first:?}");
         assert!(first[0].contains("log started: pid"), "{first:?}");
         assert!(first[0].contains("config built-in defaults"), "{first:?}");
-        assert!(first[0].contains(" INFO "), "{first:?}");
+        assert!(first[0].contains("  INFO ActiveMQRust"), "{first:?}");
         assert_eq!(first[1], "first");
     }
 

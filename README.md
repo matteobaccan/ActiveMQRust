@@ -68,7 +68,7 @@ After a restart the broker starts empty. Clients that use a `failover:` URL reco
 - **Compression**: messages compressed by the client (`useCompression=true`) pass through untouched. The broker can also compress large bodies itself to save RAM (`compress_threshold_kb`); this is off by default because it costs CPU and throughput (see [Load tests](#load-tests)).
 - **Non-durable topics**, **local transactions**, **temporary queues** (request/reply), **QueueBrowser**.
 - **Authentication** with username and password (plain text or Argon2 hash).
-- **Web admin console** with a login form and sessions: queues (every column sortable, filterable by name and state), consumers, producers, connections and queue contents, a formatted view of XML bodies, a responsive layout with light and dark themes that follow the system, plus a JSON API.
+- **Web admin console** with a login form and sessions: queues (every column sortable, filterable by name and state), consumers, producers, connections and queue contents, a formatted view of XML bodies, a responsive layout with light and dark themes that follow the system, plus a JSON API. An administrator can close a connection and ban an address or range; three failed logins from one address ban it automatically.
 - **Guided setup from the command line**: `mqrust.exe -h` shows the four steps to get started; `set-admin` and `user add` / `passwd` / `remove` / `list` manage the console user and the messaging users without editing the file by hand.
 - The broker identifies itself as **`ActiveMQRust <version>`**.
 
@@ -216,6 +216,12 @@ The read-only web console answers on `http://127.0.0.1:8161/` (keys `[admin] bin
 - **Queue filter**: a filter bar above the queues table narrows the list by name (`q`, case-insensitive contains, up to 200 characters) and state checkboxes (`pending=1` for queues with pending messages, `noconsumers=1` for queues without consumers), combined with AND. Works server-side with no JavaScript: sort links and auto-refresh keep the active filter, and the filter form keeps the current sort and refresh. While a filter is active, the page shows "Showing N of M queues" and a "Clear filter" link; if no queues match, the table displays "No queues match the filter".
 - **XML bodies**: a TextMessage holding well-formed XML gets a **Formatted** view (indented and coloured) next to the unchanged **Raw** view. DTDs and entities are never resolved; bodies above 1 MB are not formatted.
 - **Theme**: follows the system light/dark setting. No JavaScript and no external resources are loaded.
+- **Closing a connection**: every row of the Connections page has a **Close** action. The client is told "Connection closed by the administrator" through its `ExceptionListener` and the socket is closed; the broker then cleans up as for a client that died (unacknowledged messages return to their queues as redelivered, open transactions are rolled back, temporary destinations are removed). A client with a `failover:` URL reconnects within a second, which is what **Ban IP** is for.
+- **Bans**: the **Bans** page lists the addresses kept out of the OpenWire listeners and adds one from a connection row or from its own form: an IPv4 or IPv6 address, or a CIDR range (`10.1.0.0/16`), for 1 hour, 24 hours, 7 days or permanently, with an optional reason. Banning offers to close the connections already open from that address. A banned address is refused right after `accept`, before any byte is read, and the page counts the refused attempts. Bans never apply to the admin console: banning your own address only warns.
+  - After **3 failed OpenWire logins from one address within 15 minutes** the broker bans it automatically for 1 minute, and for twice as long after each further failure (up to 24 hours); a successful login or a day without failures clears the escalation. Automatic bans live in memory only: a restart clears them. Only wrong credentials count, never protocol or TLS errors.
+  - Manual bans are stored in `bans.toml` next to the configuration file (next to the executable with the built-in defaults) and are rewritten atomically at every change. Edit the file only while the broker is stopped: the next change made from the console rewrites it from what the broker holds. A broken file stops the start with exit code 2, naming the line and the entry; `mqrust.exe check-config` reports it too.
+  - Every write operation needs a `POST` from the console's own origin and a confirmation page, and is logged with the administrator, their address and what was done. `admin.read_only = true` removes every write action from the pages and answers `405` to their paths.
+  - A ban is not a firewall: the operating system still completes the TCP handshake, and clients behind the same NAT or proxy share one address, so the confirmation page shows how many connections the ban affects. Use the operating system firewall against floods.
 
 ```toml
 [admin]
@@ -223,13 +229,14 @@ session_idle_minutes = 30    # 1-1440
 session_max_hours = 8        # 1-168
 login_max_failures = 5       # 0 disables the lockout
 login_lockout_seconds = 60   # 1-86400
+read_only = false            # true refuses every write operation
 ```
 
 The console uses plain HTTP and binds to `127.0.0.1` by default. To reach it from other machines, put a TLS reverse proxy in front of it rather than binding it to a public address.
 
 ### JSON API
 
-The same data is available as JSON for scripts and monitoring. API paths accept HTTP Basic with the `[admin]` credentials (or a browser session cookie); without valid credentials they answer `401 {"error":"unauthorized"}`, with no browser pop-up.
+The same data is available as JSON for scripts and monitoring. The write endpoints (`POST`, `DELETE`) follow the same rules as the console pages: they need the `[admin]` credentials and answer `405` when `admin.read_only` is set. API paths accept HTTP Basic with the `[admin]` credentials (or a browser session cookie); without valid credentials they answer `401 {"error":"unauthorized"}`, with no browser pop-up.
 
 ```
 curl -u admin:admin http://127.0.0.1:8161/api/queues?sort=pending&order=desc
@@ -244,6 +251,10 @@ curl -u admin:admin http://127.0.0.1:8161/api/queues?sort=pending&order=desc
 | `/api/queues/{name}/messages/{id}?view=xml` | one message plus `inflight` and `body` (`{kind: text, text, truncated}`, `{kind: bytes, hex, size, truncated}`, `{kind: map, entries}`, `{kind: stream, values}`, `{kind: object, size}`, `{kind: none}`); with `view=xml`, `formattedBody` or `formatError` |
 | `/api/topics?sort=&order=` | `[{name, temporary, consumers, producers, published, discarded, pending, memory}]` (`sort`: name, consumers, producers, published, discarded; `order`: asc, desc) |
 | `/api/connections?sort=&order=` | `[{connectionId, clientId, user, client, openwireVersion, connectedAt, sessions, consumers, producers}]` (`sort`: connectionId, user, client, openwire, connected, sessions, consumers, producers; `order`: asc, desc) |
+| `POST /api/connections/{id}/close` | `{closed}`; `404` when the connection is not open |
+| `GET /api/bans?sort=&order=` | `[{address, reason, created, createdBy, expires, automatic, refusedAttempts}]` (`sort`: address, reason, by, created, expires, refused) |
+| `POST /api/bans` | body `{address, duration: 1h\|24h\|7d\|permanent, reason, closeConnections}` (duration `24h` and `closeConnections` true by default); answers `{ban, closedConnections}`, or `400 {"error"}` for an invalid address or duration |
+| `DELETE /api/bans/{address}` | `{removed}`; `404` when the address is not banned. Percent-encode the `/` of a range (`198.51.100.0%2F24`) |
 
 A `message` is `{position, messageId, correlationId, type, replyTo, deliveryMode, priority, timestamp, expiration, expirationText, expired, expiresInMs, redeliveryCounter, properties, bodyType, bodySize, compressed}`, plus `compressedSize` for a compressed body. `bodySize` is the size as stored (compressed size for a compressed body). Unknown queues and messages answer `404 {"error": "... not found"}`.
 

@@ -76,6 +76,18 @@ pub fn enc(s: &str) -> String {
     o
 }
 
+/// The notice a write operation left in the query string, as a paragraph. It is escaped, and
+/// what a redirect of this console puts there is always one of its own messages.
+pub(super) fn notice(ctx: &Ctx) -> String {
+    match ctx.get("notice") {
+        Some(text) if !text.is_empty() => {
+            let shown: String = text.chars().take(300).collect();
+            format!("<p class=\"notice\">{}</p>", esc(&shown))
+        }
+        _ => String::new(),
+    }
+}
+
 /// What a page needs from the request: user, path and query.
 pub struct Ctx {
     pub user: Option<String>,
@@ -172,13 +184,14 @@ fn footer() -> String {
 }
 
 /// The page shell: top bar (navigation, refresh, user, logout), content and footer.
-fn layout(ctx: &Ctx, title: &str, section: &str, content: &str) -> Response {
+pub(super) fn layout(ctx: &Ctx, title: &str, section: &str, content: &str) -> Response {
     let mut nav = String::new();
     for (href, label) in [
         ("/", "Overview"),
         ("/queues", "Queues"),
         ("/topics", "Topics"),
         ("/connections", "Connections"),
+        ("/bans", "Bans"),
     ] {
         let current = if section == href { " aria-current=\"page\"" } else { "" };
         let _ = write!(nav, "<a href=\"{}\"{current}>{label}</a>", ctx.link(href, &[]));
@@ -416,6 +429,8 @@ pub static TOPICS_TABLE: Table<DestSnapshot> = Table {
 pub struct ConnRow {
     pub info: ConnInfo,
     pub remote: String,
+    /// The client address without its port, which is what a ban takes.
+    pub ip: String,
     pub connected_at: chrono::DateTime<chrono::Local>,
 }
 
@@ -424,6 +439,7 @@ impl ConnRow {
         ConnRow {
             info: c.info.lock().clone(),
             remote: c.remote.to_string(),
+            ip: c.remote.ip().to_string(),
             connected_at: c.connected_at,
         }
     }
@@ -923,13 +939,19 @@ pub async fn topics(State(s): State<AdminState>, ctx: Ctx) -> Response {
 
 pub async fn connections(State(s): State<AdminState>, ctx: Ctx) -> Response {
     let mut rows: Vec<ConnRow> = s.broker.connections().iter().map(|c| ConnRow::of(c)).collect();
-    let mut c = String::from("<h1>Connections</h1><div class=\"table-wrap\"><table><thead><tr>");
+    let writable = !s.broker.cfg.admin_read_only;
+    let mut c = String::from("<h1>Connections</h1>");
+    c.push_str(&notice(&ctx));
+    c.push_str("<div class=\"table-wrap\"><table><thead><tr>");
     c.push_str(&CONNECTIONS_TABLE.sort_page(&mut rows, &ctx));
+    if writable {
+        c.push_str("<th>Actions</th>");
+    }
     c.push_str("</tr></thead><tbody>");
     for x in &rows {
         let _ = write!(
             c,
-            "<tr><td class=\"id\">{}</td><td>{}</td><td>{}</td><td class=\"num\">{}</td><td>{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td></tr>",
+            "<tr><td class=\"id\">{}</td><td>{}</td><td>{}</td><td class=\"num\">{}</td><td>{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td>",
             esc(&x.info.connection_id),
             esc(&x.info.user),
             esc(&x.remote),
@@ -939,9 +961,20 @@ pub async fn connections(State(s): State<AdminState>, ctx: Ctx) -> Response {
             x.info.consumers,
             x.info.producers
         );
+        if writable {
+            let _ = write!(
+                c,
+                "<td class=\"row-actions\"><a href=\"/connections/{}/close\">Close</a>\
+                 <a href=\"/bans/add?address={}\">Ban IP</a></td>",
+                enc(&x.info.connection_id),
+                enc(&x.ip),
+            );
+        }
+        c.push_str("</tr>");
     }
     if rows.is_empty() {
-        c.push_str("<tr><td colspan=\"8\" class=\"muted\">No connections</td></tr>");
+        let span = if writable { 9 } else { 8 };
+        let _ = write!(c, "<tr><td colspan=\"{span}\" class=\"muted\">No connections</td></tr>");
     }
     c.push_str("</tbody></table></div>");
     layout(&ctx, "Connections", "/connections", &c)

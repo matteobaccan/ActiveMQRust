@@ -197,6 +197,16 @@ fn service_main(_args: Vec<OsString>) {
         Ok(cfg) => {
             // The service has no console: the log file is the only output, whatever log.file says.
             crate::logging::init_service(&cfg.log_level, &crate::logging::file_options(&cfg));
+            if let Err(e) = crate::bans::load(&cfg.bans_path) {
+                tracing::error!("configuration error: {e}");
+                set(
+                    ServiceState::Stopped,
+                    2,
+                    ServiceControlAccept::empty(),
+                    Duration::default(),
+                );
+                return;
+            }
             let rt = crate::cpu::runtime(cfg.processors).expect("runtime");
             let status_ref = &status;
             let result = rt.block_on(crate::server::run(
