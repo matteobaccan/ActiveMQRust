@@ -13,6 +13,7 @@ use std::fmt::Write;
 use std::sync::Arc;
 
 use super::body::{full_text, hex_dump, render, stored_size, BodyView, HEX_LIMIT};
+use super::history;
 use super::sort::{Column, Table};
 use super::xml::{self, XmlError};
 use super::{fmt_bytes, fmt_duration, fmt_expiration, fmt_time_ms, process_memory, AdminState, CurrentUser, CSS};
@@ -308,6 +309,14 @@ fn card(label: &str, value: &str) -> String {
     format!("<div class=\"card\"><span class=\"label\">{label}</span><span class=\"value\">{value}</span></div>")
 }
 
+/// A card with a line of explanation under its value.
+fn card_with(label: &str, value: &str, note: &str) -> String {
+    format!(
+        "<div class=\"card\"><span class=\"label\">{label}</span><span class=\"value\">{value}</span>\
+         <span class=\"note\">{note}</span></div>"
+    )
+}
+
 fn badge(kind: &str, word: &str) -> String {
     format!(" <span class=\"badge {kind}\">{word}</span>")
 }
@@ -357,7 +366,18 @@ pub async fn overview(State(s): State<AdminState>, ctx: Ctx) -> Response {
     ));
     c.push_str(&card("Working Set (RSS)", &fmt_bytes(ws)));
     c.push_str(&card("Private Bytes", &fmt_bytes(private)));
+    c.push_str(&card_with(
+        "Messages in memory",
+        &b.message_count().to_string(),
+        "pending + inflight, per subscription for topics",
+    ));
     c.push_str("</div>");
+    let buckets = s.history.buckets();
+    c.push_str("<div class=\"charts\">");
+    c.push_str(&history::message_memory(&buckets, b.memory.limit));
+    c.push_str(&history::process(&buckets));
+    c.push_str("</div>");
+    c.push_str(&history::table(&buckets));
     layout(&ctx, "Overview", "/", &c)
 }
 

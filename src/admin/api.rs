@@ -112,6 +112,7 @@ pub async fn overview(State(s): State<AdminState>) -> Json<J> {
         "queues": dests.iter().filter(|d| d.dest.kind.is_queue()).count(),
         "topics": dests.iter().filter(|d| d.dest.kind.is_topic() && visible(d)).count(),
         "messageMemory": b.memory.used(),
+        "messagesInMemory": b.message_count(),
         "memoryLimit": if b.memory.limit == 0 { J::Null } else { json!(b.memory.limit) },
         "memoryLimitReached": b.memory_limited(),
         "compressed": b.stats.compressed.load(std::sync::atomic::Ordering::Relaxed),
@@ -119,6 +120,11 @@ pub async fn overview(State(s): State<AdminState>) -> Json<J> {
         "workingSet": ws,
         "privateBytes": private,
     }))
+}
+
+/// The last hour of memory, oldest bucket first.
+pub async fn memory_history(State(s): State<AdminState>) -> Json<J> {
+    Json(super::history::json(&s.history.buckets(), s.broker.memory.limit))
 }
 
 pub async fn queues(State(s): State<AdminState>, Query(p): Params) -> Json<J> {

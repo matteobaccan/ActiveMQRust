@@ -8,6 +8,7 @@
 mod api;
 mod body;
 mod control;
+mod history;
 mod pages;
 mod session;
 mod sort;
@@ -39,6 +40,8 @@ const CSP: &str = "default-src 'none'; style-src 'self'; form-action 'self'; fra
 #[derive(Clone)]
 pub struct AdminState {
     pub broker: Arc<Broker>,
+    /// The last hour of memory, sampled while the console runs.
+    pub history: Arc<history::History>,
     sessions: Arc<Sessions>,
     throttle: Arc<Throttle>,
     /// SHA-256 of the last `Authorization` header verified on the API (avoids an Argon2
@@ -74,9 +77,15 @@ pub async fn start(broker: Arc<Broker>, mut shutdown: watch::Receiver<bool>) -> 
             Duration::from_secs(cfg.admin_login_lockout_seconds),
         )),
         basic_cache: Arc::new(Mutex::new(None)),
+        history: Arc::new(history::History::new()),
         broker,
     };
     let sessions = state.sessions.clone();
+    tokio::spawn(history::sampler(
+        state.broker.clone(),
+        state.history.clone(),
+        shutdown.clone(),
+    ));
     let app = router(state);
     let mut sweep_shutdown = shutdown.clone();
     tokio::spawn(async move {
@@ -119,6 +128,7 @@ fn router(state: AdminState) -> Router {
         .route("/bans/add", get(control::ban_confirm))
         .route("/bans/remove", get(control::unban_confirm).post(control::unban))
         .route("/api/overview", get(api::overview))
+        .route("/api/memory/history", get(api::memory_history))
         .route("/api/queues", get(api::queues))
         .route("/api/queues/{name}", get(api::queue_detail))
         .route("/api/queues/{name}/messages", get(api::messages))

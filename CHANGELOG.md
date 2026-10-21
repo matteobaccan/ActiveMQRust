@@ -37,6 +37,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - Queue message contents (FIFO), message headers, and StreamMessage bodies remain
     unsorted with plain headers.
 
+- **Memory history on the overview**: two charts of the last hour, drawn on the server as
+  inline SVG with no JavaScript - message memory (minimum-maximum band, last value and a
+  dashed line at `max_memory_mb` when it is set) and process memory (Working Set and Private
+  Bytes; resident size and physical footprint on macOS).
+  - Each chart gives the peak of the hour with its time, 15-minute ticks, a legend, a tooltip
+    per bucket, an `aria-label` summary and a collapsible **Data** table; the page stays
+    readable at 360 px and the Content-Security-Policy is unchanged.
+  - The broker records 360 buckets of 10 seconds while the console is enabled: message memory
+    is read every second (minimum, maximum and last per bucket), process memory once per
+    bucket, by a task outside the path that stores and delivers messages. The history uses
+    fixed memory and starts empty at every start.
+  - New card **Messages in memory** (pending plus inflight, a topic message once per
+    subscription that holds it), also in `/api/overview` as `messagesInMemory`, and a new
+    endpoint `GET /api/memory/history`.
 - **Closing connections and banning addresses from the admin console**: every row of the
   Connections page offers **Close** (the client is told "Connection closed by the administrator"
   and the broker cleans up as for a dropped connection) and **Ban IP**, and a new **Bans** page
