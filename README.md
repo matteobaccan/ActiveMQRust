@@ -196,22 +196,22 @@ plain = true                 # false leaves only the TLS listener
 enabled = true
 port = 61617                 # bind defaults to broker.bind
 keystore = "broker.p12"      # PKCS#12, or cert + key in PEM
-keystore_password = "secret"
+keystore_password = "..."    # the password of that keystore
 min_version = "1.2"          # 1.2 or 1.3
 client_auth = "none"         # none, optional or required
 # client_ca = "clients-ca.crt"
 ```
 
-Paths are relative to the folder of `mqrust.toml`. Give **either** `cert` (PEM chain, leaf first) and `key` (PEM private key, unencrypted PKCS#8, PKCS#1 or SEC1), **or** `keystore` (PKCS#12 with exactly one key entry) and `keystore_password`.
+Paths are relative to the folder of `mqrust.toml`. Keep the keystore and its password out of version control: the configuration file holds the password in clear text, so restrict access to its folder. Give **either** `cert` (PEM chain, leaf first) and `key` (PEM private key, unencrypted PKCS#8, PKCS#1 or SEC1), **or** `keystore` (PKCS#12 with exactly one key entry) and `keystore_password`.
 
 ```
 # A keystore for the broker, and a truststore for the clients
 keytool -genkeypair -alias broker -keyalg RSA -keysize 2048 -validity 365 ^
         -dname "CN=mybroker" -ext "SAN=dns:mybroker,ip:10.0.0.5" ^
-        -keystore broker.p12 -storetype PKCS12 -storepass secret -keypass secret
-keytool -exportcert -alias broker -keystore broker.p12 -storepass secret -rfc -file broker.crt
+        -keystore broker.p12 -storetype PKCS12 -storepass <password> -keypass <password>
+keytool -exportcert -alias broker -keystore broker.p12 -storepass <password> -rfc -file broker.crt
 keytool -importcert -noprompt -alias broker -file broker.crt ^
-        -keystore truststore.p12 -storetype PKCS12 -storepass secret
+        -keystore truststore.p12 -storetype PKCS12 -storepass <password>
 
 # An existing JKS keystore is converted once (JKS itself is not read)
 keytool -importkeystore -srckeystore broker.jks -destkeystore broker.p12 -deststoretype PKCS12
@@ -222,7 +222,7 @@ The client points at that truststore and connects with `ssl://`:
 ```
 java -Djavax.net.ssl.trustStore=truststore.p12 ^
      -Djavax.net.ssl.trustStoreType=PKCS12 ^
-     -Djavax.net.ssl.trustStorePassword=secret -jar myapp.jar
+     -Djavax.net.ssl.trustStorePassword=<password> -jar myapp.jar
 ```
 
 with `ssl://mybroker:61617` or `failover:(ssl://mybroker:61617)`.
