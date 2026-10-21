@@ -23,7 +23,7 @@ path = "src/main.rs"
 tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "time", "sync", "macros", "signal"] }
 bytes = "1"
 serde = { version = "1", features = ["derive"] }
-toml = "0.8"
+toml = "1.0"
 clap = { version = "4", features = ["derive"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt"] }
@@ -36,22 +36,22 @@ mimalloc = { version = "0.1", default-features = false }
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "query", "json", "form"] }
 serde_json = "1"
 base64 = "0.23"
-sha2 = "0.10"
-quick-xml = "0.41"
+sha2 = "0.11"
+quick-xml = "0.42"
 flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
-toml_edit = "0.22"
+toml_edit = "0.25"
 
 # Windows only: the service (Service Control Manager), process memory and affinity.
 [target.'cfg(windows)'.dependencies]
-windows-service = "0.7"
-windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_ProcessStatus", "Win32_System_Threading"] }
+windows-service = "0.8"
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_ProcessStatus", "Win32_System_Threading"] }
 
 # macOS only: process memory for the admin console (proc_pid_rusage).
 [target.'cfg(target_os = "macos")'.dependencies]
 libc = "0.2"
 
 [dev-dependencies]
-criterion = { version = "0.5", default-features = false }
+criterion = { version = "0.8", default-features = false }
 
 [[bench]]
 name = "codec"
@@ -75,7 +75,7 @@ harness = false
 
 # Used by build.rs only when the target is Windows (version resource).
 [build-dependencies]
-embed-resource = "2"
+embed-resource = "3"
 
 [profile.release]
 opt-level = 3

@@ -1334,7 +1334,9 @@ fn browser_skips_and_deletes_expired_messages() {
     let q = Destination::queue("EXP.BROWSE");
     b.deliver(ttl_msg(&q, "gone", 20), true, now_ms()).unwrap();
     send(&b, &q, "a");
-    b.deliver(ttl_msg(&q, "later", 150), true, now_ms()).unwrap();
+    // The TTL of "later" is wide enough that a loaded runner cannot let it expire
+    // before the first assertion below, which requires it to be still valid.
+    b.deliver(ttl_msg(&q, "later", 600), true, now_ms()).unwrap();
     send(&b, &q, "b");
     sleep_ms(40);
     let mut c = Client::new(&b, "c1");
@@ -1355,7 +1357,7 @@ fn browser_skips_and_deletes_expired_messages() {
     assert_eq!(d.snapshot().stats.expired, 1, "expired before browsing: deleted");
     let first = c.drain();
     assert_eq!(texts(&first), vec!["a"]);
-    sleep_ms(150);
+    sleep_ms(650);
     ack_with(&b, &q, &id, ack_type::STANDARD, None, first[0].1);
     assert_eq!(texts(&c.drain()), vec!["b"]);
     assert_eq!(

@@ -37,6 +37,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - Queue message contents (FIFO), message headers, and StreamMessage bodies remain
     unsorted with plain headers.
 
+### Changed
+
+- **Dependencies updated**, including the major bumps the open Renovate pull requests
+  were waiting for: `toml` 0.8 → 1.0, `toml_edit` 0.22 → 0.25, `quick-xml` 0.41 → 0.42,
+  `sha2` 0.10 → 0.11, `windows-service` 0.7 → 0.8, `windows-sys` 0.59 → 0.61,
+  `criterion` 0.5 → 0.8 and `embed-resource` 2 → 3. No behaviour changes:
+  - The XML view of message bodies takes the `&str` events quick-xml 0.42 produces
+    instead of decoding bytes; references, CDATA and processing instructions are still
+    shown as written.
+  - The benchmarks use `std::hint::black_box`, which replaces criterion's own.
+  - `build.rs` reports a Windows version resource that fails to compile and keeps
+    tolerating a toolchain without a resource compiler.
+
 ## [0.3.1] - 2026-10-06
 
 ### Changed

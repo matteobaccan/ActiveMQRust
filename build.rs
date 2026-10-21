@@ -53,5 +53,9 @@ END
     let out_dir = std::env::var("OUT_DIR").unwrap();
     let rc_path = std::path::Path::new(&out_dir).join("mqrust.rc");
     std::fs::write(&rc_path, rc).unwrap();
-    embed_resource::compile(&rc_path, embed_resource::NONE);
+    // The version resource is cosmetic, so a toolchain without a resource compiler is
+    // not fatal; a resource that fails to compile is a bug in the script above.
+    embed_resource::compile(&rc_path, embed_resource::NONE)
+        .manifest_optional()
+        .expect("compiling the Windows version resource");
 }
