@@ -101,11 +101,24 @@ impl Default for AdminSection {
 #[serde(deny_unknown_fields, default)]
 pub struct LogSection {
     pub level: String,
+    /// Folder of the log files; relative paths are resolved against the executable.
+    pub dir: String,
+    /// In console mode, write to the log file as well as to stdout.
+    pub file: bool,
+    /// Days an archive is kept; 0 keeps every archive.
+    pub retention_days: i64,
+    pub compress: bool,
 }
 
 impl Default for LogSection {
     fn default() -> Self {
-        LogSection { level: "info".into() }
+        LogSection {
+            level: "info".into(),
+            dir: "logs".into(),
+            file: true,
+            retention_days: 30,
+            compress: true,
+        }
     }
 }
 
@@ -174,6 +187,12 @@ pub struct Config {
     pub admin_login_lockout_seconds: u64,
     pub users: Vec<User>,
     pub log_level: String,
+    /// Folder of the log files, already resolved against the executable.
+    pub log_dir: PathBuf,
+    /// Console mode writes to the log file as well as to stdout.
+    pub log_to_file: bool,
+    pub log_retention_days: u64,
+    pub log_compress: bool,
     /// True when built-in default credentials are in use.
     pub default_credentials: bool,
 }
@@ -192,6 +211,7 @@ pub struct Overrides {
     pub admin_bind: Option<String>,
     pub admin_port: Option<u16>,
     pub processors: Option<i64>,
+    pub log_level: Option<String>,
 }
 
 /// A configuration error; the message names the offending field.
@@ -335,6 +355,30 @@ fn in_range(field: &str, value: i64, min: i64, max: i64) -> Result<u64, ConfigEr
     }
 }
 
+/// One of the five log levels, lower-cased; the error names where the value came from.
+fn check_level(field: &str, value: &str) -> Result<String, ConfigError> {
+    let level = value.to_ascii_lowercase();
+    if ["error", "warn", "info", "debug", "trace"].contains(&level.as_str()) {
+        Ok(level)
+    } else {
+        Err(ConfigError(format!(
+            "configuration error: {field} = \"{value}\" must be error, warn, info, debug or trace"
+        )))
+    }
+}
+
+/// A relative path is resolved against the folder of the executable, as `mqrust.toml` is.
+fn resolve_from_exe(dir: &str) -> PathBuf {
+    let path = Path::new(dir.trim());
+    if path.is_absolute() {
+        return path.to_path_buf();
+    }
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|d| d.join(path)))
+        .unwrap_or_else(|| path.to_path_buf())
+}
+
 fn non_negative(field: &str, value: i64) -> Result<u64, ConfigError> {
     if value < 0 {
         Err(ConfigError(format!(
@@ -404,13 +448,15 @@ pub fn build(file: FileConfig, source: ConfigSource, overrides: &Overrides) -> R
     let max_failures = in_range("admin.login_max_failures", a.login_max_failures, 0, 100)?;
     let lockout = in_range("admin.login_lockout_seconds", a.login_lockout_seconds, 1, 86_400)?;
 
-    let level = file.log.level.to_ascii_lowercase();
-    if !["error", "warn", "info", "debug", "trace"].contains(&level.as_str()) {
-        return Err(ConfigError(format!(
-            "configuration error: log.level = \"{}\" must be error, warn, info, debug or trace",
-            file.log.level
-        )));
+    let l = &file.log;
+    let level = match &overrides.log_level {
+        Some(v) => check_level("--log-level", v)?,
+        None => check_level("log.level", &l.level)?,
+    };
+    if l.dir.trim().is_empty() {
+        return Err(ConfigError("configuration error: log.dir must not be empty".into()));
     }
+    let retention = in_range("log.retention_days", l.retention_days, 0, 3650)?;
 
     let is_file = matches!(source, ConfigSource::File(_));
     let mut default_credentials = false;
@@ -500,6 +546,10 @@ pub fn build(file: FileConfig, source: ConfigSource, overrides: &Overrides) -> R
         admin_login_lockout_seconds: lockout,
         users,
         log_level: level,
+        log_dir: resolve_from_exe(&l.dir),
+        log_to_file: l.file,
+        log_retention_days: retention,
+        log_compress: l.compress,
         default_credentials,
     })
 }
@@ -554,7 +604,11 @@ password = "admin"                     # replace with password_hash = "..." (mqr
 # login_lockout_seconds = 60           # lockout length (1-86400)
 
 [log]
-# level = "info"                       # error | warn | info | debug | trace
+# level = "info"                       # error | warn | info | debug | trace (--log-level overrides it)
+# dir = "logs"                         # log folder; relative to mqrust.exe, or an absolute path
+# file = true                          # in console mode write to the file as well as to stdout
+# retention_days = 30                  # delete archives older than this; 0 = keep every archive
+# compress = true                      # compress the archive of each day to .log.gz
 
 # Messaging users: one [[users]] entry each, with password_hash (Argon2id) or password.
 # Replace this default user: mqrust.exe user add <name>, then mqrust.exe user remove admin
@@ -836,6 +890,68 @@ mod tests {
     }
 
     #[test]
+    fn log_keys_take_defaults() {
+        let c = cfg(MIN).unwrap();
+        assert_eq!(c.log_level, "info");
+        assert!(c.log_dir.ends_with("logs"));
+        assert!(c.log_to_file);
+        assert_eq!(c.log_retention_days, 30);
+        assert!(c.log_compress);
+    }
+
+    #[test]
+    fn log_keys_are_read() {
+        let text = format!(
+            "[log]\nlevel = \"debug\"\ndir = \"{}\"\nfile = false\nretention_days = 0\ncompress = false\n{MIN}",
+            absolute()
+        );
+        let c = cfg(&text).unwrap();
+        assert_eq!(c.log_level, "debug");
+        assert_eq!(c.log_dir, PathBuf::from(absolute()));
+        assert!(!c.log_to_file);
+        assert_eq!(c.log_retention_days, 0);
+        assert!(!c.log_compress);
+    }
+
+    /// An absolute folder that is left as it is, written for the platform running the test.
+    fn absolute() -> &'static str {
+        if cfg!(windows) {
+            "C:\\\\logs\\\\mq"
+        } else {
+            "/var/log/mq"
+        }
+    }
+
+    #[test]
+    fn log_values_are_checked() {
+        refused(&format!("[log]\nlevel = \"verbose\"\n{MIN}"), "log.level");
+        refused(&format!("[log]\nretention_days = -1\n{MIN}"), "log.retention_days");
+        refused(&format!("[log]\nretention_days = 3651\n{MIN}"), "log.retention_days");
+        refused(&format!("[log]\ndir = \"\"\n{MIN}"), "log.dir");
+        refused(&format!("[log]\nretention_days = \"30\"\n{MIN}"), "log.retention_days");
+        refused(&format!("[log]\nfile = 1\n{MIN}"), "log.file");
+    }
+
+    #[test]
+    fn log_level_override_wins_and_is_checked() {
+        let o = Overrides {
+            log_level: Some("DEBUG".into()),
+            ..Default::default()
+        };
+        let text = format!("[log]\nlevel = \"error\"\n{MIN}");
+        let c = from_toml(&text, ConfigSource::File("t".into()), &o).unwrap();
+        assert_eq!(c.log_level, "debug");
+
+        let bad = Overrides {
+            log_level: Some("verbose".into()),
+            ..Default::default()
+        };
+        let e = from_toml(MIN, ConfigSource::File("t".into()), &bad).unwrap_err();
+        assert!(e.0.contains("--log-level"), "{}", e.0);
+        assert!(e.0.contains("error, warn, info, debug or trace"), "{}", e.0);
+    }
+
+    #[test]
     fn template_is_valid() {
         let c = cfg(TEMPLATE).unwrap();
         assert_eq!(c.port, 61616);
@@ -843,5 +959,20 @@ mod tests {
         let c = cfg(&commented).unwrap();
         assert_eq!((c.admin_session_idle_minutes, c.admin_session_max_hours), (30, 8));
         assert_eq!((c.admin_login_max_failures, c.admin_login_lockout_seconds), (5, 60));
+        let commented = TEMPLATE
+            .replace("# dir = ", "dir = ")
+            .replace("# file = ", "file = ")
+            .replace("# retention_days = ", "retention_days = ")
+            .replace("# compress = ", "compress = ");
+        let c = cfg(&commented).unwrap();
+        assert!(c.log_dir.ends_with("logs"));
+        assert!(c.log_to_file && c.log_compress);
+        assert_eq!(c.log_retention_days, 30);
+    }
+
+    #[test]
+    fn template_matches_the_example_file() {
+        let example = include_str!("../mqrust.example.toml");
+        assert_eq!(example.replace("\r\n", "\n"), TEMPLATE.replace("\r\n", "\n"));
     }
 }

@@ -41,7 +41,8 @@ fn run(args: &[&str], stdin: Option<&str>) -> Output {
     {
         let mut input = child.stdin.take().unwrap();
         if let Some(text) = stdin {
-            input.write_all(text.as_bytes()).unwrap();
+            // A command that fails before reading stdin closes the pipe; that is not a failure.
+            let _ = input.write_all(text.as_bytes());
         }
     }
     child.wait_with_output().unwrap()
@@ -535,6 +536,103 @@ fn startup_log_with_configured_file() {
     );
     assert!(log.contains("2 messaging users"), "{log}");
     assert!(!log.contains("WARN"), "{log}");
+}
+
+/// Sets keys in the `[log]` section of a configuration file written by the setup commands.
+fn set_log_keys(path: &Path, keys: &[(&str, String)]) {
+    let text = std::fs::read_to_string(path).unwrap();
+    assert!(text.contains("[log]\n"), "no [log] section in:\n{text}");
+    let mut block = String::from("[log]\n");
+    for (key, value) in keys {
+        block.push_str(&format!("{key} = {value}\n"));
+    }
+    std::fs::write(path, text.replacen("[log]\n", &block, 1)).unwrap();
+}
+
+/// A TOML literal string, so that a Windows path keeps its backslashes.
+fn toml_path(path: &Path) -> String {
+    format!("'{}'", path.display())
+}
+
+/// Waits for a line to reach the log file, which is written after stdout.
+fn log_file(path: &Path) -> String {
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let text = std::fs::read_to_string(path).unwrap_or_default();
+        if text.contains("OpenWire listening") || std::time::Instant::now() > deadline {
+            return text;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+#[test]
+fn console_writes_to_stdout_and_to_the_log_file() {
+    let dir = temp_dir("logboth");
+    let path = configured(&dir);
+    let logs = dir.join("logs");
+    set_log_keys(&path, &[("dir", toml_path(&logs))]);
+    let _guard = BROKER.lock().unwrap_or_else(|e| e.into_inner());
+    let b = Broker::start(Some(&path));
+    let stdout = b.log();
+    assert!(stdout.contains("OpenWire listening"), "{stdout}");
+
+    let file = log_file(&logs.join("mqrust.log"));
+    let first = file.lines().next().unwrap_or_default();
+    assert!(
+        first.contains("ActiveMQRust") && first.contains("log started: pid"),
+        "{file}"
+    );
+    assert!(
+        first.contains(&path.display().to_string()),
+        "the header names the file:\n{file}"
+    );
+    assert!(file.contains("OpenWire listening"), "{file}");
+    assert_eq!(
+        std::fs::read_dir(&logs).unwrap().count(),
+        1,
+        "only the active file on the first day"
+    );
+}
+
+#[test]
+fn log_file_off_writes_nothing_to_disk() {
+    let dir = temp_dir("logoff");
+    let path = configured(&dir);
+    let logs = dir.join("logs");
+    set_log_keys(&path, &[("dir", toml_path(&logs)), ("file", "false".into())]);
+    let _guard = BROKER.lock().unwrap_or_else(|e| e.into_inner());
+    let b = Broker::start(Some(&path));
+    assert!(b.log().contains("OpenWire listening"), "{}", b.log());
+    assert!(!logs.exists(), "no folder is created with log.file = false");
+}
+
+#[test]
+fn a_log_folder_that_cannot_be_made_keeps_the_broker_running() {
+    let dir = temp_dir("logblocked");
+    let path = configured(&dir);
+    // A file where the parent folder should be: creating the folder fails on every platform.
+    let blocked = dir.join("not-a-folder");
+    std::fs::write(&blocked, "x").unwrap();
+    set_log_keys(&path, &[("dir", toml_path(&blocked.join("logs")))]);
+    let _guard = BROKER.lock().unwrap_or_else(|e| e.into_inner());
+    let b = Broker::start(Some(&path));
+    assert!(b.log().contains("OpenWire listening"), "{}", b.log());
+    assert!(b.log().contains(" ready"), "{}", b.log());
+}
+
+#[test]
+fn check_config_reports_an_unusable_log_folder() {
+    let dir = temp_dir("logcheck");
+    let path = configured(&dir);
+    let blocked = dir.join("not-a-folder");
+    std::fs::write(&blocked, "x").unwrap();
+    set_log_keys(&path, &[("dir", toml_path(&blocked.join("logs")))]);
+    let o = check_config(&path);
+    assert_eq!(code(&o), 0, "{}", text(&o));
+    let out = text(&o);
+    assert!(out.contains("configuration OK"), "{out}");
+    assert!(out.contains("warning: log.dir"), "{out}");
 }
 
 fn http_status(path: &str, user: &str, password: &str) -> u16 {

@@ -119,6 +119,14 @@ struct Cli {
         long_help = "Processors to use [default: 0 = all available to the process], like -XX:ActiveProcessorCount"
     )]
     processors: Option<i64>,
+    /// Log level for this run [default: the log.level key]
+    #[arg(
+        long,
+        value_name = "LEVEL",
+        help_heading = "Configuration",
+        long_help = "Log level for this run: error, warn, info, debug or trace [default: the log.level key]"
+    )]
+    log_level: Option<String>,
     #[command(subcommand)]
     command: Option<Cmd>,
 }
@@ -277,6 +285,11 @@ enum ServiceCmd {
     },
 }
 
+/// The file output of the logging, unless `log.file` turned it off.
+fn log_options(cfg: &config::Config) -> Option<logging::FileOptions> {
+    cfg.log_to_file.then(|| logging::file_options(cfg))
+}
+
 fn overrides(cli: &Cli) -> config::Overrides {
     config::Overrides {
         bind: cli.bind.clone(),
@@ -284,6 +297,7 @@ fn overrides(cli: &Cli) -> config::Overrides {
         admin_bind: cli.admin_bind.clone(),
         admin_port: cli.admin_port,
         processors: cli.processors,
+        log_level: cli.log_level.clone(),
     }
 }
 
@@ -330,6 +344,9 @@ fn main() -> ExitCode {
         Some(Cmd::InitConfig) => setup_command(&cli, setup::init_config),
         Some(Cmd::CheckConfig) => match config::load(cli.config.as_deref(), &overrides(&cli)) {
             Ok(c) => {
+                if let Err(e) = logging::probe_dir(&c.log_dir) {
+                    eprintln!("warning: log.dir {} {e}", c.log_dir.display());
+                }
                 match c.source {
                     config::ConfigSource::File(p) => println!("configuration OK: {}", p.display()),
                     config::ConfigSource::Defaults => {
@@ -383,7 +400,7 @@ fn main() -> ExitCode {
                     return ExitCode::from(2);
                 }
             };
-            logging::init_stdout(&cfg.log_level);
+            logging::init_console(&cfg.log_level, log_options(&cfg).as_ref());
             let rt = match cpu::runtime(cfg.processors) {
                 Ok(rt) => rt,
                 Err(e) => {

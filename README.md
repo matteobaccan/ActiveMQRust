@@ -141,6 +141,7 @@ mqrust.exe --config <file>                     use a specific configuration file
 mqrust.exe --bind <ip> --port <n>              override the OpenWire address and port
 mqrust.exe --admin-bind <ip> --admin-port <n>  override the admin address and port
 mqrust.exe --processors <n>                    processors to use (0 = all available)
+mqrust.exe --log-level <level>                 log level for this run (overrides log.level)
 mqrust.exe init-config                         write a commented mqrust.toml (never overwrites)
 mqrust.exe set-admin [--username <name>]       set the admin console user and password
 mqrust.exe user add <name>                     add a messaging user
@@ -182,6 +183,21 @@ password_hash = "$argon2id$..."   # written by: mqrust.exe user add app1
 ```
 
 Check a file before starting the broker with `mqrust.exe check-config --config <file>`.
+
+### Logging
+
+One line per event, with a local timestamp: `2026-10-21 09:15:04 INFO OpenWire listening on 0.0.0.0:61616`.
+
+- **Folder**: `log.dir`, by default `logs` next to `mqrust.exe`; an absolute path is used as it is, and the folder is created if missing. Give each broker instance its own folder: two brokers writing the same folder are not detected.
+- **Active file**: always `logs\mqrust.log`. Every file opens with a header line naming the version, the process ID and the configuration in use, whatever the level is.
+- **Daily rotation**: at local midnight `mqrust.log` is renamed after the day it holds, `mqrust-2026-10-21.log`, and a new `mqrust.log` is started. This happens even when nothing is logged after midnight, and a file left from an earlier day is rotated at startup. An archive is never overwritten: a name already taken gets a counter, `mqrust-2026-10-21-1.log`.
+- **Compression**: each archive is compressed to `mqrust-2026-10-21.log.gz` by a background thread (`log.compress = false` keeps plain `.log` files). The uncompressed file is deleted only after the `.gz` is complete, and a compression interrupted by a restart is finished at the next startup.
+- **Retention**: `log.retention_days` (default 30) deletes archives older than that many days, by the date in their name; other files in the folder are never touched. `0` keeps every archive.
+- **Outputs**: in console mode lines go to stdout and to the file (`log.file = false` for stdout only). As a Windows service the file is the only output, so `log.file` is ignored; a configuration that fails to load is reported in `logs\mqrust.log` next to the executable.
+- **Level**: `log.level` (`error`, `warn`, `info`, `debug`, `trace`), or `--log-level <level>` for one run.
+- A log file that cannot be written (full disk, missing permission, folder held by another program) never stops the broker: it keeps serving clients and logging to stdout, prints one warning on stderr and tries the file again later. `check-config` reports a `log.dir` it cannot create or write.
+
+Unlike ActiveMQ, which rolls `activemq.log` by size and keeps a fixed number of backups, ActiveMQRust rotates by local day with no size limit and keeps archives by age. A single day is never split.
 
 ## Admin console
 

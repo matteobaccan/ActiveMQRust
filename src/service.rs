@@ -188,19 +188,15 @@ fn service_main(_args: Vec<OsString>) {
         Duration::from_secs(10),
     );
 
-    let log_path = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|d| d.join("mqrust.log")))
-        .unwrap_or_else(|| PathBuf::from("mqrust.log"));
-
     let code = match crate::config::load(config.as_deref(), &Default::default()) {
         Err(e) => {
-            let _ = crate::logging::init_file(&log_path, "info");
+            crate::logging::init_service("info", &crate::logging::fallback_options());
             tracing::error!("{e}");
             2
         }
         Ok(cfg) => {
-            let _ = crate::logging::init_file(&log_path, &cfg.log_level);
+            // The service has no console: the log file is the only output, whatever log.file says.
+            crate::logging::init_service(&cfg.log_level, &crate::logging::file_options(&cfg));
             let rt = crate::cpu::runtime(cfg.processors).expect("runtime");
             let status_ref = &status;
             let result = rt.block_on(crate::server::run(

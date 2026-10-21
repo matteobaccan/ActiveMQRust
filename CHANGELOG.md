@@ -37,6 +37,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - Queue message contents (FIFO), message headers, and StreamMessage bodies remain
     unsorted with plain headers.
 
+- **Daily log files**: logging writes to a folder (`log.dir`, default `logs` next to the
+  executable) into an active `mqrust.log` that is rotated at local midnight, named after the
+  day it holds (`mqrust-2026-10-21.log`), compressed to `.log.gz` by a background thread and
+  deleted once older than `log.retention_days` (default 30, `0` keeps everything).
+  - Rotation happens without traffic too, and a file left from an earlier day is rotated at
+    startup; an archive is never overwritten (`-1`, `-2` counter), and a compression
+    interrupted by a restart is finished at the next start.
+  - Every file opens with a header line (version, process ID, configuration in use) whatever
+    the level is.
+  - Console mode writes to stdout and to the file; `log.file = false` keeps stdout only.
+  - New keys `log.dir`, `log.file`, `log.retention_days` and `log.compress`, and a
+    `--log-level <level>` option that overrides `log.level` for one run.
+  - A log file that cannot be written never stops the broker: one warning on stderr, stdout
+    keeps working and the file is tried again later. `check-config` reports an unusable
+    `log.dir`.
+  - **BREAKING**: as a Windows service the log moves from `mqrust.log` next to the executable
+    to `logs\mqrust.log`. The old file is left untouched and can be deleted by hand.
+
 ### Changed
 
 - **Dependencies updated**, including the major bumps the open Renovate pull requests

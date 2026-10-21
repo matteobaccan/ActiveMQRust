@@ -40,7 +40,11 @@ password = "admin"                     # replace with password_hash = "..." (mqr
 # login_lockout_seconds = 60           # lockout length (1-86400)
 
 [log]
-# level = "info"                       # error | warn | info | debug | trace
+# level = "info"                       # error | warn | info | debug | trace (--log-level overrides it)
+# dir = "logs"                         # log folder; relative to mqrust.exe, or an absolute path
+# file = true                          # in console mode write to the file as well as to stdout
+# retention_days = 30                  # delete archives older than this; 0 = keep every archive
+# compress = true                      # compress the archive of each day to .log.gz
 
 # Messaging users: one [[users]] entry each, with password_hash (Argon2id) or password.
 # Replace this default user: mqrust.exe user add <name>, then mqrust.exe user remove admin
