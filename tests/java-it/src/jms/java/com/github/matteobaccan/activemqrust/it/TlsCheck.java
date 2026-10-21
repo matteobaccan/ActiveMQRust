@@ -19,7 +19,7 @@ import org.apache.activemq.ActiveMQConnectionFactory;
  * OpenWire over TLS with the original ActiveMQ driver: the same send and receive as over
  * plain TCP, over {@code ssl://} and over {@code failover:(ssl://)}.
  * <pre>
- *   java -Djavax.net.ssl.trustStore=truststore.p12 -Djavax.net.ssl.trustStorePassword=secret \
+ *   java -Djavax.net.ssl.trustStore=truststore.p12 -Djavax.net.ssl.trustStorePassword=&lt;password&gt; \
  *        -jar mqrust-acceptance.jar tls --url ssl://localhost:61617
  * </pre>
  */
