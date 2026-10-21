@@ -8,6 +8,7 @@
 use std::path::Path;
 use std::sync::{Arc, OnceLock};
 
+use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use rustls::server::WebPkiClientVerifier;
 use rustls::{RootCertStore, ServerConfig};
@@ -47,22 +48,20 @@ fn read(key: &str, path: &Path) -> Result<Vec<u8>, String> {
 /// Loads the certificate chain and key from PEM files.
 fn pem_pair(cert: &Path, key: &Path) -> Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>), String> {
     let cert_bytes = read("tls.cert", cert)?;
-    let chain: Vec<CertificateDer<'static>> = rustls_pemfile::certs(&mut cert_bytes.as_slice())
+    let chain: Vec<CertificateDer<'static>> = CertificateDer::pem_slice_iter(&cert_bytes)
         .collect::<Result<_, _>>()
         .map_err(|e| error("tls.cert", cert, &format!("is not a PEM certificate: {e}")))?;
     if chain.is_empty() {
         return Err(error("tls.cert", cert, "holds no certificate"));
     }
     let key_bytes = read("tls.key", key)?;
-    let private = rustls_pemfile::private_key(&mut key_bytes.as_slice())
-        .map_err(|e| error("tls.key", key, &format!("is not a PEM private key: {e}")))?
-        .ok_or_else(|| {
-            error(
-                "tls.key",
-                key,
-                "holds no private key (PKCS#8, PKCS#1 or SEC1, unencrypted)",
-            )
-        })?;
+    let private = PrivateKeyDer::from_pem_slice(&key_bytes).map_err(|e| {
+        error(
+            "tls.key",
+            key,
+            &format!("holds no usable private key (PKCS#8, PKCS#1 or SEC1, unencrypted): {e}"),
+        )
+    })?;
     Ok((chain, private))
 }
 
@@ -114,7 +113,7 @@ fn pkcs12_pair(store: &Path, password: &str) -> Result<(Vec<CertificateDer<'stat
 fn client_roots(path: &Path) -> Result<RootCertStore, String> {
     let bytes = read("tls.client_ca", path)?;
     let mut roots = RootCertStore::empty();
-    let certs: Vec<CertificateDer<'static>> = rustls_pemfile::certs(&mut bytes.as_slice())
+    let certs: Vec<CertificateDer<'static>> = CertificateDer::pem_slice_iter(&bytes)
         .collect::<Result<_, _>>()
         .map_err(|e| error("tls.client_ca", path, &format!("is not a PEM bundle: {e}")))?;
     if certs.is_empty() {
@@ -384,7 +383,7 @@ mod tests {
     #[test]
     fn the_subject_is_read_from_the_certificate() {
         let (cert, _) = self_signed("client.example", 365);
-        let der = rustls_pemfile::certs(&mut cert.as_bytes()).next().unwrap().unwrap();
+        let der = CertificateDer::from_pem_slice(cert.as_bytes()).unwrap();
         let subject = subject(der.as_ref()).unwrap();
         assert!(subject.contains("client.example"), "{subject}");
     }

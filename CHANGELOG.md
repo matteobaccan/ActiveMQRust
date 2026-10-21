@@ -56,6 +56,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     a configuration error.
   - The Connections page and `/api/connections` now carry `transport` (`tcp` or `ssl`),
     `tlsVersion`, `tlsCipher` and `clientCertificate`.
+  - PEM files are read with the `rustls-pki-types` PEM API rather than `rustls-pemfile`,
+    which is unmaintained (RUSTSEC-2025-0134); `cargo audit` reports nothing on the
+    dependency tree.
 - **Instant Raw/Formatted switch** on the message page: the page now carries both views of an
   XML body and the switch is two radio buttons styled as the segmented control, so changing
   view sends no request, reloads nothing and keeps the scroll position. Still no JavaScript

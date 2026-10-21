@@ -9,6 +9,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
+use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -142,7 +143,7 @@ fn tls_config(dir: &Path, port: u16, tls_port: u16, admin_port: u16, f: impl FnO
 fn client_config(ca_pem: &str, identity: Option<(&str, &str)>, tls13_only: bool) -> rustls::ClientConfig {
     let _ = rustls::crypto::ring::default_provider().install_default();
     let mut roots = rustls::RootCertStore::empty();
-    for cert in rustls_pemfile::certs(&mut ca_pem.as_bytes()) {
+    for cert in CertificateDer::pem_slice_iter(ca_pem.as_bytes()) {
         roots.add(cert.unwrap()).unwrap();
     }
     let versions: &[&rustls::SupportedProtocolVersion] = if tls13_only {
@@ -154,18 +155,10 @@ fn client_config(ca_pem: &str, identity: Option<(&str, &str)>, tls13_only: bool)
     match identity {
         None => builder.with_no_client_auth(),
         Some((cert_pem, key_pem)) => {
-            let chain: Vec<CertificateDer<'static>> = rustls_pemfile::certs(&mut cert_pem.as_bytes())
+            let chain: Vec<CertificateDer<'static>> = CertificateDer::pem_slice_iter(cert_pem.as_bytes())
                 .collect::<Result<_, _>>()
                 .unwrap();
-            let key = PrivateKeyDer::try_from(
-                rustls_pemfile::private_key(&mut key_pem.as_bytes())
-                    .unwrap()
-                    .unwrap()
-                    .clone_key()
-                    .secret_der()
-                    .to_vec(),
-            )
-            .unwrap();
+            let key = PrivateKeyDer::from_pem_slice(key_pem.as_bytes()).unwrap();
             builder.with_client_auth_cert(chain, key).unwrap()
         }
     }
