@@ -37,6 +37,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - Queue message contents (FIFO), message headers, and StreamMessage bodies remain
     unsorted with plain headers.
 
+- **Instant Raw/Formatted switch** on the message page: the page now carries both views of an
+  XML body and the switch is two radio buttons styled as the segmented control, so changing
+  view sends no request, reloads nothing and keeps the scroll position. Still no JavaScript
+  and the same Content-Security-Policy; keyboard arrows move between the options and only the
+  visible view is exposed to assistive technologies. `?view=xml` still opens the formatted
+  view, and with auto-refresh on the switch stays a pair of links so the view survives the
+  reload.
 - **Memory history on the overview**: two charts of the last hour, drawn on the server as
   inline SVG with no JavaScript - message memory (minimum-maximum band, last value and a
   dashed line at `max_memory_mb` when it is set) and process memory (Working Set and Private

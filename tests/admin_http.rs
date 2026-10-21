@@ -1080,9 +1080,49 @@ async fn xml_view_raw_and_formatted() {
         )
     };
 
+    // Without auto-refresh one response carries both views and the radio switch.
     let raw = get(&c, &path(0), &token).await.body;
-    assert!(raw.contains(">Raw</a>") && raw.contains(">Formatted</a>"));
-    assert!(raw.contains("&lt;order id=&quot;7&quot;&gt;&lt;item"));
+    assert!(
+        raw.contains("<input type=\"radio\" id=\"body-raw\" name=\"body-view\" class=\"pick-raw\" checked>"),
+        "{raw}"
+    );
+    assert!(
+        raw.contains("<input type=\"radio\" id=\"body-formatted\" name=\"body-view\" class=\"pick-formatted\">"),
+        "Formatted is not checked by default: {raw}"
+    );
+    assert!(raw.contains("<label for=\"body-raw\">Raw</label>"), "{raw}");
+    assert!(raw.contains("<label for=\"body-formatted\">Formatted</label>"), "{raw}");
+    assert!(raw.contains("<legend>Body view</legend>"), "{raw}");
+    assert!(
+        !raw.contains(">Raw</a>"),
+        "the links are gone without auto-refresh: {raw}"
+    );
+    assert!(
+        raw.contains("&lt;order id=&quot;7&quot;&gt;&lt;item"),
+        "the raw text is there"
+    );
+    assert!(
+        raw.contains("<span class=\"x-tag\">&lt;order</span>"),
+        "and so is the formatted view: {raw}"
+    );
+    assert!(!raw.contains("<script"), "still no script");
+
+    // ?view=xml opens on Formatted, still without a request to switch back.
+    let opened = get(&c, &format!("{}&view=xml", path(0)), &token).await.body;
+    assert!(
+        opened.contains(
+            "<input type=\"radio\" id=\"body-formatted\" name=\"body-view\" class=\"pick-formatted\" checked>"
+        ),
+        "{opened}"
+    );
+    assert!(
+        opened.contains("<input type=\"radio\" id=\"body-raw\" name=\"body-view\" class=\"pick-raw\">"),
+        "Raw is not checked with view=xml: {opened}"
+    );
+    assert!(
+        opened.contains("&lt;order id=&quot;7&quot;&gt;&lt;item"),
+        "both views again"
+    );
     let fmt = get(&c, &format!("{}&view=xml&refresh=5", path(0)), &token).await.body;
     assert!(fmt.contains("<span class=\"x-tag\">&lt;order</span>"));
     assert!(fmt.contains("<span class=\"x-attr\">qty</span>"));
@@ -1093,13 +1133,21 @@ async fn xml_view_raw_and_formatted() {
     );
     assert!(fmt.contains("?view=xml&amp;seq="));
     assert!(fmt.contains("<meta http-equiv=\"refresh\" content=\"5\">"));
+    assert!(
+        !fmt.contains("name=\"body-view\""),
+        "with auto-refresh the switch stays links: {fmt}"
+    );
+    assert!(
+        !fmt.contains("&lt;order id=&quot;7&quot;&gt;&lt;item"),
+        "and only the chosen view is sent: {fmt}"
+    );
 
     let plain = get(&c, &path(1), &token).await.body;
-    assert!(!plain.contains(">Formatted</a>"));
+    assert!(!plain.contains(">Formatted</a>") && !plain.contains("body-view"));
     assert!(plain.contains("hello &lt;world&gt;"));
     let bad = get(&c, &path(2), &token).await.body;
     assert!(bad.contains("Not well-formed XML: line 1, column"));
-    assert!(!bad.contains(">Formatted</a>"));
+    assert!(!bad.contains(">Formatted</a>") && !bad.contains("body-view"));
     let large = get(&c, &path(3), &token).await.body;
     assert!(large.contains("Too large to format (limit 1 MB)"));
     assert!(large.contains("Text truncated at 64 KB."));

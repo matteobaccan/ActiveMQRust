@@ -841,8 +841,10 @@ pub async fn message_detail(
     };
     let xml_state = xml_view(&e, raw_text);
     let formatted = ctx.get("view") == Some("xml");
-    match &xml_state {
-        XmlView::Formatted(_) => {
+    match (&xml_state, ctx.refresh()) {
+        // Auto-refresh reloads the page every five seconds, so the chosen view has to live
+        // in the URL: the switch stays a pair of links and only one view is rendered.
+        (XmlView::Formatted(f), true) => {
             let (raw_cur, fmt_cur) = if formatted {
                 ("", " aria-current=\"true\"")
             } else {
@@ -854,22 +856,47 @@ pub async fn message_detail(
                 esc(&ctx.with("view", None)),
                 esc(&ctx.with("view", Some("xml")))
             );
-        }
-        XmlView::Error(err) => {
-            let _ = write!(c, "<p class=\"notice warn\">{}</p>", esc(&err.to_string()));
-        }
-        XmlView::None => {}
-    }
-    match (&xml_state, formatted) {
-        (XmlView::Formatted(f), true) => {
-            let _ = write!(c, "<pre class=\"body xml\">{}</pre>", f.html);
-            if f.truncated {
-                c.push_str("<p class=\"notice\">Formatted view truncated at 256 KB.</p>");
+            if formatted {
+                formatted_body(&mut c, f);
+            } else {
+                body_html(&mut c, rendered.view, &ctx);
             }
         }
-        _ => body_html(&mut c, rendered.view, &ctx),
+        // Both views travel in the page: the radio switch shows one and hides the other
+        // with CSS, so switching sends no request and keeps the scroll position.
+        (XmlView::Formatted(f), false) => {
+            let checked = |on: bool| if on { " checked" } else { "" };
+            let _ = write!(
+                c,
+                "<fieldset class=\"views switch\"><legend>Body view</legend>\
+                 <input type=\"radio\" id=\"body-raw\" name=\"body-view\" class=\"pick-raw\"{}>\
+                 <label for=\"body-raw\">Raw</label>\
+                 <input type=\"radio\" id=\"body-formatted\" name=\"body-view\" class=\"pick-formatted\"{}>\
+                 <label for=\"body-formatted\">Formatted</label>\
+                 <div class=\"panel panel-raw\">",
+                checked(!formatted),
+                checked(formatted),
+            );
+            body_html(&mut c, rendered.view, &ctx);
+            c.push_str("</div><div class=\"panel panel-formatted\">");
+            formatted_body(&mut c, f);
+            c.push_str("</div></fieldset>");
+        }
+        (XmlView::Error(err), _) => {
+            let _ = write!(c, "<p class=\"notice warn\">{}</p>", esc(&err.to_string()));
+            body_html(&mut c, rendered.view, &ctx);
+        }
+        (XmlView::None, _) => body_html(&mut c, rendered.view, &ctx),
     }
     layout(&ctx, &format!("Message {id}"), "/queues", &c)
+}
+
+/// The formatted XML and, when it was cut, the notice that goes with it.
+fn formatted_body(c: &mut String, f: &xml::Formatted) {
+    let _ = write!(c, "<pre class=\"body xml\">{}</pre>", f.html);
+    if f.truncated {
+        c.push_str("<p class=\"notice\">Formatted view truncated at 256 KB.</p>");
+    }
 }
 
 fn body_html(c: &mut String, view: BodyView, ctx: &Ctx) {

@@ -251,6 +251,29 @@ pre.xml { white-space: pre; overflow-wrap: normal; }
 
 .views { display: inline-flex; margin-bottom: var(--sp-2); border: 1px solid var(--line); border-radius: var(--radius-sm); overflow: hidden; }
 .views a { color: var(--fg); border-radius: 0; }
+
+/* The Raw/Formatted switch: two radio buttons styled as a segmented control, with the
+   panels shown by :checked. No script, so switching sends no request. */
+.views.switch { display: block; margin: 0 0 var(--sp-2); padding: 0; border: 0; overflow: visible; }
+.views.switch > legend {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip-path: inset(50%); white-space: nowrap;
+}
+.views.switch > input {
+  position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none;
+}
+.views.switch > label {
+  display: inline-flex; align-items: center; min-height: 2.5rem; min-width: 2.5rem;
+  padding: 0 var(--sp-3); border: 1px solid var(--line); color: var(--fg); cursor: pointer;
+}
+.views.switch > label[for="body-raw"] { border-radius: var(--radius-sm) 0 0 var(--radius-sm); }
+.views.switch > label[for="body-formatted"] { border-left: 0; border-radius: 0 var(--radius-sm) var(--radius-sm) 0; }
+.views.switch > label:hover { background: var(--surface-2); }
+.views.switch > input:checked + label { background: var(--accent); color: var(--on-accent); font-weight: 600; }
+.views.switch > input:focus-visible + label { outline: 3px solid var(--focus); outline-offset: 2px; }
+.views.switch > .panel { display: none; margin-top: var(--sp-2); }
+.views.switch > input.pick-raw:checked ~ .panel-raw { display: block; }
+.views.switch > input.pick-formatted:checked ~ .panel-formatted { display: block; }
 .pager { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); }
 .pager a { border: 1px solid var(--line); }
 
