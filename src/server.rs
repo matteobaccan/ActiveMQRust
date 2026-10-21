@@ -13,6 +13,17 @@ use crate::config::{Config, ConfigSource, Secret, User, DEFAULT_PASSWORD, DEFAUL
 use crate::openwire::types::MAX_VERSION;
 use crate::openwire::wireformat::{PROVIDER_NAME, PROVIDER_VERSION};
 
+/// Reads and checks everything the configuration points at, before anything is started:
+/// the ban list and the TLS certificate. The returned warnings (a certificate close to its
+/// expiry) are worth reporting but stop nothing; the error is a configuration error.
+pub fn preflight(cfg: &Config) -> Result<Vec<String>, String> {
+    crate::bans::load(&cfg.bans_path).map_err(|e| format!("configuration error: {e}"))?;
+    if cfg.tls_enabled {
+        return Ok(crate::tls::prepare(cfg)?.warnings);
+    }
+    Ok(Vec::new())
+}
+
 /// Signals that ask the broker to stop.
 pub type StopSignal = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>;
 
@@ -296,4 +307,52 @@ fn listen(addr: std::net::SocketAddr, buffer: u32) -> std::io::Result<TcpListene
     }
     socket.bind(addr)?;
     socket.listen(1024)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{build, ConfigSource, FileConfig, Overrides};
+
+    fn dir(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("mqrust-preflight-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn cfg_in(dir: &std::path::Path, f: impl FnOnce(&mut FileConfig)) -> Config {
+        let mut fc = FileConfig::default();
+        fc.broker.allow_anonymous = true;
+        fc.admin.password = Some("admin".into());
+        f(&mut fc);
+        build(fc, ConfigSource::File(dir.join("mqrust.toml")), &Overrides::default()).unwrap()
+    }
+
+    #[test]
+    fn preflight_passes_when_there_is_nothing_to_check() {
+        let d = dir("empty");
+        assert_eq!(preflight(&cfg_in(&d, |_| {})).unwrap(), Vec::<String>::new());
+    }
+
+    #[test]
+    fn preflight_refuses_a_broken_ban_file() {
+        let d = dir("bans");
+        std::fs::write(d.join("bans.toml"), "[[ban]]\naddress = \"10.1.0.0/40\"\n").unwrap();
+        let e = preflight(&cfg_in(&d, |_| {})).unwrap_err();
+        assert!(e.starts_with("configuration error"), "{e}");
+        assert!(e.contains("bans.toml") && e.contains("10.1.0.0/40"), "{e}");
+    }
+
+    #[test]
+    fn preflight_refuses_an_unreadable_certificate() {
+        let d = dir("tls");
+        let cfg = cfg_in(&d, |fc| {
+            fc.tls.enabled = true;
+            fc.tls.cert = "missing.crt".into();
+            fc.tls.key = "missing.key".into();
+        });
+        let e = preflight(&cfg).unwrap_err();
+        assert!(e.contains("tls.cert") && e.contains("missing.crt"), "{e}");
+    }
 }

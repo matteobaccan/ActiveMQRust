@@ -3,7 +3,7 @@
 
 //! ActiveMQRust: an in-memory message broker speaking Apache ActiveMQ's OpenWire protocol.
 
-use mqrust::{bans, config, cpu, logging, server, setup};
+use mqrust::{config, cpu, logging, server, setup};
 
 #[cfg(windows)]
 use mqrust::service;
@@ -285,18 +285,6 @@ enum ServiceCmd {
     },
 }
 
-/// Reads the TLS files and reports what is wrong with them; warnings (an expiring
-/// certificate) are printed and let the broker start.
-fn check_tls(cfg: &config::Config) -> Result<(), String> {
-    if !cfg.tls_enabled {
-        return Ok(());
-    }
-    for warning in mqrust::tls::prepare(cfg)?.warnings {
-        eprintln!("warning: {warning}");
-    }
-    Ok(())
-}
-
 /// The file output of the logging, unless `log.file` turned it off.
 fn log_options(cfg: &config::Config) -> Option<logging::FileOptions> {
     cfg.log_to_file.then(|| logging::file_options(cfg))
@@ -356,13 +344,12 @@ fn main() -> ExitCode {
         Some(Cmd::InitConfig) => setup_command(&cli, setup::init_config),
         Some(Cmd::CheckConfig) => match config::load(cli.config.as_deref(), &overrides(&cli)) {
             Ok(c) => {
-                if let Err(e) = bans::load(&c.bans_path) {
-                    eprintln!("configuration error: {e}");
-                    return ExitCode::from(2);
-                }
-                if let Err(e) = check_tls(&c) {
-                    eprintln!("{e}");
-                    return ExitCode::from(2);
+                match server::preflight(&c) {
+                    Ok(warnings) => warnings.iter().for_each(|w| eprintln!("warning: {w}")),
+                    Err(e) => {
+                        eprintln!("{e}");
+                        return ExitCode::from(2);
+                    }
                 }
                 if let Err(e) = logging::probe_dir(&c.log_dir) {
                     eprintln!("warning: log.dir {} {e}", c.log_dir.display());
@@ -421,16 +408,16 @@ fn main() -> ExitCode {
                 }
             };
             // A broken bans.toml or an unusable certificate stops the start, like any
-            // other configuration error.
-            if let Err(e) = bans::load(&cfg.bans_path) {
-                eprintln!("configuration error: {e}");
-                return ExitCode::from(2);
-            }
-            if let Err(e) = check_tls(&cfg) {
-                eprintln!("{e}");
-                return ExitCode::from(2);
-            }
+            // other configuration error. The warnings reach the log once it is set up.
+            let warnings = match server::preflight(&cfg) {
+                Ok(warnings) => warnings,
+                Err(e) => {
+                    eprintln!("{e}");
+                    return ExitCode::from(2);
+                }
+            };
             logging::init_console(&cfg.log_level, log_options(&cfg).as_ref());
+            warnings.iter().for_each(|w| tracing::warn!("{w}"));
             let rt = match cpu::runtime(cfg.processors) {
                 Ok(rt) => rt,
                 Err(e) => {

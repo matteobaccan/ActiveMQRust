@@ -197,50 +197,39 @@ fn service_main(_args: Vec<OsString>) {
         Ok(cfg) => {
             // The service has no console: the log file is the only output, whatever log.file says.
             crate::logging::init_service(&cfg.log_level, &crate::logging::file_options(&cfg));
-            let tls_ok = crate::bans::load(&cfg.bans_path)
-                .map(|_| ())
-                .map_err(|e| format!("configuration error: {e}"))
-                .and_then(|()| {
-                    if cfg.tls_enabled {
-                        crate::tls::prepare(&cfg).map(|_| ())
-                    } else {
-                        Ok(())
-                    }
-                });
-            if let Err(e) = tls_ok {
-                tracing::error!("{e}");
-                set(
-                    ServiceState::Stopped,
-                    2,
-                    ServiceControlAccept::empty(),
-                    Duration::default(),
-                );
-                return;
-            }
-            let rt = crate::cpu::runtime(cfg.processors).expect("runtime");
-            let status_ref = &status;
-            let result = rt.block_on(crate::server::run(
-                cfg,
-                Box::pin(async move {
-                    let _ = stop_rx.await;
-                }),
-                move || {
-                    let _ = status_ref.set_service_status(ServiceStatus {
-                        service_type: ServiceType::OWN_PROCESS,
-                        current_state: ServiceState::Running,
-                        controls_accepted: ServiceControlAccept::STOP | ServiceControlAccept::SHUTDOWN,
-                        exit_code: ServiceExitCode::Win32(0),
-                        checkpoint: 0,
-                        wait_hint: Duration::default(),
-                        process_id: None,
-                    });
-                },
-            ));
-            match result {
-                Ok(()) => 0,
+            match crate::server::preflight(&cfg) {
                 Err(e) => {
                     tracing::error!("{e}");
-                    1
+                    2
+                }
+                Ok(warnings) => {
+                    warnings.iter().for_each(|w| tracing::warn!("{w}"));
+                    let rt = crate::cpu::runtime(cfg.processors).expect("runtime");
+                    let status_ref = &status;
+                    let result = rt.block_on(crate::server::run(
+                        cfg,
+                        Box::pin(async move {
+                            let _ = stop_rx.await;
+                        }),
+                        move || {
+                            let _ = status_ref.set_service_status(ServiceStatus {
+                                service_type: ServiceType::OWN_PROCESS,
+                                current_state: ServiceState::Running,
+                                controls_accepted: ServiceControlAccept::STOP | ServiceControlAccept::SHUTDOWN,
+                                exit_code: ServiceExitCode::Win32(0),
+                                checkpoint: 0,
+                                wait_hint: Duration::default(),
+                                process_id: None,
+                            });
+                        },
+                    ));
+                    match result {
+                        Ok(()) => 0,
+                        Err(e) => {
+                            tracing::error!("{e}");
+                            1
+                        }
+                    }
                 }
             }
         }
