@@ -28,4 +28,4 @@ None.
 
 - Code: `src/broker/destination.rs` (subscriptions that outlive their consumer, keyed by client ID and name; attach and detach), `src/broker/mod.rs` (registry, client ID uniqueness, offline timeout in housekeeping), `src/connection.rs` (`ConsumerInfo` with `subscriptionName`, `RemoveSubscriptionInfo`, `ConnectionInfo` client ID check), `src/config.rs`, admin pages and API, tests, Jakarta TCK results.
 - No new crates.
-- Planned for 0.4.0. The `add-message-storage` change (0.6.0) builds on it and adds survival across restarts.
+- Planned for 0.5.0. The `add-message-storage` change (0.6.0) builds on it and adds survival across restarts.

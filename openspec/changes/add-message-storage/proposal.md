@@ -1,6 +1,6 @@
 ## Why
 
-ActiveMQRust keeps every message in RAM: a restart, a crash or a Windows update loses every message, persistent ones included, and durable subscriptions (in RAM since 0.4.0) are lost too. That is fine for transient traffic, but it keeps out applications that rely on `DeliveryMode.PERSISTENT` meaning "survives the broker". An optional storage, off by default, lets the same broker serve both: all-in-RAM speed when storage is off, and ActiveMQ-like durability when it is on.
+ActiveMQRust keeps every message in RAM: a restart, a crash or a Windows update loses every message, persistent ones included, and durable subscriptions (in RAM since 0.5.0) are lost too. That is fine for transient traffic, but it keeps out applications that rely on `DeliveryMode.PERSISTENT` meaning "survives the broker". An optional storage, off by default, lets the same broker serve both: all-in-RAM speed when storage is off, and ActiveMQ-like durability when it is on.
 
 ## What Changes
 
@@ -11,7 +11,7 @@ ActiveMQRust keeps every message in RAM: a restart, a crash or a Windows update 
 - Group commit: concurrent sends share one `fsync`; sync policy `always` (default), `periodic` or `never`.
 - Segmented journal (default 64 MB per segment) with CRC per record; a segment with no live record is deleted, a segment mostly dead is compacted in the background.
 - Crash safety: a torn record at the end of the journal is discarded at replay with a warning; a corrupted record elsewhere stops startup with the file and offset, unless the operator chooses to skip it.
-- **Durable subscriptions** (in RAM since `add-durable-subscriptions`, 0.4.0) survive restarts when storage is on: their definitions and persistent messages are stored, each message once however many subscriptions reference it.
+- **Durable subscriptions** (in RAM since `add-durable-subscriptions`, 0.5.0) survive restarts when storage is on: their definitions and persistent messages are stored, each message once however many subscriptions reference it.
 - Disk limit `max_disk_mb`: when reached, persistent sends are refused like at the memory limit.
 - A lock file prevents two brokers from using the same storage folder.
 - Admin console: storage size, segments, last fsync latency and replay time on the overview.

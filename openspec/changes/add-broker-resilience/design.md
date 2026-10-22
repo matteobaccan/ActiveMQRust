@@ -9,7 +9,7 @@ Release builds use `panic = "abort"`; the per-connection task model means most f
 
 ## Decisions
 
-To be designed in 0.4.0: fuzz targets and corpus, memory default formula, recovery-action values and options, launchd integration.
+To be designed in 0.5.0: fuzz targets and corpus, memory default formula, recovery-action values and options, launchd integration.
 
 ## Risks / Trade-offs
 

@@ -1,6 +1,6 @@
 ## Why
 
-Load tests never crashed ActiveMQRust, but nothing has tried to break it on purpose: malformed or hostile OpenWire frames are not fuzzed, the release build aborts the whole process on a panic, `max_memory_mb` is unlimited by default so a backlog can grow until the operating system runs out of memory, and the Windows service is not restarted after a failure. Target: version 0.4.0.
+Load tests never crashed ActiveMQRust, but nothing has tried to break it on purpose: malformed or hostile OpenWire frames are not fuzzed, the release build aborts the whole process on a panic, `max_memory_mb` is unlimited by default so a backlog can grow until the operating system runs out of memory, and the Windows service is not restarted after a failure. Target: version 0.5.0.
 
 ## What Changes
 
