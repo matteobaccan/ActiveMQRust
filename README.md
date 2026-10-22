@@ -68,7 +68,7 @@ After a restart the broker starts empty. Clients that use a `failover:` URL reco
 - **Compression**: messages compressed by the client (`useCompression=true`) pass through untouched. The broker can also compress large bodies itself to save RAM (`compress_threshold_kb`); this is off by default because it costs CPU and throughput (see [Load tests](#load-tests)).
 - **Non-durable topics**, **local transactions**, **temporary queues** (request/reply), **QueueBrowser**.
 - **Authentication** with username and password (plain text or Argon2 hash).
-- **Web admin console** with a login form and sessions: queues (every column sortable, filterable by name and state), consumers, producers, connections and queue contents, a formatted view of XML bodies, a responsive layout with light and dark themes that follow the system, plus a JSON API.
+- **Web admin console** with a login form and sessions: queues (every column sortable, filterable by name and state), consumers, producers, connections and queue contents, a formatted view of XML bodies, a responsive layout with light and dark themes that follow the system, plus a JSON API. An administrator can close a connection and ban an address or range; three failed logins from one address ban it automatically.
 - **Guided setup from the command line**: `mqrust.exe -h` shows the four steps to get started; `set-admin` and `user add` / `passwd` / `remove` / `list` manage the console user and the messaging users without editing the file by hand.
 - The broker identifies itself as **`ActiveMQRust <version>`**.
 
@@ -141,6 +141,7 @@ mqrust.exe --config <file>                     use a specific configuration file
 mqrust.exe --bind <ip> --port <n>              override the OpenWire address and port
 mqrust.exe --admin-bind <ip> --admin-port <n>  override the admin address and port
 mqrust.exe --processors <n>                    processors to use (0 = all available)
+mqrust.exe --log-level <level>                 log level for this run (overrides log.level)
 mqrust.exe init-config                         write a commented mqrust.toml (never overwrites)
 mqrust.exe set-admin [--username <name>]       set the admin console user and password
 mqrust.exe user add <name>                     add a messaging user
@@ -183,6 +184,71 @@ password_hash = "$argon2id$..."   # written by: mqrust.exe user add app1
 
 Check a file before starting the broker with `mqrust.exe check-config --config <file>`.
 
+### TLS
+
+OpenWire travels in clear text on port 61616. Turning on `[tls]` adds a second listener, by convention on port 61617, that Java clients reach with `ssl://host:61617` exactly as with ActiveMQ; the plain listener stays unless `broker.plain = false` turns it off.
+
+```toml
+[broker]
+plain = true                 # false leaves only the TLS listener
+
+[tls]
+enabled = true
+port = 61617                 # bind defaults to broker.bind
+keystore = "broker.p12"      # PKCS#12, or cert + key in PEM
+keystore_password = "..."    # the password of that keystore
+min_version = "1.2"          # 1.2 or 1.3
+client_auth = "none"         # none, optional or required
+# client_ca = "clients-ca.crt"
+```
+
+Paths are relative to the folder of `mqrust.toml`. Keep the keystore and its password out of version control: the configuration file holds the password in clear text, so restrict access to its folder. Give **either** `cert` (PEM chain, leaf first) and `key` (PEM private key, unencrypted PKCS#8, PKCS#1 or SEC1), **or** `keystore` (PKCS#12 with exactly one key entry) and `keystore_password`.
+
+```
+# A keystore for the broker, and a truststore for the clients
+keytool -genkeypair -alias broker -keyalg RSA -keysize 2048 -validity 365 ^
+        -dname "CN=mybroker" -ext "SAN=dns:mybroker,ip:10.0.0.5" ^
+        -keystore broker.p12 -storetype PKCS12 -storepass <password> -keypass <password>
+keytool -exportcert -alias broker -keystore broker.p12 -storepass <password> -rfc -file broker.crt
+keytool -importcert -noprompt -alias broker -file broker.crt ^
+        -keystore truststore.p12 -storetype PKCS12 -storepass <password>
+
+# An existing JKS keystore is converted once (JKS itself is not read)
+keytool -importkeystore -srckeystore broker.jks -destkeystore broker.p12 -deststoretype PKCS12
+```
+
+The client points at that truststore and connects with `ssl://`:
+
+```
+java -Djavax.net.ssl.trustStore=truststore.p12 ^
+     -Djavax.net.ssl.trustStoreType=PKCS12 ^
+     -Djavax.net.ssl.trustStorePassword=<password> -jar myapp.jar
+```
+
+with `ssl://mybroker:61617` or `failover:(ssl://mybroker:61617)`.
+
+- **Client certificates**: `client_auth = "optional"` (ActiveMQ's `wantClientAuth`) or `"required"` (`needClientAuth`) with `client_ca`, a PEM bundle of the accepted CAs. A certificate never replaces the username and password, which are still checked; the subject of a verified certificate is shown on the Connections page.
+- **Checks at startup**: every file is read and parsed by the broker and by `check-config`, and a certificate that does not match its key, a JKS keystore or an unreadable file is a configuration error with exit code 2. A certificate that has expired or expires within 30 days is only a warning.
+- **Moving to TLS only**: keep both listeners while the clients change their URL, then set `broker.plain = false`. Leaving both off is a configuration error.
+- A failed or timed-out handshake (10 seconds) is logged at debug level, with at most one warning per minute giving the count, so a port scan cannot flood the log.
+
+Deliberate differences from ActiveMQ: JKS keystores are not read (PKCS#12 and PEM are), only TLS 1.2 and 1.3 are offered with rustls's safe cipher suites and no key to enable others, certificates are reloaded by a restart, and the admin console stays on HTTP (put a TLS reverse proxy in front of it).
+
+### Logging
+
+One line per event, with a local timestamp: `2026-10-21 09:15:04 INFO OpenWire listening on 0.0.0.0:61616`.
+
+- **Folder**: `log.dir`, by default `logs` next to `mqrust.exe`; an absolute path is used as it is, and the folder is created if missing. Give each broker instance its own folder: two brokers writing the same folder are not detected.
+- **Active file**: always `logs\mqrust.log`. Every file opens with a header line naming the version, the process ID and the configuration in use, whatever the level is.
+- **Daily rotation**: at local midnight `mqrust.log` is renamed after the day it holds, `mqrust-2026-10-21.log`, and a new `mqrust.log` is started. This happens even when nothing is logged after midnight, and a file left from an earlier day is rotated at startup. An archive is never overwritten: a name already taken gets a counter, `mqrust-2026-10-21-1.log`.
+- **Compression**: each archive is compressed to `mqrust-2026-10-21.log.gz` by a background thread (`log.compress = false` keeps plain `.log` files). The uncompressed file is deleted only after the `.gz` is complete, and a compression interrupted by a restart is finished at the next startup.
+- **Retention**: `log.retention_days` (default 30) deletes archives older than that many days, by the date in their name; other files in the folder are never touched. `0` keeps every archive.
+- **Outputs**: in console mode lines go to stdout and to the file (`log.file = false` for stdout only). As a Windows service the file is the only output, so `log.file` is ignored; a configuration that fails to load is reported in `logs\mqrust.log` next to the executable.
+- **Level**: `log.level` (`error`, `warn`, `info`, `debug`, `trace`), or `--log-level <level>` for one run.
+- A log file that cannot be written (full disk, missing permission, folder held by another program) never stops the broker: it keeps serving clients and logging to stdout, prints one warning on stderr and tries the file again later. `check-config` reports a `log.dir` it cannot create or write.
+
+Unlike ActiveMQ, which rolls `activemq.log` by size and keeps a fixed number of backups, ActiveMQRust rotates by local day with no size limit and keeps archives by age. A single day is never split.
+
 ## Admin console
 
 The read-only web console answers on `http://127.0.0.1:8161/` (keys `[admin] bind` / `port`, or `--admin-bind` / `--admin-port`). If the port cannot be bound, the broker logs an error and keeps running without the console.
@@ -198,8 +264,15 @@ The read-only web console answers on `http://127.0.0.1:8161/` (keys `[admin] bin
   - Message detail: Properties table (`prsort`/`prorder`: Name, Type, Value; default: Name ascending), MapMessage body table (`msort`/`morder`: Key, Type, Value; default: Key ascending).
   - Queue contents (FIFO), message headers, and StreamMessage body maintain their fixed order with plain headers.
 - **Queue filter**: a filter bar above the queues table narrows the list by name (`q`, case-insensitive contains, up to 200 characters) and state checkboxes (`pending=1` for queues with pending messages, `noconsumers=1` for queues without consumers), combined with AND. Works server-side with no JavaScript: sort links and auto-refresh keep the active filter, and the filter form keeps the current sort and refresh. While a filter is active, the page shows "Showing N of M queues" and a "Clear filter" link; if no queues match, the table displays "No queues match the filter".
-- **XML bodies**: a TextMessage holding well-formed XML gets a **Formatted** view (indented and coloured) next to the unchanged **Raw** view. DTDs and entities are never resolved; bodies above 1 MB are not formatted.
+- **XML bodies**: a TextMessage holding well-formed XML gets a **Formatted** view (indented and coloured) next to the unchanged **Raw** view. The page carries both views and the switch is a pair of radio buttons styled as a segmented control, so changing view sends no request, reloads nothing and keeps the scroll position, still without JavaScript; `?view=xml` opens the page on the formatted view. With auto-refresh on the switch stays a pair of links, so the chosen view survives each reload. DTDs and entities are never resolved; bodies above 1 MB are not formatted.
 - **Theme**: follows the system light/dark setting. No JavaScript and no external resources are loaded.
+- **Memory charts**: under the cards, the overview draws the last hour of message memory (minimum-maximum band, last value and, when `max_memory_mb` is set, a dashed limit line) and of process memory, as inline SVG with no JavaScript. Each chart gives the peak of the hour with its time, a tooltip per 10-second bucket and a collapsible **Data** table. The broker reads message memory every second and process memory once per bucket, outside the path that stores and delivers messages, so a peak shorter than a second can be missed; the history uses a few kilobytes, covers one hour and starts empty at every restart. The **Messages in memory** card counts pending plus inflight messages, a topic message once per subscription that still holds it.
+- **Closing a connection**: every row of the Connections page has a **Close** action. The client is told "Connection closed by the administrator" through its `ExceptionListener` and the socket is closed; the broker then cleans up as for a client that died (unacknowledged messages return to their queues as redelivered, open transactions are rolled back, temporary destinations are removed). A client with a `failover:` URL reconnects within a second, which is what **Ban IP** is for.
+- **Bans**: the **Bans** page lists the addresses kept out of the OpenWire listeners and adds one from a connection row or from its own form: an IPv4 or IPv6 address, or a CIDR range (`10.1.0.0/16`), for 1 hour, 24 hours, 7 days or permanently, with an optional reason. Banning offers to close the connections already open from that address. A banned address is refused right after `accept`, before any byte is read, and the page counts the refused attempts. Bans never apply to the admin console: banning your own address only warns.
+  - After **3 failed OpenWire logins from one address within 15 minutes** the broker bans it automatically for 1 minute, and for twice as long after each further failure (up to 24 hours); a successful login or a day without failures clears the escalation. Automatic bans live in memory only: a restart clears them. Only wrong credentials count, never protocol or TLS errors.
+  - Manual bans are stored in `bans.toml` next to the configuration file (next to the executable with the built-in defaults) and are rewritten atomically at every change. Edit the file only while the broker is stopped: the next change made from the console rewrites it from what the broker holds. A broken file stops the start with exit code 2, naming the line and the entry; `mqrust.exe check-config` reports it too.
+  - Every write operation needs a `POST` from the console's own origin and a confirmation page, and is logged with the administrator, their address and what was done. `admin.read_only = true` removes every write action from the pages and answers `405` to their paths.
+  - A ban is not a firewall: the operating system still completes the TCP handshake, and clients behind the same NAT or proxy share one address, so the confirmation page shows how many connections the ban affects. Use the operating system firewall against floods.
 
 ```toml
 [admin]
@@ -207,13 +280,14 @@ session_idle_minutes = 30    # 1-1440
 session_max_hours = 8        # 1-168
 login_max_failures = 5       # 0 disables the lockout
 login_lockout_seconds = 60   # 1-86400
+read_only = false            # true refuses every write operation
 ```
 
 The console uses plain HTTP and binds to `127.0.0.1` by default. To reach it from other machines, put a TLS reverse proxy in front of it rather than binding it to a public address.
 
 ### JSON API
 
-The same data is available as JSON for scripts and monitoring. API paths accept HTTP Basic with the `[admin]` credentials (or a browser session cookie); without valid credentials they answer `401 {"error":"unauthorized"}`, with no browser pop-up.
+The same data is available as JSON for scripts and monitoring. The write endpoints (`POST`, `DELETE`) follow the same rules as the console pages: they need the `[admin]` credentials and answer `405` when `admin.read_only` is set. API paths accept HTTP Basic with the `[admin]` credentials (or a browser session cookie); without valid credentials they answer `401 {"error":"unauthorized"}`, with no browser pop-up.
 
 ```
 curl -u admin:admin http://127.0.0.1:8161/api/queues?sort=pending&order=desc
@@ -221,13 +295,18 @@ curl -u admin:admin http://127.0.0.1:8161/api/queues?sort=pending&order=desc
 
 | Path | Returns |
 | --- | --- |
-| `/api/overview` | `{product, version, uptimeSeconds, openwire, admin, connections, queues, topics, messageMemory, memoryLimit, memoryLimitReached, compressed, compressDiscarded, workingSet, privateBytes}` |
+| `/api/overview` | `{product, version, uptimeSeconds, openwire, admin, connections, queues, topics, messageMemory, messagesInMemory, memoryLimit, memoryLimitReached, compressed, compressDiscarded, workingSet, privateBytes}` |
+| `/api/memory/history` | `{intervalSeconds, limitBytes, buckets: [{start, messageMemory: {min, max, last}, workingSet, privateBytes}]}`, the last hour in 10-second buckets, oldest first, the one in progress last |
 | `/api/queues?q=&pending=&noconsumers=&sort=&order=` | `[{name, temporary, pending, inflight, consumers, producers, enqueued, consumed, expired, discarded, memory, compressed}]` (`q`: name contains, `pending=1`: pending messages, `noconsumers=1`: no consumers; `sort`: name, pending, inflight, consumers, producers, enqueued, consumed, expired; `order`: asc, desc) |
 | `/api/queues/{name}` | the queue fields plus `consumers: [{consumerId, connectionId, client, prefetch, inflight, selector, browser}]`, `producers: [{producerId, connectionId, client}]`, `withExpiration`, `nextExpiration`, `nextExpirationText` |
 | `/api/queues/{name}/messages?offset=&limit=` | `{total, offset, limit, messages: [message]}` in FIFO order; `limit` defaults to 50 and is clamped to 1..50 |
 | `/api/queues/{name}/messages/{id}?view=xml` | one message plus `inflight` and `body` (`{kind: text, text, truncated}`, `{kind: bytes, hex, size, truncated}`, `{kind: map, entries}`, `{kind: stream, values}`, `{kind: object, size}`, `{kind: none}`); with `view=xml`, `formattedBody` or `formatError` |
 | `/api/topics?sort=&order=` | `[{name, temporary, consumers, producers, published, discarded, pending, memory}]` (`sort`: name, consumers, producers, published, discarded; `order`: asc, desc) |
 | `/api/connections?sort=&order=` | `[{connectionId, clientId, user, client, openwireVersion, connectedAt, sessions, consumers, producers}]` (`sort`: connectionId, user, client, openwire, connected, sessions, consumers, producers; `order`: asc, desc) |
+| `POST /api/connections/{id}/close` | `{closed}`; `404` when the connection is not open |
+| `GET /api/bans?sort=&order=` | `[{address, reason, created, createdBy, expires, automatic, refusedAttempts}]` (`sort`: address, reason, by, created, expires, refused) |
+| `POST /api/bans` | body `{address, duration: 1h\|24h\|7d\|permanent, reason, closeConnections}` (duration `24h` and `closeConnections` true by default); answers `{ban, closedConnections}`, or `400 {"error"}` for an invalid address or duration |
+| `DELETE /api/bans/{address}` | `{removed}`; `404` when the address is not banned. Percent-encode the `/` of a range (`198.51.100.0%2F24`) |
 
 A `message` is `{position, messageId, correlationId, type, replyTo, deliveryMode, priority, timestamp, expiration, expirationText, expired, expiresInMs, redeliveryCounter, properties, bodyType, bodySize, compressed}`, plus `compressedSize` for a compressed body. `bodySize` is the size as stored (compressed size for a compressed body). Unknown queues and messages answer `404 {"error": "... not found"}`.
 
@@ -281,22 +360,28 @@ All suites below were run on 2026-10-06 on version 0.3.0 (Windows 11, Intel Xeon
 
 | Suite | What it checks | Result |
 |---|---|---|
-| Rust unit tests (`cargo test --release`, library) | codec, configuration, selectors, compression, sessions, XML formatter, CPU sizing, setup commands | 118 passed |
+| Rust unit tests (`cargo test --release`, library) | codec, configuration, selectors, compression, sessions, XML formatter, CPU sizing, setup commands, log rotation and retention, bans and automatic bans, memory history and charts, TLS certificate checks | 183 passed |
 | `tests/broker_semantics.rs` | FIFO, round-robin, redelivery position, prefetch, acknowledgement types, DLQ, expiration, topics, browsers, transactions, memory limit, concurrent producers | 60 passed |
-| `tests/connection_semantics.rs` | the broker driven over a real socket by a small OpenWire client | 14 passed |
+| `tests/connection_semantics.rs` | the broker driven over a real socket by a small OpenWire client, administrative close included | 16 passed |
 | `tests/selector_semantics.rs` | 568 selectors checked against the results of ActiveMQ's own selector engine | 9 passed |
-| `tests/admin_http.rs` | login, sessions, lockout, logout, API with Basic, headers, escaping, paging, system theme, addresses | 19 passed |
-| `tests/cli_setup.rs` | help, `set-admin`, `user` commands, safe file editing, start-up messages, end to end | 17 passed |
+| `tests/admin_http.rs` | login, sessions, lockout, logout, API with Basic, headers, escaping, paging, system theme, addresses, closing connections, bans, read-only console, memory history, transport of a connection | 49 passed |
+| `tests/cli_setup.rs` | help, `set-admin`, `user` commands, safe file editing, start-up messages, log file and folder, end to end | 21 passed |
 | `tests/codec_golden.rs` | frames written by the real ActiveMQ client, OpenWire versions 9–12 | 4 passed |
 | `tests/compression.rs`, `tests/hot_path.rs` | compressed golden vectors of all 5 message types, allocations per message, batching | 9 passed |
-| **Rust total** | | **250 passed, 0 failed** |
+| `tests/tls_transport.rs` | OpenWire over TLS end to end, TLS 1.3 only, client certificate required (missing and valid), password still checked, handshake timeout, TLS-only mode | 5 passed |
+| **Rust total** | | **356 passed, 0 failed** |
 | Java unit tests (`mvnw test`) | payload generation and result parsing of the bench client | 16 passed |
 | Java `accept`, ActiveMQ client 5.19.11 and 6.3.2 | FIFO round trip, correlation-ID selectors, authentication | 3 + 3 passed |
 | Java `integration`, 5.19.11 and 6.3.2 | 10,000-message FIFO, all message types, request/reply on temporary queues and topics, client ack, browser, topics, redelivery after a dropped connection, transactions, DLQ, client and broker compression, expiration, selectors, selector parity | 15 + 15 passed |
 | Java `console`, 5.19.11 and 6.3.2 | form login, `ProviderVersion` equal to the console version, compressed message page, browsing does not consume | 4 + 4 passed |
 | Java `compression`, 5.19.11 and 6.3.2 | byte-identical bodies for the 5 message types at the threshold boundaries | 40 + 40 passed |
 | Java `expiry-options`, 5.19.11 and 6.3.2 | TTL ceiling, default TTL, broker clock | 5 + 5 passed |
+| Java `tls`, 5.19.11 and 6.3.2 | ten-message round trip over `ssl://` and over `failover:(ssl://)` against a `keytool` PKCS#12 keystore, wrong password still refused | 3 + 3 passed |
+| Java `integration` over `ssl://`, 5.19.11 | the whole integration suite again, over TLS instead of plain TCP | 15 passed |
+| Java `console`, 5.19.11 and 6.3.2 | a connection closed by an administrator reports the reason to the client; a banned client cannot come back through its `failover:` URL | 2 + 2 passed |
 | Java `accept` against real **ActiveMQ 5.18.7 and 6.3.2** (tuned configuration) | the same three scenarios give the same results on ActiveMQ | 3 + 3 passed |
+
+The TLS transport was exercised on loopback with certificates made by `keytool`, which is how an operator sets it up: `tests/tls_transport.rs` runs on every platform of the matrix, Windows included, and the Java checks ran against a broker on the same machine. Three things it has not seen yet: a Java client over TLS on Windows, mutual TLS with a Java client (only the Rust test client has presented a certificate), and a load run over TLS.
 
 While the soak scenario was being written, the multi-producer runs found a bug: with several producers on one queue a message could stay undelivered. It was fixed (`Fix lost queue messages with concurrent producers`) and is covered by a test.
 

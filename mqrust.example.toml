@@ -22,6 +22,7 @@
 # topic_max_pending_per_consumer = 10000
 # compress_threshold_kb = 0            # 0 = never (default, best throughput); e.g. 256 = compress bodies above 256 KB to save RAM
 # compress_min_saving_pct = 10
+# plain = true                         # false leaves only the TLS listener (needs [tls] enabled)
 
 [expiry]
 # check_interval_ms = 1000
@@ -38,9 +39,28 @@ password = "admin"                     # replace with password_hash = "..." (mqr
 # session_max_hours = 8                # and in any case this long after login (1-168)
 # login_max_failures = 5               # failed logins per IP in 15 minutes before a lockout; 0 = off
 # login_lockout_seconds = 60           # lockout length (1-86400)
+# read_only = false                    # true refuses every write operation of the console and API
+
+# TLS for OpenWire (ssl://host:61617), off by default. Give either cert and key (PEM),
+# or keystore and keystore_password (PKCS#12); paths are relative to this file.
+[tls]
+# enabled = false
+# bind = "0.0.0.0"                     # default: the same as broker.bind
+# port = 61617
+# cert = "broker.crt"                  # PEM chain, leaf first
+# key = "broker.key"                   # PEM private key, unencrypted
+# keystore = "broker.p12"              # PKCS#12 keystore, instead of cert and key
+# keystore_password = ""
+# min_version = "1.2"                  # 1.2 | 1.3
+# client_auth = "none"                 # none | optional | required
+# client_ca = "clients-ca.crt"         # PEM bundle, required unless client_auth = "none"
 
 [log]
-# level = "info"                       # error | warn | info | debug | trace
+# level = "info"                       # error | warn | info | debug | trace (--log-level overrides it)
+# dir = "logs"                         # log folder; relative to mqrust.exe, or an absolute path
+# file = true                          # in console mode write to the file as well as to stdout
+# retention_days = 30                  # delete archives older than this; 0 = keep every archive
+# compress = true                      # compress the archive of each day to .log.gz
 
 # Messaging users: one [[users]] entry each, with password_hash (Argon2id) or password.
 # Replace this default user: mqrust.exe user add <name>, then mqrust.exe user remove admin

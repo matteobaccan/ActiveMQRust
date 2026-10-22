@@ -54,6 +54,9 @@ public final class Main {
                 code = new ConsoleCheck(url, user, password, opts.getOrDefault("admin", "http://127.0.0.1:8161"),
                         opts.getOrDefault("admin-user", "admin"), opts.getOrDefault("admin-password", "admin")).run();
                 break;
+            case "tls":
+                code = new TlsCheck(url, user, password).run();
+                break;
             case "compression":
                 code = new CompressionChecks(url, user, password, opts).run();
                 break;
@@ -67,7 +70,7 @@ public final class Main {
                 code = new Bench(url, user, password, opts).run();
                 break;
             default:
-                System.err.println("unknown mode: " + mode + " (use accept or bench)");
+                System.err.println("unknown mode: " + mode + " (use accept, integration, console, tls or bench)");
                 code = 2;
         }
         System.exit(code);

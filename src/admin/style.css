@@ -138,6 +138,38 @@ main { flex: 1; width: 100%; max-width: 80rem; margin: 0 auto; padding: var(--sp
 .card .label { color: var(--muted); font-size: .8rem; text-transform: uppercase; letter-spacing: .04em; }
 .card .value { font-size: 1.3rem; font-weight: 600; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
 .card .value .id { font-size: .95rem; font-weight: 500; }
+.card .note { color: var(--muted); font-size: .75rem; }
+
+/* -- memory charts (inline SVG, no script) ------------------------------------- */
+.charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(20rem, 1fr)); gap: var(--sp-3); margin-bottom: var(--sp-3); }
+.chart {
+  margin: 0; min-width: 0; padding: var(--sp-3); background: var(--surface);
+  border: 1px solid var(--line); border-radius: var(--radius);
+}
+.chart figcaption { margin-bottom: var(--sp-2); font-weight: 600; }
+.chart figcaption .peak { color: var(--muted); font-weight: 400; font-size: .85rem; }
+.chart svg { display: block; width: 100%; height: 11rem; overflow: visible; }
+.chart .legend {
+  display: flex; flex-wrap: wrap; gap: var(--sp-1) var(--sp-3);
+  margin: var(--sp-2) 0 0; color: var(--muted); font-size: .8rem;
+}
+.chart .key { display: inline-flex; align-items: center; gap: var(--sp-1); }
+.chart .swatch { display: inline-block; width: 1.25rem; height: 0; border-top: 3px solid var(--accent); }
+.chart .swatch.c-priv { border-top-style: dashed; }
+.chart .swatch.c-band-key { height: .6rem; border: 1px solid var(--accent); background: var(--surface-2); }
+.chart .swatch.c-limit-key { border-top: 2px dashed var(--err-fg); }
+.chart-data { margin-bottom: var(--sp-4); }
+.chart-data summary { cursor: pointer; color: var(--accent); min-height: 2.5rem; display: flex; align-items: center; }
+
+.c-grid { stroke: var(--line); stroke-width: .5; opacity: .6; }
+.c-tick { fill: var(--muted); font-size: 9px; }
+.c-line { fill: none; stroke-width: 2; stroke-linejoin: round; }
+.c-mem, .c-ws { stroke: var(--accent); }
+.c-priv { stroke: var(--info-fg); stroke-dasharray: 6 3; }
+.c-band { fill: var(--accent); opacity: .18; stroke: none; }
+.c-limit { stroke: var(--err-fg); stroke-width: 1.5; stroke-dasharray: 5 4; }
+.c-limit-label { fill: var(--err-fg); font-size: 9px; }
+.c-hit { fill: transparent; }
 
 .filter-bar {
   display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2) var(--sp-3);
@@ -219,6 +251,29 @@ pre.xml { white-space: pre; overflow-wrap: normal; }
 
 .views { display: inline-flex; margin-bottom: var(--sp-2); border: 1px solid var(--line); border-radius: var(--radius-sm); overflow: hidden; }
 .views a { color: var(--fg); border-radius: 0; }
+
+/* The Raw/Formatted switch: two radio buttons styled as a segmented control, with the
+   panels shown by :checked. No script, so switching sends no request. */
+.views.switch { display: block; margin: 0 0 var(--sp-2); padding: 0; border: 0; overflow: visible; }
+.views.switch > legend {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip-path: inset(50%); white-space: nowrap;
+}
+.views.switch > input {
+  position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none;
+}
+.views.switch > label {
+  display: inline-flex; align-items: center; min-height: 2.5rem; min-width: 2.5rem;
+  padding: 0 var(--sp-3); border: 1px solid var(--line); color: var(--fg); cursor: pointer;
+}
+.views.switch > label[for="body-raw"] { border-radius: var(--radius-sm) 0 0 var(--radius-sm); }
+.views.switch > label[for="body-formatted"] { border-left: 0; border-radius: 0 var(--radius-sm) var(--radius-sm) 0; }
+.views.switch > label:hover { background: var(--surface-2); }
+.views.switch > input:checked + label { background: var(--accent); color: var(--on-accent); font-weight: 600; }
+.views.switch > input:focus-visible + label { outline: 3px solid var(--focus); outline-offset: 2px; }
+.views.switch > .panel { display: none; margin-top: var(--sp-2); }
+.views.switch > input.pick-raw:checked ~ .panel-raw { display: block; }
+.views.switch > input.pick-formatted:checked ~ .panel-formatted { display: block; }
 .pager { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); }
 .pager a { border: 1px solid var(--line); }
 
@@ -237,6 +292,41 @@ body.login main { display: flex; align-items: center; justify-content: center; p
   border: 1px solid var(--line); border-radius: var(--radius-sm);
 }
 .login-form button { margin-top: var(--sp-3); width: 100%; }
+
+/* -- write operations: row actions, confirmation pages ------------------------- */
+.row-actions { white-space: nowrap; }
+.row-actions a {
+  display: inline-flex; align-items: center; min-height: 2.5rem; padding: 0 var(--sp-2);
+  font-size: .875rem;
+}
+.tag {
+  display: inline-block; margin-left: var(--sp-1); padding: 0 var(--sp-1); border-radius: var(--radius-sm);
+  background: var(--surface-2); color: var(--muted); font-size: .75rem; font-weight: 600; text-transform: uppercase;
+}
+.facts {
+  display: grid; grid-template-columns: max-content 1fr; gap: var(--sp-1) var(--sp-3);
+  margin: 0 0 var(--sp-4); padding: var(--sp-3) var(--sp-4);
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius);
+}
+.facts dt { color: var(--muted); font-weight: 600; }
+.facts dd { margin: 0; overflow-wrap: anywhere; }
+.confirm { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2) var(--sp-3); }
+.confirm fieldset {
+  display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-1) var(--sp-3);
+  margin: 0; padding: var(--sp-2) var(--sp-3); border: 1px solid var(--line); border-radius: var(--radius-sm);
+}
+.confirm legend { color: var(--muted); font-weight: 600; font-size: .875rem; }
+.confirm label { display: inline-flex; align-items: center; gap: var(--sp-1); }
+.confirm input[type="text"], .confirm input:not([type]) {
+  min-height: 2.5rem; padding: 0 var(--sp-2); background: var(--bg); color: var(--fg);
+  border: 1px solid var(--line); border-radius: var(--radius-sm); font: inherit;
+}
+button.danger { background: var(--err-fg); border-color: var(--err-fg); color: var(--bg); }
+button.danger:hover { filter: brightness(1.1); }
+@media (max-width: 479.98px) {
+  .confirm, .confirm fieldset { flex-direction: column; align-items: stretch; }
+  .confirm button { width: 100%; }
+}
 
 /* -- footer -------------------------------------------------------------------- */
 .foot {

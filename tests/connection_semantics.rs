@@ -192,6 +192,25 @@ impl Wire {
         }
     }
 
+    /// Next `ConnectionError`, or `None` after `ms` milliseconds without one.
+    async fn connection_error(&mut self, ms: u64) -> Option<ConnectionError> {
+        loop {
+            if let Some(pos) = self
+                .backlog
+                .iter()
+                .position(|c| matches!(c, Command::ConnectionError(_)))
+            {
+                if let Some(Command::ConnectionError(e)) = self.backlog.remove(pos) {
+                    return Some(e);
+                }
+            }
+            match tokio::time::timeout(Duration::from_millis(ms), self.read_frame()).await {
+                Ok(c) => self.backlog.push_back(c),
+                Err(_) => return None,
+            }
+        }
+    }
+
     fn consumer_id(&self, n: i64) -> ConsumerId {
         ConsumerId {
             connection_id: self.conn.clone(),
@@ -772,6 +791,80 @@ async fn connection_drop_mid_transaction_rolls_back() {
         got.push((body(&md), md.redelivery_counter));
     }
     assert_eq!(got, vec![("m1".into(), 1), ("m2".into(), 1), ("m3".into(), 1)]);
+}
+
+/// A connection closed by an administrator looks to the broker like a client that died:
+/// the client is told why, unacknowledged messages come back as redelivered and the
+/// uncommitted sends of its transaction are discarded.
+#[tokio::test]
+async fn admin_close_reports_the_reason_and_cleans_up() {
+    let b = broker_with(|_| {});
+    let q = Destination::queue("ADMIN.CLOSE");
+    let out = Destination::queue("ADMIN.CLOSE.OUT");
+    let mut c = Wire::open(&b, "ID:adm-1").await;
+    for i in 1..=3 {
+        let m = c.message(&q, &format!("m{i}"));
+        assert_ok(&c.send(m).await);
+    }
+    assert_ok(&c.consume(1, &q, 10).await);
+    for _ in 0..3 {
+        c.dispatch(2000).await.unwrap();
+    }
+    assert_ok(&c.tx(1, tx_type::BEGIN).await);
+    let mut m = c.message(&out, "uncommitted");
+    m.transaction_id = Some(c.local_tx(1));
+    assert_ok(&c.send(m).await);
+
+    assert!(b.close_connection("ID:adm-1"), "the connection is open");
+    let error = c.connection_error(5000).await.expect("ConnectionError");
+    let thrown = error.exception.unwrap();
+    assert_eq!(
+        thrown.message.as_deref(),
+        Some("Connection closed by the administrator")
+    );
+    assert_eq!(thrown.class_name, "javax.jms.JMSException");
+
+    eventually("connection cleanup", || b.connections().is_empty()).await;
+    assert_eq!(
+        b.get_dest(&out).unwrap().snapshot().pending,
+        0,
+        "the open transaction is rolled back"
+    );
+    let mut c2 = Wire::open(&b, "ID:adm-2").await;
+    assert_ok(&c2.consume(1, &q, 10).await);
+    let mut got = Vec::new();
+    for _ in 0..3 {
+        let md = c2.dispatch(2000).await.unwrap();
+        got.push((body(&md), md.redelivery_counter));
+    }
+    assert_eq!(got, vec![("m1".into(), 1), ("m2".into(), 1), ("m3".into(), 1)]);
+    assert!(!b.close_connection("ID:adm-1"), "it is gone now");
+}
+
+/// A temporary destination of a connection closed by an administrator is removed, as for a
+/// client that died.
+#[tokio::test]
+async fn admin_close_removes_temporary_destinations() {
+    let b = broker_with(|_| {});
+    let temp = Destination::new(DestKind::TempQueue, "ID:adm-3:1");
+    let mut c = Wire::open(&b, "ID:adm-3").await;
+    let d = temp.clone();
+    let created = c
+        .request(|header| {
+            Command::DestinationInfo(DestinationInfo {
+                header,
+                connection_id: None,
+                destination: Some(d),
+                operation_type: dest_op::ADD,
+                timeout: 0,
+                broker_path: None,
+            })
+        })
+        .await;
+    assert_ok(&created);
+    assert!(b.get_dest(&temp).is_some(), "the temporary queue exists");
+    assert!(b.close_connection("ID:adm-3"));
+    eventually("temporary destination removed", || b.get_dest(&temp).is_none()).await;
 }
 
 #[tokio::test]

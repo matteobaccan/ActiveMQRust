@@ -13,6 +13,7 @@ use std::fmt::Write;
 use std::sync::Arc;
 
 use super::body::{full_text, hex_dump, render, stored_size, BodyView, HEX_LIMIT};
+use super::history;
 use super::sort::{Column, Table};
 use super::xml::{self, XmlError};
 use super::{fmt_bytes, fmt_duration, fmt_expiration, fmt_time_ms, process_memory, AdminState, CurrentUser, CSS};
@@ -74,6 +75,18 @@ pub fn enc(s: &str) -> String {
         }
     }
     o
+}
+
+/// The notice a write operation left in the query string, as a paragraph. It is escaped, and
+/// what a redirect of this console puts there is always one of its own messages.
+pub(super) fn notice(ctx: &Ctx) -> String {
+    match ctx.get("notice") {
+        Some(text) if !text.is_empty() => {
+            let shown: String = text.chars().take(300).collect();
+            format!("<p class=\"notice\">{}</p>", esc(&shown))
+        }
+        _ => String::new(),
+    }
 }
 
 /// What a page needs from the request: user, path and query.
@@ -172,13 +185,14 @@ fn footer() -> String {
 }
 
 /// The page shell: top bar (navigation, refresh, user, logout), content and footer.
-fn layout(ctx: &Ctx, title: &str, section: &str, content: &str) -> Response {
+pub(super) fn layout(ctx: &Ctx, title: &str, section: &str, content: &str) -> Response {
     let mut nav = String::new();
     for (href, label) in [
         ("/", "Overview"),
         ("/queues", "Queues"),
         ("/topics", "Topics"),
         ("/connections", "Connections"),
+        ("/bans", "Bans"),
     ] {
         let current = if section == href { " aria-current=\"page\"" } else { "" };
         let _ = write!(nav, "<a href=\"{}\"{current}>{label}</a>", ctx.link(href, &[]));
@@ -295,6 +309,30 @@ fn card(label: &str, value: &str) -> String {
     format!("<div class=\"card\"><span class=\"label\">{label}</span><span class=\"value\">{value}</span></div>")
 }
 
+/// The transport column: `tcp`, or `ssl` with the TLS version, the cipher suite and the
+/// subject of a verified client certificate.
+fn transport_cell(row: &ConnRow) -> String {
+    match &row.info.tls {
+        None => "tcp".to_string(),
+        Some(tls) => {
+            let mut out = format!("ssl <span class=\"tag\">{}</span>", esc(&tls.version));
+            let _ = write!(out, "<br><span class=\"muted\">{}</span>", esc(&tls.cipher));
+            if let Some(subject) = &tls.client_cert {
+                let _ = write!(out, "<br><span class=\"muted\">{}</span>", esc(subject));
+            }
+            out
+        }
+    }
+}
+
+/// A card with a line of explanation under its value.
+fn card_with(label: &str, value: &str, note: &str) -> String {
+    format!(
+        "<div class=\"card\"><span class=\"label\">{label}</span><span class=\"value\">{value}</span>\
+         <span class=\"note\">{note}</span></div>"
+    )
+}
+
 fn badge(kind: &str, word: &str) -> String {
     format!(" <span class=\"badge {kind}\">{word}</span>")
 }
@@ -344,7 +382,18 @@ pub async fn overview(State(s): State<AdminState>, ctx: Ctx) -> Response {
     ));
     c.push_str(&card("Working Set (RSS)", &fmt_bytes(ws)));
     c.push_str(&card("Private Bytes", &fmt_bytes(private)));
+    c.push_str(&card_with(
+        "Messages in memory",
+        &b.message_count().to_string(),
+        "pending + inflight, per subscription for topics",
+    ));
     c.push_str("</div>");
+    let buckets = s.history.buckets();
+    c.push_str("<div class=\"charts\">");
+    c.push_str(&history::message_memory(&buckets, b.memory.limit));
+    c.push_str(&history::process(&buckets));
+    c.push_str("</div>");
+    c.push_str(&history::table(&buckets));
     layout(&ctx, "Overview", "/", &c)
 }
 
@@ -416,7 +465,19 @@ pub static TOPICS_TABLE: Table<DestSnapshot> = Table {
 pub struct ConnRow {
     pub info: ConnInfo,
     pub remote: String,
+    /// The client address without its port, which is what a ban takes.
+    pub ip: String,
     pub connected_at: chrono::DateTime<chrono::Local>,
+}
+
+impl ConnRow {
+    /// `tcp`, or `ssl` with the version and suite the handshake chose.
+    pub fn transport_text(&self) -> String {
+        match &self.info.tls {
+            Some(tls) => format!("ssl {} {}", tls.version, tls.cipher),
+            None => "tcp".to_string(),
+        }
+    }
 }
 
 impl ConnRow {
@@ -424,6 +485,7 @@ impl ConnRow {
         ConnRow {
             info: c.info.lock().clone(),
             remote: c.remote.to_string(),
+            ip: c.remote.ip().to_string(),
             connected_at: c.connected_at,
         }
     }
@@ -438,6 +500,7 @@ pub static CONNECTIONS_TABLE: Table<ConnRow> = Table {
         }),
         Column::text("user", "User", |c| c.info.user.as_str().into()),
         Column::address("client", "Client", |c| c.remote.as_str().into()),
+        Column::text("transport", "Transport", |c| c.transport_text().into()),
         Column::number("openwire", "OpenWire", |c| c.info.version as u64),
         Column::time("connected", "Connected", |c| c.connected_at.timestamp_millis()),
         Column::number("sessions", "Sessions", |c| c.info.sessions as u64),
@@ -805,8 +868,10 @@ pub async fn message_detail(
     };
     let xml_state = xml_view(&e, raw_text);
     let formatted = ctx.get("view") == Some("xml");
-    match &xml_state {
-        XmlView::Formatted(_) => {
+    match (&xml_state, ctx.refresh()) {
+        // Auto-refresh reloads the page every five seconds, so the chosen view has to live
+        // in the URL: the switch stays a pair of links and only one view is rendered.
+        (XmlView::Formatted(f), true) => {
             let (raw_cur, fmt_cur) = if formatted {
                 ("", " aria-current=\"true\"")
             } else {
@@ -818,22 +883,47 @@ pub async fn message_detail(
                 esc(&ctx.with("view", None)),
                 esc(&ctx.with("view", Some("xml")))
             );
-        }
-        XmlView::Error(err) => {
-            let _ = write!(c, "<p class=\"notice warn\">{}</p>", esc(&err.to_string()));
-        }
-        XmlView::None => {}
-    }
-    match (&xml_state, formatted) {
-        (XmlView::Formatted(f), true) => {
-            let _ = write!(c, "<pre class=\"body xml\">{}</pre>", f.html);
-            if f.truncated {
-                c.push_str("<p class=\"notice\">Formatted view truncated at 256 KB.</p>");
+            if formatted {
+                formatted_body(&mut c, f);
+            } else {
+                body_html(&mut c, rendered.view, &ctx);
             }
         }
-        _ => body_html(&mut c, rendered.view, &ctx),
+        // Both views travel in the page: the radio switch shows one and hides the other
+        // with CSS, so switching sends no request and keeps the scroll position.
+        (XmlView::Formatted(f), false) => {
+            let checked = |on: bool| if on { " checked" } else { "" };
+            let _ = write!(
+                c,
+                "<fieldset class=\"views switch\"><legend>Body view</legend>\
+                 <input type=\"radio\" id=\"body-raw\" name=\"body-view\" class=\"pick-raw\"{}>\
+                 <label for=\"body-raw\">Raw</label>\
+                 <input type=\"radio\" id=\"body-formatted\" name=\"body-view\" class=\"pick-formatted\"{}>\
+                 <label for=\"body-formatted\">Formatted</label>\
+                 <div class=\"panel panel-raw\">",
+                checked(!formatted),
+                checked(formatted),
+            );
+            body_html(&mut c, rendered.view, &ctx);
+            c.push_str("</div><div class=\"panel panel-formatted\">");
+            formatted_body(&mut c, f);
+            c.push_str("</div></fieldset>");
+        }
+        (XmlView::Error(err), _) => {
+            let _ = write!(c, "<p class=\"notice warn\">{}</p>", esc(&err.to_string()));
+            body_html(&mut c, rendered.view, &ctx);
+        }
+        (XmlView::None, _) => body_html(&mut c, rendered.view, &ctx),
     }
     layout(&ctx, &format!("Message {id}"), "/queues", &c)
+}
+
+/// The formatted XML and, when it was cut, the notice that goes with it.
+fn formatted_body(c: &mut String, f: &xml::Formatted) {
+    let _ = write!(c, "<pre class=\"body xml\">{}</pre>", f.html);
+    if f.truncated {
+        c.push_str("<p class=\"notice\">Formatted view truncated at 256 KB.</p>");
+    }
 }
 
 fn body_html(c: &mut String, view: BodyView, ctx: &Ctx) {
@@ -923,25 +1013,43 @@ pub async fn topics(State(s): State<AdminState>, ctx: Ctx) -> Response {
 
 pub async fn connections(State(s): State<AdminState>, ctx: Ctx) -> Response {
     let mut rows: Vec<ConnRow> = s.broker.connections().iter().map(|c| ConnRow::of(c)).collect();
-    let mut c = String::from("<h1>Connections</h1><div class=\"table-wrap\"><table><thead><tr>");
+    let writable = !s.broker.cfg.admin_read_only;
+    let mut c = String::from("<h1>Connections</h1>");
+    c.push_str(&notice(&ctx));
+    c.push_str("<div class=\"table-wrap\"><table><thead><tr>");
     c.push_str(&CONNECTIONS_TABLE.sort_page(&mut rows, &ctx));
+    if writable {
+        c.push_str("<th>Actions</th>");
+    }
     c.push_str("</tr></thead><tbody>");
     for x in &rows {
         let _ = write!(
             c,
-            "<tr><td class=\"id\">{}</td><td>{}</td><td>{}</td><td class=\"num\">{}</td><td>{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td></tr>",
+            "<tr><td class=\"id\">{}</td><td>{}</td><td>{}</td><td>{}</td><td class=\"num\">{}</td><td>{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td>",
             esc(&x.info.connection_id),
             esc(&x.info.user),
             esc(&x.remote),
+            transport_cell(x),
             x.info.version,
             x.connected_at.format("%Y-%m-%d %H:%M:%S"),
             x.info.sessions,
             x.info.consumers,
             x.info.producers
         );
+        if writable {
+            let _ = write!(
+                c,
+                "<td class=\"row-actions\"><a href=\"/connections/{}/close\">Close</a>\
+                 <a href=\"/bans/add?address={}\">Ban IP</a></td>",
+                enc(&x.info.connection_id),
+                enc(&x.ip),
+            );
+        }
+        c.push_str("</tr>");
     }
     if rows.is_empty() {
-        c.push_str("<tr><td colspan=\"8\" class=\"muted\">No connections</td></tr>");
+        let span = if writable { 10 } else { 9 };
+        let _ = write!(c, "<tr><td colspan=\"{span}\" class=\"muted\">No connections</td></tr>");
     }
     c.push_str("</tbody></table></div>");
     layout(&ctx, "Connections", "/connections", &c)

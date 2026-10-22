@@ -6,7 +6,7 @@ list of merged pull requests and the compare link below it.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [0.4.0] - 2026-10-21
 
 ### Added
 
@@ -36,6 +36,99 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     accept the same column keys as the console pages.
   - Queue message contents (FIFO), message headers, and StreamMessage bodies remain
     unsorted with plain headers.
+
+- **OpenWire over TLS**: a new `[tls]` section adds a second listener, by convention on port
+  61617, that ActiveMQ Java clients reach with `ssl://host:61617` and
+  `failover:(ssl://host:61617)` without any change beyond their truststore.
+  - The certificate comes from PEM files (`cert` and `key`) or from a PKCS#12 keystore
+    (`keystore`, `keystore_password`), with paths relative to the configuration file. A JKS
+    keystore is refused with the `keytool -importkeystore` command that converts it.
+  - TLS 1.2 and 1.3 only (`min_version`), with the safe cipher suites of rustls and no key to
+    enable others. `client_auth` (`none`, `optional`, `required`) with `client_ca` asks for a
+    client certificate, which never replaces the username and password.
+  - The handshake runs outside the accept loop and is abandoned after 10 seconds; failures are
+    logged at debug level with at most one warning a minute, so a port scan cannot flood the
+    log.
+  - Every TLS file is checked at startup and by `check-config`: a mismatched key, a JKS
+    keystore or an unreadable file exits with code 2 naming the key, while a certificate
+    expiring within 30 days is only a warning.
+  - New key `broker.plain` (default `true`): `false` leaves only the TLS listener. Both off is
+    a configuration error.
+  - The Connections page and `/api/connections` now carry `transport` (`tcp` or `ssl`),
+    `tlsVersion`, `tlsCipher` and `clientCertificate`.
+  - PEM files are read with the `rustls-pki-types` PEM API rather than `rustls-pemfile`,
+    which is unmaintained (RUSTSEC-2025-0134); `cargo audit` reports nothing on the
+    dependency tree.
+- **Instant Raw/Formatted switch** on the message page: the page now carries both views of an
+  XML body and the switch is two radio buttons styled as the segmented control, so changing
+  view sends no request, reloads nothing and keeps the scroll position. Still no JavaScript
+  and the same Content-Security-Policy; keyboard arrows move between the options and only the
+  visible view is exposed to assistive technologies. `?view=xml` still opens the formatted
+  view, and with auto-refresh on the switch stays a pair of links so the view survives the
+  reload.
+- **Memory history on the overview**: two charts of the last hour, drawn on the server as
+  inline SVG with no JavaScript - message memory (minimum-maximum band, last value and a
+  dashed line at `max_memory_mb` when it is set) and process memory (Working Set and Private
+  Bytes; resident size and physical footprint on macOS).
+  - Each chart gives the peak of the hour with its time, 15-minute ticks, a legend, a tooltip
+    per bucket, an `aria-label` summary and a collapsible **Data** table; the page stays
+    readable at 360 px and the Content-Security-Policy is unchanged.
+  - The broker records 360 buckets of 10 seconds while the console is enabled: message memory
+    is read every second (minimum, maximum and last per bucket), process memory once per
+    bucket, by a task outside the path that stores and delivers messages. The history uses
+    fixed memory and starts empty at every start.
+  - New card **Messages in memory** (pending plus inflight, a topic message once per
+    subscription that holds it), also in `/api/overview` as `messagesInMemory`, and a new
+    endpoint `GET /api/memory/history`.
+- **Closing connections and banning addresses from the admin console**: every row of the
+  Connections page offers **Close** (the client is told "Connection closed by the administrator"
+  and the broker cleans up as for a dropped connection) and **Ban IP**, and a new **Bans** page
+  lists the addresses kept out of the OpenWire listeners.
+  - A ban is an address or a CIDR range, for 1 hour, 24 hours, 7 days or permanently, with an
+    optional reason; adding one offers to close the connections already open from it. Banned
+    addresses are refused right after `accept`, before any byte is read, and the refused
+    attempts are counted per ban.
+  - **Automatic bans**: 3 failed OpenWire logins from one address within 15 minutes ban it for
+    1 minute, doubling after each further failure up to 24 hours. A successful login or a day
+    without failures resets the escalation. Kept in memory only: a restart clears them.
+  - Manual bans are stored in `bans.toml` next to the configuration file, rewritten atomically;
+    a broken file stops the start with exit code 2 naming the line and the entry, and
+    `check-config` reports it.
+  - API: `POST /api/connections/{id}/close`, `GET`/`POST /api/bans` and
+    `DELETE /api/bans/{address}`.
+  - New key `admin.read_only` (default `false`): `true` removes every write action from the
+    pages and answers `405` to their paths. Every write needs a `POST` from the console's own
+    origin and is logged with the administrator and their address.
+- **Daily log files**: logging writes to a folder (`log.dir`, default `logs` next to the
+  executable) into an active `mqrust.log` that is rotated at local midnight, named after the
+  day it holds (`mqrust-2026-10-21.log`), compressed to `.log.gz` by a background thread and
+  deleted once older than `log.retention_days` (default 30, `0` keeps everything).
+  - Rotation happens without traffic too, and a file left from an earlier day is rotated at
+    startup; an archive is never overwritten (`-1`, `-2` counter), and a compression
+    interrupted by a restart is finished at the next start.
+  - Every file opens with a header line (version, process ID, configuration in use) whatever
+    the level is.
+  - Console mode writes to stdout and to the file; `log.file = false` keeps stdout only.
+  - New keys `log.dir`, `log.file`, `log.retention_days` and `log.compress`, and a
+    `--log-level <level>` option that overrides `log.level` for one run.
+  - A log file that cannot be written never stops the broker: one warning on stderr, stdout
+    keeps working and the file is tried again later. `check-config` reports an unusable
+    `log.dir`.
+  - **BREAKING**: as a Windows service the log moves from `mqrust.log` next to the executable
+    to `logs\mqrust.log`. The old file is left untouched and can be deleted by hand.
+
+### Changed
+
+- **Dependencies updated**, including the major bumps the open Renovate pull requests
+  were waiting for: `toml` 0.8 → 1.0, `toml_edit` 0.22 → 0.25, `quick-xml` 0.41 → 0.42,
+  `sha2` 0.10 → 0.11, `windows-service` 0.7 → 0.8, `windows-sys` 0.59 → 0.61,
+  `criterion` 0.5 → 0.8 and `embed-resource` 2 → 3. No behaviour changes:
+  - The XML view of message bodies takes the `&str` events quick-xml 0.42 produces
+    instead of decoding bytes; references, CDATA and processing instructions are still
+    shown as written.
+  - The benchmarks use `std::hint::black_box`, which replaces criterion's own.
+  - `build.rs` reports a Windows version resource that fails to compile and keeps
+    tolerating a toolchain without a resource compiler.
 
 ## [0.3.1] - 2026-10-06
 

@@ -19,6 +19,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import javax.jms.Connection;
+import javax.jms.JMSException;
 import javax.jms.Message;
 import javax.jms.MessageConsumer;
 import javax.jms.MessageProducer;
@@ -43,6 +44,7 @@ public final class ConsoleCheck {
 
     private static final Pattern MESSAGE = Pattern.compile("\"messageId\":\"([^\"]+)\"[^}]*?\"position\":(\\d+)|\"position\":(\\d+)[^}]*?\"messageId\":\"([^\"]+)\"");
     private static final Pattern VERSION = Pattern.compile("\"version\":\"([^\"]+)\"");
+    private static final Pattern CONNECTION_ID = Pattern.compile("\"connectionId\":\"([^\"]+)\"");
 
     private final String url;
     private final String user;
@@ -86,6 +88,8 @@ public final class ConsoleCheck {
         run("providerVersion", this::providerVersion);
         run("compressedTextMessagePage", this::compressedText);
         run("browsingDoesNotConsume", this::browsingDoesNotConsume);
+        run("adminClosesConnection", this::adminClosesConnection);
+        run("bannedClientStaysOut", this::bannedClientStaysOut);
         System.out.println("SUMMARY pass=" + pass + " fail=" + fail);
         return fail == 0 ? 0 : 1;
     }
@@ -116,6 +120,19 @@ public final class ConsoleCheck {
                 .header("Authorization", "Basic " + basic).GET().build(), HttpResponse.BodyHandlers.ofString());
         check(r.statusCode() == 200, "GET " + path + " answered " + r.statusCode());
         return r.body();
+    }
+
+    /** A write call of the API with HTTP Basic: POST with a JSON body, or DELETE. */
+    private HttpResponse<String> apiWrite(String method, String path, String body) throws Exception {
+        String basic = Base64.getEncoder().encodeToString((adminUser + ":" + adminPassword).getBytes(StandardCharsets.UTF_8));
+        HttpRequest.Builder b = HttpRequest.newBuilder(URI.create(admin + path)).timeout(Duration.ofSeconds(30))
+                .header("Authorization", "Basic " + basic);
+        if (body == null) {
+            b.method(method, HttpRequest.BodyPublishers.noBody());
+        } else {
+            b.header("Content-Type", "application/json").method(method, HttpRequest.BodyPublishers.ofString(body));
+        }
+        return http.send(b.build(), HttpResponse.BodyHandlers.ofString());
     }
 
     /** Logs in through the form and keeps the session cookie. */
@@ -178,7 +195,89 @@ public final class ConsoleCheck {
         return "/queues/" + enc(queue) + "/messages/" + enc(idSeq[0]) + "?seq=" + idSeq[1];
     }
 
+    /** The connection IDs the console lists, newest last. */
+    private List<String> connectionIds() throws Exception {
+        List<String> out = new ArrayList<>();
+        Matcher m = CONNECTION_ID.matcher(api("/api/connections"));
+        while (m.find()) {
+            out.add(m.group(1));
+        }
+        return out;
+    }
+
     // -- checks -----------------------------------------------------------------------------
+
+    /**
+     * An administrator closing a connection reaches the unchanged ActiveMQ client: its
+     * ExceptionListener is called with the reason, and the client does not hang.
+     */
+    private void adminClosesConnection() throws Exception {
+        CompletableFuture<JMSException> reported = new CompletableFuture<>();
+        ActiveMQConnectionFactory f = new ActiveMQConnectionFactory(url);
+        Connection c = f.createConnection(user, password);
+        try {
+            c.setExceptionListener(reported::complete);
+            c.start();
+            Session s = c.createSession(false, Session.AUTO_ACKNOWLEDGE);
+            Queue q = s.createQueue("CONSOLE.CLOSE." + UUID.randomUUID().toString().substring(0, 8));
+            s.createConsumer(q);
+            String id = null;
+            for (int i = 0; i < 50 && id == null; i++) {
+                List<String> ids = connectionIds();
+                id = ids.isEmpty() ? null : ids.get(ids.size() - 1);
+                if (id == null) {
+                    Thread.sleep(100);
+                }
+            }
+            check(id != null, "the console lists the connection");
+            HttpResponse<String> closed = apiWrite("POST", "/api/connections/" + enc(id) + "/close", null);
+            check(closed.statusCode() == 200, "close answered " + closed.statusCode());
+            check(closed.body().contains("\"closed\""), "close answered " + closed.body());
+            JMSException e = reported.get(30, TimeUnit.SECONDS);
+            System.out.println("  client reported: " + e.getMessage());
+            check(String.valueOf(e.getMessage()).contains("Connection closed by the administrator"),
+                    "the reason reaches the client: " + e.getMessage());
+        } finally {
+            try {
+                c.close();
+            } catch (JMSException ignored) {
+                // The broker already closed it.
+            }
+        }
+    }
+
+    /**
+     * A banned address is refused at accept, so a client with a failover URL cannot come
+     * back until the ban is removed.
+     */
+    private void bannedClientStaysOut() throws Exception {
+        String failover = "failover:(" + url + ")?maxReconnectAttempts=2&initialReconnectDelay=200&timeout=4000";
+        HttpResponse<String> added = apiWrite("POST", "/api/bans",
+                "{\"address\": \"127.0.0.1\", \"duration\": \"1h\", \"reason\": \"console check\"}");
+        try {
+            check(added.statusCode() == 200, "ban answered " + added.statusCode());
+            check(api("/api/bans").contains("127.0.0.1"), "the ban is listed");
+            boolean refused = false;
+            ActiveMQConnectionFactory f = new ActiveMQConnectionFactory(failover);
+            try {
+                Connection c = f.createConnection(user, password);
+                c.start();
+                c.close();
+            } catch (JMSException e) {
+                refused = true;
+                System.out.println("  reconnection refused: " + e.getMessage());
+            }
+            check(refused, "a banned client cannot connect");
+            check(api("/api/bans").contains("\"refusedAttempts\":"), "refused attempts are counted");
+        } finally {
+            HttpResponse<String> removed = apiWrite("DELETE", "/api/bans/127.0.0.1", null);
+            check(removed.statusCode() == 200, "unban answered " + removed.statusCode());
+        }
+        ActiveMQConnectionFactory f = new ActiveMQConnectionFactory(url);
+        Connection back = f.createConnection(user, password);
+        back.start();
+        back.close();
+    }
 
     /** A client with useCompression=true sends a 50 KB TextMessage; the page shows its text. */
     private void compressedText() throws Exception {

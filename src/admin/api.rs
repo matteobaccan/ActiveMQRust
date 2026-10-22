@@ -112,6 +112,7 @@ pub async fn overview(State(s): State<AdminState>) -> Json<J> {
         "queues": dests.iter().filter(|d| d.dest.kind.is_queue()).count(),
         "topics": dests.iter().filter(|d| d.dest.kind.is_topic() && visible(d)).count(),
         "messageMemory": b.memory.used(),
+        "messagesInMemory": b.message_count(),
         "memoryLimit": if b.memory.limit == 0 { J::Null } else { json!(b.memory.limit) },
         "memoryLimitReached": b.memory_limited(),
         "compressed": b.stats.compressed.load(std::sync::atomic::Ordering::Relaxed),
@@ -119,6 +120,11 @@ pub async fn overview(State(s): State<AdminState>) -> Json<J> {
         "workingSet": ws,
         "privateBytes": private,
     }))
+}
+
+/// The last hour of memory, oldest bucket first.
+pub async fn memory_history(State(s): State<AdminState>) -> Json<J> {
+    Json(super::history::json(&s.history.buckets(), s.broker.memory.limit))
 }
 
 pub async fn queues(State(s): State<AdminState>, Query(p): Params) -> Json<J> {
@@ -300,6 +306,10 @@ pub async fn connections(State(s): State<AdminState>, Query(p): Params) -> Json<
                 "clientId": c.info.client_id,
                 "user": c.info.user,
                 "client": c.remote,
+                "transport": c.info.transport(),
+                "tlsVersion": c.info.tls.as_ref().map(|t| t.version.clone()),
+                "tlsCipher": c.info.tls.as_ref().map(|t| t.cipher.clone()),
+                "clientCertificate": c.info.tls.as_ref().and_then(|t| t.client_cert.clone()),
                 "openwireVersion": c.info.version,
                 "connectedAt": c.connected_at.to_rfc3339(),
                 "sessions": c.info.sessions,

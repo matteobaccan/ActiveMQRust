@@ -32,6 +32,19 @@ pub struct ConnInfo {
     pub sessions: usize,
     pub consumers: usize,
     pub producers: usize,
+    /// What the TLS handshake negotiated; `None` on a plain connection.
+    pub tls: Option<crate::tls::Negotiated>,
+}
+
+impl ConnInfo {
+    /// `ssl` or `tcp`, as the admin console shows it.
+    pub fn transport(&self) -> &'static str {
+        if self.tls.is_some() {
+            "ssl"
+        } else {
+            "tcp"
+        }
+    }
 }
 
 pub struct ConnHandle {
@@ -63,6 +76,20 @@ impl ConnHandle {
 
     pub fn close_after(&self, cmds: Vec<Command>) {
         let _ = self.tx.send(Out::CloseAfter(cmds));
+    }
+
+    /// Tells the client an administrator closed it, then closes the socket. The connection
+    /// task then cleans up as for a dropped connection.
+    pub fn close_by_admin(&self) {
+        use crate::openwire::model::{ConnectionError, Header, Throwable};
+        self.close_after(vec![Command::ConnectionError(ConnectionError {
+            header: Header::default(),
+            exception: Some(Throwable::new(
+                "javax.jms.JMSException",
+                "Connection closed by the administrator",
+            )),
+            connection_id: None,
+        })]);
     }
 
     pub fn count_dispatch(&self) {

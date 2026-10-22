@@ -108,18 +108,20 @@ enum Tok {
     Other(Class, String),
 }
 
-fn utf8(b: &[u8]) -> String {
-    String::from_utf8_lossy(b).into_owned()
+/// Copies borrowed parser output. The reader validates UTF-8 while reading, so names
+/// and event contents arrive as `&str` and need no decoding here.
+fn owned(s: impl AsRef<str>) -> String {
+    s.as_ref().to_owned()
 }
 
 fn start_tok(e: &BytesStart, empty: bool) -> Result<Tok, String> {
     let mut attrs = Vec::new();
     for a in e.attributes().with_checks(true) {
         let a = a.map_err(|e| e.to_string())?;
-        attrs.push((utf8(a.key.as_ref()), utf8(&a.value)));
+        attrs.push((owned(a.key.as_ref()), owned(&a.value)));
     }
     Ok(Tok::Start {
-        name: utf8(e.name().as_ref()),
+        name: owned(e.name().as_ref()),
         attrs,
         empty,
     })
@@ -183,10 +185,10 @@ fn tokenize(text: &str) -> Result<Vec<Tok>, XmlError> {
             }
             Event::End(e) => {
                 stack.pop();
-                toks.push(Tok::End(utf8(e.name().as_ref())));
+                toks.push(Tok::End(owned(e.name().as_ref())));
             }
             Event::Text(t) => {
-                let s = utf8(&t);
+                let s = owned(&t);
                 if top_level && !s.trim().is_empty() {
                     return Err(malformed(at, "text outside the root element".into()));
                 }
@@ -199,7 +201,7 @@ fn tokenize(text: &str) -> Result<Vec<Tok>, XmlError> {
                 if top_level {
                     return Err(malformed(at, "reference outside the root element".into()));
                 }
-                let s = format!("&{};", utf8(&g));
+                let s = format!("&{};", owned(&g));
                 match toks.last_mut() {
                     Some(Tok::Text(prev)) => prev.push_str(&s),
                     _ => toks.push(Tok::Text(s)),
@@ -209,12 +211,12 @@ fn tokenize(text: &str) -> Result<Vec<Tok>, XmlError> {
                 if top_level {
                     return Err(malformed(at, "CDATA outside the root element".into()));
                 }
-                toks.push(Tok::Other(Class::CData, format!("<![CDATA[{}]]>", utf8(&c))));
+                toks.push(Tok::Other(Class::CData, format!("<![CDATA[{}]]>", owned(&c))));
             }
-            Event::Comment(c) => toks.push(Tok::Other(Class::Com, format!("<!--{}-->", utf8(&c)))),
-            Event::Decl(d) => toks.push(Tok::Other(Class::Pi, format!("<?{}?>", utf8(&d)))),
-            Event::PI(p) => toks.push(Tok::Other(Class::Pi, format!("<?{}?>", utf8(&p)))),
-            Event::DocType(d) => toks.push(Tok::Other(Class::Pi, format!("<!DOCTYPE {}>", utf8(&d).trim()))),
+            Event::Comment(c) => toks.push(Tok::Other(Class::Com, format!("<!--{}-->", owned(&c)))),
+            Event::Decl(d) => toks.push(Tok::Other(Class::Pi, format!("<?{}?>", owned(&d)))),
+            Event::PI(p) => toks.push(Tok::Other(Class::Pi, format!("<?{}?>", owned(&p)))),
+            Event::DocType(d) => toks.push(Tok::Other(Class::Pi, format!("<!DOCTYPE {}>", owned(&d).trim()))),
             Event::Eof => break,
         }
     }

@@ -5,6 +5,7 @@
 
 pub mod admin;
 pub mod auth;
+pub mod bans;
 pub mod broker;
 pub mod config;
 pub mod connection;
@@ -16,3 +17,4 @@ pub mod server;
 #[cfg(windows)]
 pub mod service;
 pub mod setup;
+pub mod tls;

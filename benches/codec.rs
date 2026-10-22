@@ -6,7 +6,8 @@
 
 mod common;
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
+use criterion::{criterion_group, criterion_main, Criterion, Throughput};
+use std::hint::black_box;
 
 use mqrust::openwire::marshal::{ChunkBuf, Decoder, Encoder};
 use mqrust::openwire::model::*;

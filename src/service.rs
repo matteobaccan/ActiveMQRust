@@ -188,43 +188,48 @@ fn service_main(_args: Vec<OsString>) {
         Duration::from_secs(10),
     );
 
-    let log_path = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|d| d.join("mqrust.log")))
-        .unwrap_or_else(|| PathBuf::from("mqrust.log"));
-
     let code = match crate::config::load(config.as_deref(), &Default::default()) {
         Err(e) => {
-            let _ = crate::logging::init_file(&log_path, "info");
+            crate::logging::init_service("info", &crate::logging::fallback_options());
             tracing::error!("{e}");
             2
         }
         Ok(cfg) => {
-            let _ = crate::logging::init_file(&log_path, &cfg.log_level);
-            let rt = crate::cpu::runtime(cfg.processors).expect("runtime");
-            let status_ref = &status;
-            let result = rt.block_on(crate::server::run(
-                cfg,
-                Box::pin(async move {
-                    let _ = stop_rx.await;
-                }),
-                move || {
-                    let _ = status_ref.set_service_status(ServiceStatus {
-                        service_type: ServiceType::OWN_PROCESS,
-                        current_state: ServiceState::Running,
-                        controls_accepted: ServiceControlAccept::STOP | ServiceControlAccept::SHUTDOWN,
-                        exit_code: ServiceExitCode::Win32(0),
-                        checkpoint: 0,
-                        wait_hint: Duration::default(),
-                        process_id: None,
-                    });
-                },
-            ));
-            match result {
-                Ok(()) => 0,
+            // The service has no console: the log file is the only output, whatever log.file says.
+            crate::logging::init_service(&cfg.log_level, &crate::logging::file_options(&cfg));
+            match crate::server::preflight(&cfg) {
                 Err(e) => {
                     tracing::error!("{e}");
-                    1
+                    2
+                }
+                Ok(warnings) => {
+                    warnings.iter().for_each(|w| tracing::warn!("{w}"));
+                    let rt = crate::cpu::runtime(cfg.processors).expect("runtime");
+                    let status_ref = &status;
+                    let result = rt.block_on(crate::server::run(
+                        cfg,
+                        Box::pin(async move {
+                            let _ = stop_rx.await;
+                        }),
+                        move || {
+                            let _ = status_ref.set_service_status(ServiceStatus {
+                                service_type: ServiceType::OWN_PROCESS,
+                                current_state: ServiceState::Running,
+                                controls_accepted: ServiceControlAccept::STOP | ServiceControlAccept::SHUTDOWN,
+                                exit_code: ServiceExitCode::Win32(0),
+                                checkpoint: 0,
+                                wait_hint: Duration::default(),
+                                process_id: None,
+                            });
+                        },
+                    ));
+                    match result {
+                        Ok(()) => 0,
+                        Err(e) => {
+                            tracing::error!("{e}");
+                            1
+                        }
+                    }
                 }
             }
         }

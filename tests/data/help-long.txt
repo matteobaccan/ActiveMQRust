@@ -30,6 +30,9 @@ Configuration:
       --config <FILE>
           Configuration file [default: mqrust.toml next to mqrust.exe, else built-in defaults]
 
+      --log-level <LEVEL>
+          Log level for this run: error, warn, info, debug or trace [default: the log.level key]
+
 Network:
       --bind <IP>
           OpenWire listen address [default: 0.0.0.0]
