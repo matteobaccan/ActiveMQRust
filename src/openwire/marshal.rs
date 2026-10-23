@@ -455,7 +455,10 @@ impl Decoder {
             return Ok(None);
         }
         let type_code = r.u8()?;
-        self.data_structure(type_code, r).map(Some)
+        r.enter()?;
+        let d = self.data_structure(type_code, r);
+        r.leave();
+        d.map(Some)
     }
 
     fn data_structure(&self, type_code: u8, r: &mut Reader) -> CodecResult<DataStructure> {
@@ -1173,6 +1176,45 @@ mod tests {
             Command::ConsumerInfo(back) => assert_eq!(back, ci),
             other => panic!("unexpected {other:?}"),
         }
+    }
+
+    /// A `DestinationInfo` whose `brokerPath` holds another `DestinationInfo`, `levels` deep.
+    /// Each level costs 21 bytes on the wire and one recursion in the decoder.
+    fn nested_destination_info(levels: usize) -> Bytes {
+        let mut b = BytesMut::new();
+        b.put_u8(t::DESTINATION_INFO);
+        for _ in 0..levels {
+            b.put_i32(1); // header.command_id
+            b.put_u8(0); // header.response_required
+            b.put_u8(0); // connection_id: absent
+            b.put_u8(0); // destination: absent
+            b.put_u8(0); // operation_type
+            b.put_i64(0); // timeout
+            b.put_u8(1); // broker_path: present
+            b.put_i16(1); // with one element
+            b.put_u8(1); // the element is present
+            b.put_u8(t::DESTINATION_INFO); // and is another DestinationInfo
+        }
+        b.put_i32(1);
+        b.put_u8(0);
+        b.put_u8(0);
+        b.put_u8(0);
+        b.put_u8(0);
+        b.put_i64(0);
+        b.put_u8(0); // innermost broker_path: absent, the nesting stops here
+        b.freeze()
+    }
+
+    #[test]
+    fn a_frame_nested_without_end_is_refused_not_followed() {
+        // 2000 levels is 42 KB on the wire and used to overflow the stack of the thread
+        // decoding it, which aborts the process: every connection of the broker, not one.
+        let e = Decoder::new(12)
+            .decode_frame(nested_destination_info(2000))
+            .unwrap_err();
+        assert!(e.0.contains("nested more than 32 levels deep"), "{}", e.0);
+        // What a real client sends still decodes.
+        assert!(Decoder::new(12).decode_frame(nested_destination_info(3)).is_ok());
     }
 
     #[test]

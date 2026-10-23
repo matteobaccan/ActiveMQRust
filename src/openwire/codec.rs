@@ -25,18 +25,39 @@ pub fn err<T>(msg: impl Into<String>) -> CodecResult<T> {
     Err(CodecError(msg.into()))
 }
 
+/// Deepest nesting accepted while decoding one frame. Real commands nest three or four
+/// levels (a message carries a message id, which carries a producer id); a frame that goes
+/// deeper is hostile, and recursing on it would overflow the stack.
+const MAX_NESTING: u16 = 32;
+
 /// Reads big-endian primitives from a frame body without copying byte sequences.
 pub struct Reader {
     buf: Bytes,
+    depth: u16,
 }
 
 impl Reader {
     pub fn new(buf: Bytes) -> Self {
-        Reader { buf }
+        Reader { buf, depth: 0 }
     }
 
     pub fn remaining(&self) -> usize {
         self.buf.remaining()
+    }
+
+    /// Enters one nested data structure, and refuses the frame past `MAX_NESTING` levels.
+    /// Every decoder that recurses calls this first and `leave` when it returns.
+    pub fn enter(&mut self) -> CodecResult<()> {
+        if self.depth >= MAX_NESTING {
+            return err(format!("data structure nested more than {MAX_NESTING} levels deep"));
+        }
+        self.depth += 1;
+        Ok(())
+    }
+
+    /// Leaves the data structure entered by `enter`.
+    pub fn leave(&mut self) {
+        self.depth = self.depth.saturating_sub(1);
     }
 
     fn need(&self, n: usize) -> CodecResult<()> {
@@ -376,5 +397,18 @@ mod tests {
         assert_eq!(r.opt_string().unwrap(), None);
         assert_eq!(&r.opt_bytes().unwrap().unwrap()[..], b"xyz");
         assert!(r.i32().is_err());
+    }
+
+    #[test]
+    fn nesting_budget_is_bounded_and_given_back() {
+        let mut r = Reader::new(Bytes::new());
+        for _ in 0..MAX_NESTING {
+            r.enter().unwrap();
+        }
+        let e = r.enter().unwrap_err();
+        assert!(e.0.contains("nested more than 32 levels deep"), "{}", e.0);
+        // Leaving makes room again: siblings do not exhaust the budget.
+        r.leave();
+        r.enter().unwrap();
     }
 }
