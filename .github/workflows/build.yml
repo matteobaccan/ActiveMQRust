@@ -81,6 +81,21 @@ jobs:
         timeout-minutes: 10
         run: cargo test --release --target ${{ matrix.target }}
 
+      # The deliverable is one executable that runs on a machine with nothing installed:
+      # a Visual C++ runtime among the imports would mean the static CRT was lost.
+      - name: 🔍 Dependency-free executable
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/check-deps.ps1 -Exe target/${{ matrix.target }}/release/mqrust.exe
+
+      # The Windows service is the one part of the broker no Rust test can reach: it needs
+      # the Service Control Manager. Install, start, serve, log, stop, remove.
+      - name: 🛠️ Windows service, end to end
+        if: runner.os == 'Windows'
+        timeout-minutes: 5
+        shell: pwsh
+        run: ./scripts/service-check.ps1 -Exe target/${{ matrix.target }}/release/mqrust.exe
+
   # ---------------------------------------------------------------------------
   # Release binaries: only for version tags and manual runs. No tests here;
   # the `test` job runs in parallel and gates the release.
