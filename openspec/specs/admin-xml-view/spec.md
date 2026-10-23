@@ -19,15 +19,27 @@ The message page SHALL treat a body as XML when it is shown as text (a TextMessa
 - **THEN** the message page shows the raw text and a notice "Not well-formed XML" with the line and column of the first error, and no "Formatted" view
 
 ### Requirement: Raw and formatted views
-For an XML body the message page SHALL offer two views selected by links, with no JavaScript: "Raw" (the default, the text exactly as stored, as today) and "Formatted" (`?view=xml`). The chosen view SHALL be kept by the auto-refresh link. Both views SHALL be HTML-escaped.
+For an XML body the message page SHALL offer two views, with no JavaScript: "Raw" (the text exactly as stored, as today) and "Formatted". When auto-refresh is off, the page SHALL contain both views and a switch made of two labelled radio buttons grouped under the name "Body view"; selecting one SHALL show its view and hide the other without sending any request, reloading the page or changing the scroll position. The view selected when the page opens SHALL be "Formatted" when the URL carries `view=xml`, otherwise "Raw". When auto-refresh is on, the switch SHALL be a pair of links that set or remove `view=xml`, the page SHALL contain only the selected view, and the auto-refresh SHALL keep that view. Both views SHALL be HTML-escaped. Only the visible view SHALL be exposed to assistive technologies.
 
-#### Scenario: Switch view
-- **WHEN** an authenticated client opens the message page of an XML body and follows "Formatted"
-- **THEN** the URL carries `view=xml`, the formatted body is shown, and a "Raw" link returns to the stored text
+#### Scenario: Switch without reload
+- **WHEN** auto-refresh is off and an authenticated client opens the message page of an XML body and selects "Formatted"
+- **THEN** the formatted body is shown, no HTTP request is sent, and selecting "Raw" shows the stored text again
+
+#### Scenario: Both views in one response
+- **WHEN** an authenticated client requests the message page of an XML body without `refresh`
+- **THEN** the single response contains the raw text and the formatted view, two radio inputs labelled "Raw" and "Formatted", and "Raw" is checked
+
+#### Scenario: Link to the formatted view
+- **WHEN** an authenticated client opens the message page with `view=xml` and auto-refresh off
+- **THEN** "Formatted" is checked and the formatted body is the visible one
+
+#### Scenario: Keyboard
+- **WHEN** the focus is on the "Raw" option and the user presses the right arrow key
+- **THEN** "Formatted" becomes selected and visible, with a visible focus indicator
 
 #### Scenario: Refresh keeps the view
 - **WHEN** the formatted view is open with `refresh=5`
-- **THEN** the refreshed page still shows the formatted view
+- **THEN** the switch is made of links, and the refreshed page still shows the formatted view
 
 ### Requirement: Formatting rules
 The formatted view SHALL put each element on its own line, indented by two spaces per nesting level; keep the XML declaration, processing instructions, comments and CDATA sections, each on its own line; keep attribute order and values unchanged; keep an element whose content is only text on one line (`<item qty="2">A</item>`); keep the text of mixed-content elements unchanged; and drop whitespace-only text between elements. Entity and character references SHALL be shown as written, not expanded. Formatting SHALL NOT change the stored message, and a consumer SHALL receive it byte-for-byte as sent.
