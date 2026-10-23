@@ -49,7 +49,7 @@ cargo test --release
 
 The Rust suite is `src/` unit tests plus `tests/`: `broker_semantics`, `connection_semantics`,
 `selector_semantics`, `admin_http`, `cli_setup`, `codec_golden`, `compression`, `hot_path`,
-`tls_transport`.
+`tls_transport`, `fuzz_seeds`.
 
 The Java side lives in `tests/java-it` and talks to a running broker with the real ActiveMQ
 driver, built for two client versions:
@@ -62,6 +62,33 @@ java -jar target/amq5/mqrust-acceptance.jar <mode> --url tcp://127.0.0.1:61616
 Modes: `accept`, `integration`, `console`, `tls`, `compression`, `compression-golden`,
 `expiry-options`, `bench`. The `tls` mode needs a truststore
 (`-Djavax.net.ssl.trustStore=... -Djavax.net.ssl.trustStorePassword=...`) and an `ssl://` URL.
+
+### Fuzzing
+
+The fuzz targets live in `fuzz/`, a package of its own so that nothing in the broker's build
+sees them: they need a nightly toolchain and libFuzzer, which the Windows release build does
+not have.
+
+```
+mkdir -p fuzz/corpus/decode_frame
+cargo +nightly fuzz run decode_frame fuzz/corpus/decode_frame fuzz/seeds/decode_frame \
+    -- -max_total_time=300
+```
+
+The working corpus has to exist before the run: `cargo fuzz` creates it only when no corpus
+directory is named on the command line, and naming both is what keeps the seeds read-only.
+
+Three targets, chosen by what a client can reach: `decode_frame` (the command decoder, the
+only part of the broker reachable before the login), `primitive_map` (the marshalled
+properties of a message) and `selector` (text the client writes).
+
+`fuzz/seeds/<target>/` is committed and read-only to the fuzzer: the frames recorded from
+the real ActiveMQ client, one per command type, and the shapes worth keeping. The working
+corpus the fuzzer writes, `fuzz/corpus/`, is thousands of files and is not committed, which
+is why the command above names both directories. `tests/fuzz_seeds.rs` replays every seed
+inside `cargo test --release`, together with a seeded sweep of random and mutated frames:
+that replay is what guards these entry points on Windows and macOS, where the fuzzer does
+not run, so a crash belongs in `fuzz/seeds` as a file and its shape in a test.
 
 Before adding a dependency, and whenever the lockfile moves, run `cargo audit`: the
 `guardrails/scan` check on a pull request fails on an unmaintained or vulnerable crate, and

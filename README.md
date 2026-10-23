@@ -360,16 +360,17 @@ All suites below were run on 2026-10-06 on version 0.3.0 (Windows 11, Intel Xeon
 
 | Suite | What it checks | Result |
 |---|---|---|
-| Rust unit tests (`cargo test --release`, library) | codec, configuration, selectors, compression, sessions, XML formatter, CPU sizing, setup commands, log rotation and retention, bans and automatic bans, memory history and charts, TLS certificate checks | 183 passed |
+| Rust unit tests (`cargo test --release`, library) | codec, configuration, selectors, compression, sessions, XML formatter, CPU sizing, setup commands, log rotation and retention, bans and automatic bans, memory history and charts, TLS certificate checks, nesting limits of frames and selectors | 186 passed |
 | `tests/broker_semantics.rs` | FIFO, round-robin, redelivery position, prefetch, acknowledgement types, DLQ, expiration, topics, browsers, transactions, memory limit, concurrent producers | 60 passed |
-| `tests/connection_semantics.rs` | the broker driven over a real socket by a small OpenWire client, administrative close included | 16 passed |
+| `tests/connection_semantics.rs` | the broker driven over a real socket by a small OpenWire client, administrative close and a frame nested without end included | 17 passed |
 | `tests/selector_semantics.rs` | 568 selectors checked against the results of ActiveMQ's own selector engine | 9 passed |
 | `tests/admin_http.rs` | login, sessions, lockout, logout, API with Basic, headers, escaping, paging, system theme, addresses, closing connections, bans, read-only console, memory history, transport of a connection | 49 passed |
 | `tests/cli_setup.rs` | help, `set-admin`, `user` commands, safe file editing, start-up messages, log file and folder, end to end | 21 passed |
 | `tests/codec_golden.rs` | frames written by the real ActiveMQ client, OpenWire versions 9–12 | 4 passed |
 | `tests/compression.rs`, `tests/hot_path.rs` | compressed golden vectors of all 5 message types, allocations per message, batching | 9 passed |
 | `tests/tls_transport.rs` | OpenWire over TLS end to end, TLS 1.3 only, client certificate required (missing and valid), password still checked, handshake timeout, TLS-only mode | 5 passed |
-| **Rust total** | | **356 passed, 0 failed** |
+| `tests/fuzz_seeds.rs` | the seeds of the fuzz targets replayed, and a seeded sweep of random bytes, mutated client frames and generated selector text | 9 passed |
+| **Rust total** | | **369 passed, 0 failed** |
 | Java unit tests (`mvnw test`) | payload generation and result parsing of the bench client | 16 passed |
 | Java `accept`, ActiveMQ client 5.19.11 and 6.3.2 | FIFO round trip, correlation-ID selectors, authentication | 3 + 3 passed |
 | Java `integration`, 5.19.11 and 6.3.2 | 10,000-message FIFO, all message types, request/reply on temporary queues and topics, client ack, browser, topics, redelivery after a dropped connection, transactions, DLQ, client and broker compression, expiration, selectors, selector parity | 15 + 15 passed |
@@ -382,6 +383,17 @@ All suites below were run on 2026-10-06 on version 0.3.0 (Windows 11, Intel Xeon
 | Java `accept` against real **ActiveMQ 5.18.7 and 6.3.2** (tuned configuration) | the same three scenarios give the same results on ActiveMQ | 3 + 3 passed |
 
 The TLS transport was exercised on loopback with certificates made by `keytool`, which is how an operator sets it up: `tests/tls_transport.rs` runs on every platform of the matrix, Windows included, and the Java checks ran against a broker on the same machine. Three things it has not seen yet: a Java client over TLS on Windows, mutual TLS with a Java client (only the Rust test client has presented a certificate), and a load run over TLS.
+
+The frame decoder, the message properties and the selector parser are also fuzzed, with
+`cargo-fuzz` on a nightly toolchain (`fuzz/`, see AGENTS.md). The first campaigns ran 4.7
+million inputs through the decoder, 4.3 million through the message properties and 3.5
+million through the selector parser. They found a way to stop the broker: a selector made
+of a few thousand prefix operators or open parentheses recursed once per level until the
+stack overflowed, which aborts the process rather than the connection. Reading the decoder
+had turned up the same shape a day earlier, in a frame whose data structures nested without
+end. Both are fixed, bounded at 64 and 32 levels, and both are covered by a test. The
+fuzzer itself runs on Linux and macOS; its seeds and what it finds are replayed by
+`tests/fuzz_seeds.rs` on every platform of the matrix.
 
 While the soak scenario was being written, the multi-producer runs found a bug: with several producers on one queue a message could stay undelivered. It was fixed (`Fix lost queue messages with concurrent producers`) and is covered by a test.
 

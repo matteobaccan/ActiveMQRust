@@ -1,7 +1,7 @@
 ## 1. Crash isolation and fuzzing
 
-- [ ] 1.1 Fuzz targets for the OpenWire decoder and the selector parser; turn every crash into a regression test
-- [ ] 1.2 Remove or contain panics on the message path; a failure closes only its connection
+- [x] 1.1 Fuzz targets for the OpenWire decoder and the selector parser; turn every crash into a regression test
+- [x] 1.2 Remove or contain panics on the message path; a failure closes only its connection
 
 ## 2. Memory
 

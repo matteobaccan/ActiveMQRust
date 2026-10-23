@@ -26,6 +26,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   subscription is refused with an `InvalidSelectorException` and the connection carries on.
   Every release up to 0.4.0 is affected.
 
+### Added
+
+- **Fuzz targets for the frame decoder, the message properties and the selector parser**
+  under `fuzz/`, run with `cargo +nightly fuzz run <target>`, with their seeds kept in the
+  repository. `cargo test --release` replays those seeds and sweeps seeded random and
+  mutated input over the same entry points (`tests/fuzz_seeds.rs`), so what the fuzzer
+  finds stays guarded on Windows and macOS, where the fuzzer itself does not run.
+
 ## [0.4.0] - 2026-10-21
 
 ### Added
