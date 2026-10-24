@@ -382,6 +382,11 @@ All suites below were run on 2026-10-06 on version 0.3.0 (Windows 11, Intel Xeon
 | Java `console`, 5.19.11 and 6.3.2 | a connection closed by an administrator reports the reason to the client; a banned client cannot come back through its `failover:` URL | 2 + 2 passed |
 | Java `accept` against real **ActiveMQ 5.18.7 and 6.3.2** (tuned configuration) | the same three scenarios give the same results on ActiveMQ | 3 + 3 passed |
 
+On Windows, CI also checks the two promises no Rust test can reach: that `mqrust.exe`
+imports only Windows system DLLs, so that it runs where nothing is installed, and that the
+broker installs as a service, starts, serves both ports, writes its log, stops and uninstalls
+(`scripts/check-deps.ps1` and `scripts/service-check.ps1`, which also run by hand).
+
 The TLS transport was exercised on loopback with certificates made by `keytool`, which is how an operator sets it up: `tests/tls_transport.rs` runs on every platform of the matrix, Windows included, and the Java checks ran against a broker on the same machine. Three things it has not seen yet: a Java client over TLS on Windows, mutual TLS with a Java client (only the Rust test client has presented a certificate), and a load run over TLS.
 
 The frame decoder, the message properties and the selector parser are also fuzzed, with

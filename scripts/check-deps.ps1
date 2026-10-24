@@ -74,7 +74,11 @@ if ($dumpbin) {
 $bad = @()
 Write-Host "Imported DLLs of ${Exe}:"
 foreach ($d in ($dlls | Sort-Object -Unique)) {
-    $ok = ($allowed -contains $d.ToLowerInvariant()) -or ($d.ToLowerInvariant().StartsWith('api-ms-win-'))
+    $name = $d.ToLowerInvariant()
+    # api-ms-win-crt-* is the C runtime reached through its forwarders, which is what a
+    # dynamically linked CRT imports: the release profile links it statically, so seeing one
+    # here means the build lost `+crt-static` and the executable needs a redistributable.
+    $ok = ($allowed -contains $name) -or ($name.StartsWith('api-ms-win-') -and -not $name.StartsWith('api-ms-win-crt-'))
     Write-Host ("  {0,-40} {1}" -f $d, $(if ($ok) { 'system' } else { 'NOT ALLOWED' }))
     if (-not $ok) { $bad += $d }
 }
