@@ -51,6 +51,13 @@ The Rust suite is `src/` unit tests plus `tests/`: `broker_semantics`, `connecti
 `selector_semantics`, `admin_http`, `cli_setup`, `codec_golden`, `compression`, `hot_path`,
 `tls_transport`, `fuzz_seeds`.
 
+After the suite, the Windows job of CI runs two PowerShell checks that no Rust test can
+make: `scripts/check-deps.ps1`, which fails if `mqrust.exe` imports anything but Windows
+system DLLs (the static CRT is what makes it run on a machine with nothing installed), and
+`scripts/service-check.ps1`, which installs the broker as a service under a name of its own,
+starts it, waits for both ports and for the log, then stops and removes it. Both run on a
+development machine too, against `target\release\mqrust.exe`.
+
 The Java side lives in `tests/java-it` and talks to a running broker with the real ActiveMQ
 driver, built for two client versions:
 
