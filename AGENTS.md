@@ -74,7 +74,12 @@ Modes: `accept`, `integration`, `console`, `tls`, `compression`, `compression-go
 
 The fuzz targets live in `fuzz/`, a package of its own so that nothing in the broker's build
 sees them: they need a nightly toolchain and libFuzzer, which the Windows release build does
-not have.
+not have. A fresh machine has neither, and installing them takes a few minutes:
+
+```
+rustup toolchain install nightly --profile minimal
+cargo install cargo-fuzz --locked
+```
 
 ```
 mkdir -p fuzz/corpus/decode_frame
@@ -97,7 +102,8 @@ inside `cargo test --release`, together with a seeded sweep of random and mutate
 that replay is what guards these entry points on Windows and macOS, where the fuzzer does
 not run, so a crash belongs in `fuzz/seeds` as a file and its shape in a test.
 
-Before adding a dependency, and whenever the lockfile moves, run `cargo audit`: the
+Before adding a dependency, and whenever the lockfile moves, run `cargo audit`
+(`cargo install cargo-audit --locked` on a machine that does not have it): the
 `guardrails/scan` check on a pull request fails on an unmaintained or vulnerable crate, and
 its finding is only readable on the Guardrails dashboard, which an agent cannot open.
 
@@ -113,6 +119,33 @@ Releasing is automatic and driven by `Cargo.toml`. Set a non-pre-release version
 `release-tag.yml` creates the tag `vx.y.z` and starts `build.yml` on it, which builds the
 archives and publishes the GitHub Release with the CHANGELOG section as its body. A version
 ending in `-dev` is never tagged.
+
+## Measurements the development machine owes
+
+Some tasks cannot be done from a container or a hosted runner, and the numbers they produce
+are published in the README, so they are worth leaving to the machine they were measured on:
+
+- **Load tests and the ActiveMQ comparison** (`scripts/compare-activemq.ps1`,
+  `scripts/soak-compare.ps1`, the Java `bench` mode). A hosted runner is four shared vCPUs
+  and 16 GB with no CPU pinning: it cannot hold an 8 GB JVM heap beside the broker, and its
+  throughput varies enough that the figures would not be comparable with those already in
+  the README, measured on a Xeon W-2123 with 31.7 GB. CI can prove the harness still runs;
+  it cannot produce the comparison.
+- **Windows Sandbox**, for the clean-machine test: Sandbox needs nested virtualization,
+  which the standard hosted runners do not have. What the test proves about the executable
+  having no dependencies is checked on every run by `scripts/check-deps.ps1`.
+- **criterion baselines**: a benchmark number from a shared runner tracks regressions, it is
+  not a performance figure. `cargo bench -- --save-baseline <name>` belongs to one machine.
+
+## What a fresh session does not inherit
+
+The repository is the memory: `openspec/specs` says what the broker does, `openspec/changes`
+what is planned and how far it got, the archive why each shipped change was shaped that way,
+this file how to work on it, and the commit messages the reasoning behind a diff. Nothing
+else survives. A new container has no nightly toolchain, no `cargo-fuzz`, no `cargo-audit`,
+an empty `fuzz/corpus` (the seeds are committed, the working corpus is not) and no trace of
+what the last session tried and rejected. So anything worth knowing tomorrow goes into one
+of those files today, not into a reply.
 
 ## Conventions that bite
 
