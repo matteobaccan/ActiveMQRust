@@ -9,10 +9,10 @@
 - [x] 2.1 Windows-only dependencies, service and version resource behind `cfg(windows)`
 - [x] 2.2 Process memory on macOS with `proc_pid_rusage`; SO_REUSEADDR on Unix
 - [x] 2.3 Clippy clean for `aarch64-apple-darwin` (type-checked from Windows)
-- [ ] 2.4 First CI run green on macOS (link, tests, memory figures non-zero)
+- [x] 2.4 First CI run green on macOS (link, tests, memory figures non-zero; the figures are now asserted by `process_memory_reports_both_figures`, which runs on Windows and macOS)
 
 ## 3. Tooling and docs
 
 - [x] 3.1 `rustfmt.toml`, `.gitattributes`, `scripts/test.cmd` and `scripts/test.ps1`
 - [x] 3.2 README badge, "Download" section and test script in "Build"
-- [ ] 3.3 First release `v0.3.0` published with both archives
+- [x] 3.3 First release `v0.3.0` published with both archives (2026-10-06, with the Windows symbols archive as well)

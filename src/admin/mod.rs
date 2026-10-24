@@ -548,6 +548,24 @@ pub fn fmt_expiration(exp: i64, now: i64) -> String {
 mod tests {
     use super::*;
 
+    /// The console and its charts are empty without these two figures, and the calls that
+    /// read them are platform code that only the platform's own CI run compiles. The test
+    /// itself compiles everywhere, so a mistake in it does not wait for that run.
+    #[test]
+    fn process_memory_reports_both_figures() {
+        let (working_set, private) = process_memory();
+        if cfg!(any(windows, target_os = "macos")) {
+            assert!(working_set > 0, "working set / resident size reads 0");
+            assert!(private > 0, "private bytes / physical footprint reads 0");
+        } else {
+            assert_eq!(
+                (working_set, private),
+                (0, 0),
+                "only Windows and macOS have an implementation"
+            );
+        }
+    }
+
     #[test]
     fn redirect_targets_stay_local() {
         assert_eq!(safe_next(Some("/queues?refresh=5")), "/queues?refresh=5");
