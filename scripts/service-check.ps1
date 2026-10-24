@@ -69,9 +69,19 @@ $brokerExe = Join-Path $workDir 'mqrust.exe'
 Copy-Item $source $brokerExe
 $configFile = Join-Path $workDir 'mqrust.toml'
 $logFile = Join-Path $workDir 'logs\mqrust.log'
-@"
-# Written by scripts\service-check.ps1. The password is not a secret: this broker listens on
-# this machine only and the service is removed when the check ends.
+
+# The console needs a credential and this check has nobody to log in: a password that lives
+# for the few seconds of the run, written down only as the Argon2id hash the broker computes
+# for it, which is what an operator is told to put in the file anyway.
+$secret = [guid]::NewGuid().ToString('N')
+$hash = (($secret | & $brokerExe hash-password --password-stdin) | Out-String).Trim()
+if ($LASTEXITCODE -ne 0 -or -not $hash.StartsWith('$argon2id$')) {
+    throw "hash-password returned no hash: $hash"
+}
+# .Replace, not -replace: an Argon2id hash is full of dollar signs and a regex replacement
+# would read them as group references.
+(@"
+# Written by scripts\service-check.ps1 and thrown away with the service at the end.
 [broker]
 port = $Port
 allow_anonymous = true
@@ -79,8 +89,8 @@ allow_anonymous = true
 [admin]
 port = $AdminPort
 username = "admin"
-password = "service-check-only"
-"@ | Set-Content -Path $configFile -Encoding utf8
+password_hash = "ARGON2ID_HASH"
+"@).Replace('ARGON2ID_HASH', $hash) | Set-Content -Path $configFile -Encoding utf8
 
 try {
     Step 'the configuration is valid'
