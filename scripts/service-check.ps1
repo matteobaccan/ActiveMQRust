@@ -69,18 +69,7 @@ $brokerExe = Join-Path $workDir 'mqrust.exe'
 Copy-Item $source $brokerExe
 $configFile = Join-Path $workDir 'mqrust.toml'
 $logFile = Join-Path $workDir 'logs\mqrust.log'
-
-# The console needs a credential and this check has nobody to log in: a password that lives
-# for the few seconds of the run, written down only as the Argon2id hash the broker computes
-# for it, which is what an operator is told to put in the file anyway.
-$secret = [guid]::NewGuid().ToString('N')
-$hash = (($secret | & $brokerExe hash-password --password-stdin) | Out-String).Trim()
-if ($LASTEXITCODE -ne 0 -or -not $hash.StartsWith('$argon2id$')) {
-    throw "hash-password returned no hash: $hash"
-}
-# .Replace, not -replace: an Argon2id hash is full of dollar signs and a regex replacement
-# would read them as group references.
-(@"
+@"
 # Written by scripts\service-check.ps1 and thrown away with the service at the end.
 [broker]
 port = $Port
@@ -88,11 +77,18 @@ allow_anonymous = true
 
 [admin]
 port = $AdminPort
-username = "admin"
-password_hash = "ARGON2ID_HASH"
-"@).Replace('ARGON2ID_HASH', $hash) | Set-Content -Path $configFile -Encoding utf8
+"@ | Set-Content -Path $configFile -Encoding utf8
+
+# The console needs a credential and this check has nobody to log in with: a secret that
+# lives for the seconds of the run, never written down. `set-admin` takes it the way an
+# operator gives it and stores its Argon2id hash, so no password reaches the file.
+$secret = [guid]::NewGuid().ToString('N')
 
 try {
+    Step 'set the console credential, the way the getting started says to'
+    $secret | & $brokerExe --config $configFile set-admin --username admin --password-stdin
+    if ($LASTEXITCODE -ne 0) { throw "set-admin exited $LASTEXITCODE" }
+
     Step 'the configuration is valid'
     & $brokerExe --config $configFile check-config
     if ($LASTEXITCODE -ne 0) { throw "check-config exited $LASTEXITCODE" }
