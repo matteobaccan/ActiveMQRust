@@ -6,6 +6,7 @@
 
 use bytes::Bytes;
 use std::collections::VecDeque;
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -33,6 +34,26 @@ fn broker_with(f: impl FnOnce(&mut FileConfig)) -> Arc<Broker> {
     ))
 }
 
+/// One listener serving every client that connects to it, the way the broker's own does:
+/// what a test needs to open more connections than a listener each.
+async fn serve_many(b: &Arc<Broker>) -> SocketAddr {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let broker = b.clone();
+    tokio::spawn(async move {
+        loop {
+            let (s, remote) = listener.accept().await.unwrap();
+            let broker = broker.clone();
+            tokio::spawn(async move {
+                let (tx, rx) = tokio::sync::watch::channel(false);
+                mqrust::connection::serve(s, remote, broker, rx).await;
+                drop(tx);
+            });
+        }
+    });
+    addr
+}
+
 /// A minimal OpenWire client speaking version 12 loose encoding.
 struct Wire {
     r: OwnedReadHalf,
@@ -46,7 +67,7 @@ struct Wire {
 }
 
 impl Wire {
-    /// Connects a new client to `b` and logs in with the default credentials.
+    /// Connects a new client to `b`, on a listener that serves it alone, and logs in.
     async fn open(b: &Arc<Broker>, conn: &str) -> Wire {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -57,6 +78,12 @@ impl Wire {
             mqrust::connection::serve(s, remote, broker, rx).await;
             drop(tx);
         });
+        Wire::connect(addr, conn).await
+    }
+
+    /// Connects a new client to a listener that is already accepting, and logs in with the
+    /// default credentials.
+    async fn connect(addr: SocketAddr, conn: &str) -> Wire {
         let (r, w) = TcpStream::connect(addr).await.unwrap().into_split();
         let mut wire = Wire {
             r,
@@ -1099,4 +1126,53 @@ async fn a_frame_nested_without_end_closes_only_its_connection() {
     let m = c.message(&q, "still alive");
     assert_ok(&c.send(m).await);
     assert_eq!(b.get_dest(&q).unwrap().snapshot().pending, 1);
+}
+
+/// Thousands of connections opening and closing on one listener, the way a client pool that
+/// reconnects on every message does. Each one logs in and sends; every other one also opens
+/// a consumer, takes what it is given and dies without acknowledging. What must come out of
+/// it is a broker that holds nothing: no connection left registered, no consumer left on the
+/// destination, and every message still there, back in the queue.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn thousands_of_connections_open_and_close() {
+    let b = broker_with(|_| {});
+    let addr = serve_many(&b).await;
+    let q = Destination::queue("CHURN");
+    let rounds = 30;
+    let at_once = 100;
+    for round in 0..rounds {
+        let mut clients = Vec::new();
+        for i in 0..at_once {
+            let q = q.clone();
+            clients.push(tokio::spawn(async move {
+                let mut c = Wire::connect(addr, &format!("ID:churn-{round}-{i}")).await;
+                let m = c.message(&q, &format!("churn-{round}-{i}"));
+                assert_ok(&c.send(m).await);
+                if i % 2 == 0 {
+                    // A consumer that goes away with the message it was handed: the broker
+                    // has to take it back, here and a thousand times over.
+                    assert_ok(&c.consume(1, &q, 1).await);
+                    let _ = c.dispatch(200).await;
+                }
+                // The socket closes with the client: no ShutdownInfo, nothing acknowledged.
+            }));
+        }
+        for c in clients {
+            c.await.unwrap();
+        }
+    }
+    let sent = rounds * at_once;
+    eventually("every connection to be unregistered", || b.connections().is_empty()).await;
+    let d = b.get_dest(&q).unwrap();
+    eventually("every consumer to be removed", || !d.has_consumers()).await;
+    let snap = d.snapshot();
+    assert_eq!(snap.pending, sent, "every message sent is in the queue");
+    assert_eq!(snap.inflight, 0, "nothing is left held by a connection that is gone");
+    assert!(snap.consumers.is_empty());
+    assert_eq!(snap.stats.enqueued, sent as u64);
+
+    // And the broker goes on serving, on the same listener.
+    let mut c = Wire::connect(addr, "ID:churn-after").await;
+    assert_ok(&c.consume(1, &q, 10).await);
+    assert!(c.dispatch(5000).await.is_some(), "the backlog is still served");
 }

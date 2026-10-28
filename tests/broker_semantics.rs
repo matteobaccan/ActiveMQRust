@@ -954,6 +954,153 @@ fn memory_accounting_up_and_down() {
     assert_eq!(b.memory.used(), base);
 }
 
+// -- stress: a backlog driven to the limit, and consumers that do not keep up ---------
+
+#[test]
+fn a_backlog_driven_to_the_limit_counts_every_message() {
+    use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+
+    let b = broker_with(|f| f.broker.max_memory_mb = Some(4));
+    let limit = 4 * 1024 * 1024u64;
+    let q = Destination::queue("STRESS.LIMIT");
+    let body = "x".repeat(64 * 1024);
+    let producers = 8u64;
+    let each = 250u64;
+    let accepted = AtomicU64::new(0);
+    let refused_sync = AtomicU64::new(0);
+    let refused_async = AtomicU64::new(0);
+    std::thread::scope(|s| {
+        for p in 0..producers {
+            let (b, q, body) = (&b, &q, body.as_str());
+            let (accepted, refused_sync, refused_async) = (&accepted, &refused_sync, &refused_async);
+            s.spawn(move || {
+                for i in 0..each {
+                    // Half the sends wait for an answer and half do not: both refusals run.
+                    let sync = (p + i) % 2 == 0;
+                    let counter = match b.deliver(msg(q, body), sync, now_ms()) {
+                        Ok(()) => accepted,
+                        Err(_) if sync => refused_sync,
+                        Err(_) => refused_async,
+                    };
+                    counter.fetch_add(1, Relaxed);
+                }
+            });
+        }
+    });
+    let (ok, no_sync, no_async) = (
+        accepted.load(Relaxed),
+        refused_sync.load(Relaxed),
+        refused_async.load(Relaxed),
+    );
+    assert_eq!(
+        ok + no_sync + no_async,
+        producers * each,
+        "every send ended one way or the other"
+    );
+    assert!(
+        no_sync > 0 && no_async > 0,
+        "the limit refused sends of both kinds: {no_sync} synchronous, {no_async} asynchronous"
+    );
+    assert!(b.memory_limited(), "the broker says it is limited");
+
+    // What the admin console reports has to add up to what happened.
+    let snap = b.get_dest(&q).unwrap().snapshot();
+    assert_eq!(snap.pending as u64, ok, "what was accepted is what is waiting");
+    assert_eq!(snap.stats.enqueued, ok);
+    assert_eq!(b.stats.messages_in.load(Relaxed), ok);
+    assert_eq!(b.stats.dropped_async.load(Relaxed), no_async);
+    assert_eq!(
+        snap.stats.discarded, no_async,
+        "an asynchronous refusal is the destination's discarded; a synchronous one is the sender's error"
+    );
+
+    // The limit is a soft bound under concurrency: the used bytes are read on admission and
+    // charged when the message is stored, so producers racing on the same reading can each
+    // slip one message past it. The bound the broker is held to is one message per producer
+    // over the limit -- on a four-core runner the backlog stops exactly at 63 messages of
+    // 64 KB in 4 MB -- and, above all, that the accounting matches what is stored.
+    let one = accounted(&msg(&q, &body));
+    assert_eq!(
+        b.memory.used(),
+        ok * one,
+        "the stored messages, and only those, are accounted"
+    );
+    assert!(
+        b.memory.used() <= limit + producers * one,
+        "{} bytes used is more than the {limit} limit plus one message per producer",
+        b.memory.used()
+    );
+
+    // Draining the backlog gives the memory back and sends are accepted again.
+    let mut c = Client::new(&b, "c1");
+    let id = subscribe(&b, &c, 1, &q, 10_000, None);
+    let got = c.drain();
+    assert_eq!(
+        got.len() as u64,
+        ok,
+        "consumers are served in full while the limit holds"
+    );
+    ack_with(&b, &q, &id, ack_type::STANDARD, None, got.last().unwrap().1);
+    assert_eq!(b.memory.used(), 0, "the accounting comes back to zero");
+    assert!(b.deliver(msg(&q, "after the storm"), true, now_ms()).is_ok());
+    assert!(!b.memory_limited());
+}
+
+#[test]
+fn a_slow_consumer_with_a_large_prefetch_holds_its_window_and_no_more() {
+    let b = broker();
+    let q = Destination::queue("STRESS.SLOW");
+    let prefetch = 1000usize;
+    let total = 2500usize;
+    // A consumer that takes everything it is allowed to and acknowledges nothing.
+    let mut slow = Client::new(&b, "slow");
+    let slow_id = subscribe(&b, &slow, 1, &q, prefetch as i32, None);
+    for i in 0..total {
+        send(&b, &q, &format!("m{i:06}"));
+    }
+    assert_eq!(
+        slow.drain().len(),
+        prefetch,
+        "it is dispatched its prefetch and not one more"
+    );
+    let snap = b.get_dest(&q).unwrap().snapshot();
+    assert_eq!(snap.inflight, prefetch);
+    assert_eq!(snap.pending, total - prefetch, "the rest waits in the queue");
+    assert!(b.memory.used() > 0, "a message held by a consumer is still accounted");
+
+    // A consumer that keeps up is served the whole backlog the slow one is not taking.
+    let mut fast = Client::new(&b, "fast");
+    let fast_id = subscribe(&b, &fast, 2, &q, 500, None);
+    let mut served = 0;
+    loop {
+        let batch = fast.drain();
+        if batch.is_empty() {
+            break;
+        }
+        assert!(batch.len() <= 500, "its own prefetch is respected too");
+        served += batch.len();
+        ack_with(&b, &q, &fast_id, ack_type::STANDARD, None, batch.last().unwrap().1);
+    }
+    assert_eq!(served, total - prefetch, "the slow consumer does not hold up the queue");
+    assert_eq!(b.get_dest(&q).unwrap().snapshot().pending, 0);
+
+    // The slow consumer goes away: its messages return to the queue and are served.
+    b.get_dest(&q).unwrap().remove_sub(&slow_id, -1, now_ms());
+    let mut returned = 0;
+    loop {
+        let batch = fast.drain();
+        if batch.is_empty() {
+            break;
+        }
+        returned += batch.len();
+        ack_with(&b, &q, &fast_id, ack_type::STANDARD, None, batch.last().unwrap().1);
+    }
+    assert_eq!(returned, prefetch, "nothing a slow consumer held is lost");
+    let snap = b.get_dest(&q).unwrap().snapshot();
+    assert_eq!((snap.pending, snap.inflight), (0, 0));
+    assert_eq!(b.memory.used(), 0, "the accounting comes back to zero");
+}
+
 #[test]
 fn duplicate_window_released_for_closed_connections() {
     let b = broker();
