@@ -6,11 +6,11 @@
 ## 2. Memory
 
 - [x] 2.1 Design and implement a safe default for `max_memory_mb` (share of physical RAM); README and template
-- [ ] 2.2 Stress test: backlog driven to the limit; refused and discarded messages counted and reported
+- [x] 2.2 Stress test: backlog driven to the limit; refused and discarded messages counted and reported
 
 ## 3. Stress
 
-- [ ] 3.1 Thousands of connections opening and closing; very slow consumers with large prefetch
+- [x] 3.1 Thousands of connections opening and closing; very slow consumers with large prefetch
 
 ## 4. Automatic restart
 
