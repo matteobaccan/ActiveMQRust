@@ -17,7 +17,8 @@
 # socket_buffer_kb = 1024              # TCP send/receive buffer per connection; 0 = OS default
 # processors = 0                       # 0 = processors in the process affinity (like the JVM)
 # allow_anonymous = false
-# max_memory_mb = 0                    # 0 = no limit
+# max_memory_mb = 2048                 # memory the messages may hold; 0 = no limit
+#                                      # [default: half the RAM, at most 2048, at least 256]
 # auto_delete_empty_after_secs = 0     # 0 = keep empty queues
 # topic_max_pending_per_consumer = 10000
 # compress_threshold_kb = 0            # 0 = never (default, best throughput); e.g. 256 = compress bodies above 256 KB to save RAM

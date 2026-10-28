@@ -623,7 +623,7 @@ async fn rollback_of_sends_releases_memory() {
 async fn memory_limit_applies_to_transacted_sends() {
     // Broker-side compression is off: the accounted size must be the body size.
     let b = broker_with(|f| {
-        f.broker.max_memory_mb = 1;
+        f.broker.max_memory_mb = Some(1);
         f.broker.compress_threshold_kb = 0;
     });
     let mut p = Wire::open(&b, "ID:txm-1").await;
