@@ -5,7 +5,7 @@
 
 ## 2. Memory
 
-- [ ] 2.1 Design and implement a safe default for `max_memory_mb` (share of physical RAM); README and template
+- [x] 2.1 Design and implement a safe default for `max_memory_mb` (share of physical RAM); README and template
 - [ ] 2.2 Stress test: backlog driven to the limit; refused and discarded messages counted and reported
 
 ## 3. Stress

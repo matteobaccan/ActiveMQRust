@@ -9,7 +9,7 @@ use tokio::net::TcpListener;
 use tokio::sync::watch;
 
 use crate::broker::Broker;
-use crate::config::{Config, ConfigSource, Secret, User, DEFAULT_PASSWORD, DEFAULT_USER};
+use crate::config::{self, Config, ConfigSource, Secret, User, DEFAULT_PASSWORD, DEFAULT_USER};
 use crate::openwire::types::MAX_VERSION;
 use crate::openwire::wireformat::{PROVIDER_NAME, PROVIDER_VERSION};
 
@@ -148,6 +148,32 @@ pub async fn run(cfg: Config, stop: StopSignal, on_ready: impl FnOnce()) -> Resu
     Ok(())
 }
 
+/// Says how much memory the messages may hold and where that number came from: a limit
+/// nobody asked for is only fair if the broker names it.
+fn memory_limit_message(cfg: &Config) {
+    let mb = cfg.max_memory_bytes / (1024 * 1024);
+    match cfg.max_memory_source {
+        config::MemorySource::Configured => {
+            tracing::info!("message memory limit {mb} MB (broker.max_memory_mb)")
+        }
+        config::MemorySource::Unlimited => {
+            tracing::info!("no message memory limit (broker.max_memory_mb = 0)")
+        }
+        config::MemorySource::Default {
+            physical_mb: Some(physical),
+        } => tracing::info!(
+            "message memory limit {mb} MB (default: half of {physical} MB of memory, \
+             at most {} and at least {})",
+            crate::machine::DEFAULT_LIMIT_MB,
+            crate::machine::MIN_LIMIT_MB
+        ),
+        config::MemorySource::Default { physical_mb: None } => tracing::warn!(
+            "message memory limit {mb} MB: the memory of this machine could not be read, \
+             so the default was used; set broker.max_memory_mb to choose it"
+        ),
+    }
+}
+
 /// Logs where the configuration comes from, the console address and users, and how to fix
 /// default or plain-text credentials.
 fn startup_messages(cfg: &Config) {
@@ -163,6 +189,7 @@ fn startup_messages(cfg: &Config) {
         "admin console on http://{console} (login with the [admin] user {})",
         cfg.admin_user.username
     );
+    memory_limit_message(cfg);
     let n = cfg.users.len();
     let anonymous = if cfg.allow_anonymous {
         ", anonymous access allowed"

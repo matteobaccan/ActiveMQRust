@@ -11,6 +11,7 @@ pub mod config;
 pub mod connection;
 pub mod cpu;
 pub mod logging;
+pub mod machine;
 pub mod openwire;
 pub mod selector;
 pub mod server;
