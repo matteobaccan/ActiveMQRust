@@ -49,7 +49,7 @@ Where it pays off compared to ActiveMQ:
 
 - Messages that **must survive** a broker restart or crash, such as orders or payments: use a persistent broker.
 - **Durable subscriptions** or **XA transactions**.
-- Backlogs **larger than the available RAM**: messages are never paged to disk. Use `max_memory_mb` to reject producers instead of running out of memory.
+- Backlogs **larger than the available RAM**: messages are never paged to disk. The broker refuses producers once its messages reach `max_memory_mb`, which by default is half the memory of the machine, at most 2 GB.
 
 After a restart the broker starts empty. Clients that use a `failover:` URL reconnect automatically.
 
@@ -183,6 +183,24 @@ password_hash = "$argon2id$..."   # written by: mqrust.exe user add app1
 ```
 
 Check a file before starting the broker with `mqrust.exe check-config --config <file>`.
+
+**Memory.** `broker.max_memory_mb` bounds what the stored messages may hold: the size of each
+body and its properties plus a small per-message overhead, not the size of the process. With
+the key absent the broker uses half of the machine's memory, at most 2048 MB and at least 256,
+and says at startup which number it chose and why:
+
+```
+INFO message memory limit 2048 MB (default: half of 32150 MB of memory, at most 2048 and at least 256)
+```
+
+Set the key to the number you want, or to `0` for no limit at all, which is how releases up to
+0.4.1 behaved. Past the limit a synchronous send is refused with `ResourceAllocationException`
+and an asynchronous one is dropped and counted, while consumers keep draining the backlog.
+
+There is no key to preallocate memory, because the broker owns no heap to pre-size: every body
+is its own allocation. If you want the pages touched up front anyway, mimalloc reads
+`MIMALLOC_RESERVE_OS_MEMORY` (for example `4GiB`), which `scripts/soak-compare.ps1` sets behind
+`-PreallocateMemory`.
 
 ### TLS
 

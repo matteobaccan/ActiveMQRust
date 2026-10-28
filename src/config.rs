@@ -21,7 +21,7 @@ pub struct BrokerSection {
     pub socket_buffer_kb: i64,
     pub processors: i64,
     pub allow_anonymous: bool,
-    pub max_memory_mb: i64,
+    pub max_memory_mb: Option<i64>,
     pub auto_delete_empty_after_secs: i64,
     pub topic_max_pending_per_consumer: i64,
     pub compress_threshold_kb: i64,
@@ -40,7 +40,7 @@ impl Default for BrokerSection {
             socket_buffer_kb: 1024,
             processors: 0,
             allow_anonymous: false,
-            max_memory_mb: 0,
+            max_memory_mb: None,
             auto_delete_empty_after_secs: 0,
             topic_max_pending_per_consumer: 10_000,
             compress_threshold_kb: 0,
@@ -225,6 +225,7 @@ pub struct Config {
     pub tls_client_auth: String,
     pub tls_client_ca: Option<PathBuf>,
     pub max_memory_bytes: u64,
+    pub max_memory_source: MemorySource,
     pub auto_delete_empty_after_secs: u64,
     pub topic_max_pending_per_consumer: u64,
     pub compress_threshold_bytes: u64,
@@ -455,6 +456,19 @@ fn resolve_from_exe(dir: &str) -> PathBuf {
         .unwrap_or_else(|| path.to_path_buf())
 }
 
+/// Where `max_memory_bytes` came from, so that the broker can say it at startup: a limit
+/// nobody asked for has to be visible.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MemorySource {
+    /// `broker.max_memory_mb` named the limit.
+    Configured,
+    /// `broker.max_memory_mb = 0`: no limit, as in releases up to 0.4.1.
+    Unlimited,
+    /// The key was absent, so the limit comes from the machine (`None` when its physical
+    /// memory could not be read).
+    Default { physical_mb: Option<u64> },
+}
+
 fn non_negative(field: &str, value: i64) -> Result<u64, ConfigError> {
     if value < 0 {
         Err(ConfigError(format!(
@@ -490,7 +504,24 @@ pub fn build(file: FileConfig, source: ConfigSource, overrides: &Overrides) -> R
             "configuration error: broker.processors = {processors} must be between 0 and 1024"
         )));
     }
-    let max_memory_mb = non_negative("broker.max_memory_mb", b.max_memory_mb)?;
+    let (max_memory_mb, max_memory_source) = match b.max_memory_mb {
+        Some(mb) => {
+            let mb = non_negative("broker.max_memory_mb", mb)?;
+            let source = if mb == 0 {
+                MemorySource::Unlimited
+            } else {
+                MemorySource::Configured
+            };
+            (mb, source)
+        }
+        None => {
+            let physical_mb = crate::machine::physical_memory_mb();
+            (
+                crate::machine::default_limit_mb(physical_mb),
+                MemorySource::Default { physical_mb },
+            )
+        }
+    };
     let auto_delete = non_negative("broker.auto_delete_empty_after_secs", b.auto_delete_empty_after_secs)?;
     let topic_pending = non_negative(
         "broker.topic_max_pending_per_consumer",
@@ -690,6 +721,7 @@ pub fn build(file: FileConfig, source: ConfigSource, overrides: &Overrides) -> R
         tls_client_auth: t.client_auth.clone(),
         tls_client_ca: file_in(&config_dir, &t.client_ca),
         max_memory_bytes: max_memory_mb * 1024 * 1024,
+        max_memory_source,
         auto_delete_empty_after_secs: auto_delete,
         topic_max_pending_per_consumer: topic_pending,
         compress_threshold_bytes: threshold_kb * 1024,
@@ -744,7 +776,8 @@ pub const TEMPLATE: &str = r#"# ActiveMQRust by Matteo Baccan
 # socket_buffer_kb = 1024              # TCP send/receive buffer per connection; 0 = OS default
 # processors = 0                       # 0 = processors in the process affinity (like the JVM)
 # allow_anonymous = false
-# max_memory_mb = 0                    # 0 = no limit
+# max_memory_mb = 2048                 # memory the messages may hold; 0 = no limit
+#                                      # [default: half the RAM, at most 2048, at least 256]
 # auto_delete_empty_after_secs = 0     # 0 = keep empty queues
 # topic_max_pending_per_consumer = 10000
 # compress_threshold_kb = 0            # 0 = never (default, best throughput); e.g. 256 = compress bodies above 256 KB to save RAM
@@ -962,14 +995,22 @@ mod tests {
     #[test]
     fn memory_and_auto_delete_keys() {
         let c = cfg(MIN).unwrap();
-        assert_eq!(c.max_memory_bytes, 0, "no memory limit by default");
+        // No key: the limit comes from the machine, within the bounds machine.rs sets.
+        let expected = crate::machine::default_limit_mb(crate::machine::physical_memory_mb());
+        assert_eq!(c.max_memory_bytes, expected * 1024 * 1024, "default from the machine");
+        assert!(matches!(c.max_memory_source, MemorySource::Default { .. }));
         assert_eq!(c.auto_delete_empty_after_secs, 0);
         let c = cfg(&format!(
             "[broker]\nmax_memory_mb = 64\nauto_delete_empty_after_secs = 30\n{MIN}"
         ))
         .unwrap();
         assert_eq!(c.max_memory_bytes, 64 * 1024 * 1024);
+        assert_eq!(c.max_memory_source, MemorySource::Configured);
         assert_eq!(c.auto_delete_empty_after_secs, 30);
+        // Zero is how an operator asks for no limit at all, as in releases up to 0.4.1.
+        let c = cfg(&format!("[broker]\nmax_memory_mb = 0\n{MIN}")).unwrap();
+        assert_eq!(c.max_memory_bytes, 0, "0 = no limit");
+        assert_eq!(c.max_memory_source, MemorySource::Unlimited);
     }
 
     #[test]

@@ -441,7 +441,7 @@ fn duplicates_are_ignored() {
 
 #[test]
 fn memory_limit_rejects_and_recovers() {
-    let b = broker_with(|f| f.broker.max_memory_mb = 1);
+    let b = broker_with(|f| f.broker.max_memory_mb = Some(1));
     let q = Destination::queue("MEM");
     let big = "x".repeat(400 * 1024);
     send(&b, &q, &big);
@@ -834,7 +834,7 @@ fn idle_destinations_are_deleted_except_dlq_and_busy_ones() {
 
 #[test]
 fn async_send_dropped_by_memory_limit_is_counted() {
-    let b = broker_with(|f| f.broker.max_memory_mb = 1);
+    let b = broker_with(|f| f.broker.max_memory_mb = Some(1));
     let q = Destination::queue("MEM.ASYNC");
     let big = "x".repeat(600 * 1024);
     send(&b, &q, &big);
@@ -861,7 +861,7 @@ fn async_send_dropped_by_memory_limit_is_counted() {
 
 #[test]
 fn memory_limit_hysteresis_and_returned_messages() {
-    let b = broker_with(|f| f.broker.max_memory_mb = 1);
+    let b = broker_with(|f| f.broker.max_memory_mb = Some(1));
     let q = Destination::queue("MEM.HYST");
     let limit = 1024 * 1024u64;
     // 20 messages of 50 KB fill about 98% of the limit; the 21st does not fit.
@@ -897,7 +897,7 @@ fn memory_limit_hysteresis_and_returned_messages() {
 
 #[test]
 fn dlq_move_is_not_refused_by_the_memory_limit() {
-    let b = broker_with(|f| f.broker.max_memory_mb = 1);
+    let b = broker_with(|f| f.broker.max_memory_mb = Some(1));
     let q = Destination::queue("MEM.DLQ");
     let mut p = msg(&q, &"z".repeat(500 * 1024));
     p.persistent = true;
@@ -913,8 +913,19 @@ fn dlq_move_is_not_refused_by_the_memory_limit() {
 }
 
 #[test]
-fn no_memory_limit_by_default() {
+fn a_memory_limit_is_set_by_default() {
+    // Half of the machine, within the bounds of machine.rs: whatever this runner has, the
+    // broker must not start without a limit.
     let b = broker();
+    let expected = mqrust::machine::default_limit_mb(mqrust::machine::physical_memory_mb());
+    assert_eq!(b.memory.limit, expected * 1024 * 1024);
+    assert!(b.memory.limit > 0, "a backlog must not be able to grow without end");
+}
+
+#[test]
+fn no_memory_limit_when_it_is_turned_off() {
+    // `max_memory_mb = 0` is how an operator asks for the behaviour of releases up to 0.4.1.
+    let b = broker_with(|f| f.broker.max_memory_mb = Some(0));
     assert_eq!(b.memory.limit, 0);
     let q = Destination::queue("MEM.NOLIMIT");
     let big = "w".repeat(4 * 1024 * 1024);

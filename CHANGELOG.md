@@ -6,6 +6,26 @@ list of merged pull requests and the compare link below it.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Changed
+
+- **The broker now limits the memory its messages may hold, by default.** With
+  `broker.max_memory_mb` absent the limit is half of the machine's physical memory, at most
+  2048 MB and at least 256; before, there was no limit unless the key was set, so a backlog
+  could grow until the operating system ran out of memory. The limit counts the accounted
+  size of stored messages, not the size of the process, and the startup log names it and
+  where it came from:
+  `message memory limit 2048 MB (default: half of 32150 MB of memory, at most 2048 and at least 256)`.
+  - `max_memory_mb = <n>` still sets the limit exactly, and **`max_memory_mb = 0` restores the
+    behaviour of releases up to 0.4.1**: no limit at all.
+  - Behaviour at the limit is unchanged: a synchronous send is refused with
+    `javax.jms.ResourceAllocationException`, an asynchronous send is dropped and counted, and
+    consumers keep receiving and acknowledging.
+  - There is no key to preallocate memory: the broker owns no heap to pre-size, so the JVM's
+    `-Xms` has no counterpart here. `MIMALLOC_RESERVE_OS_MEMORY` still asks the allocator to
+    reserve memory up front for anyone who wants to measure it.
+
 ## [0.4.1] - 2026-10-23
 
 ### Fixed

@@ -953,10 +953,10 @@ async fn json_api_contents_consumers_producers() {
         "privateBytes",
         "compressed",
         "compressDiscarded",
+        "memoryLimit",
     ] {
         assert!(ov[k].is_number(), "{k}");
     }
-    assert!(ov["memoryLimit"].is_null());
     assert_eq!(api(&c, "/api/topics").await.json(), serde_json::json!([]));
     assert_eq!(api(&c, "/api/connections").await.json(), serde_json::json!([]));
 }
@@ -1297,7 +1297,8 @@ async fn optional_feature_fields() {
 
 #[tokio::test]
 async fn overview_footer_and_version() {
-    let c = start().await;
+    // `max_memory_mb = 0` is what shows the "no limit" wording checked below.
+    let c = start_with(|fc| fc.broker.max_memory_mb = Some(0)).await;
     let token = login(&c).await;
     let r = get(&c, "/", &token).await.body;
     assert!(r.contains(&format!("<h1>ActiveMQRust {VERSION}</h1>")));
@@ -2379,7 +2380,7 @@ async fn the_overview_counts_the_messages_in_memory() {
 
 #[tokio::test]
 async fn the_overview_draws_the_memory_charts() {
-    let c = start_with(|fc| fc.broker.max_memory_mb = 1024).await;
+    let c = start_with(|fc| fc.broker.max_memory_mb = Some(1024)).await;
     let token = login(&c).await;
     // The sampler runs once a second; wait for its first reading.
     for _ in 0..40 {
@@ -2406,15 +2407,15 @@ async fn the_overview_draws_the_memory_charts() {
         "the policy is unchanged"
     );
 
-    let no_limit = start().await;
+    let no_limit = start_with(|fc| fc.broker.max_memory_mb = Some(0)).await;
     let token = login(&no_limit).await;
     let page = get(&no_limit, "/", &token).await;
-    assert!(!page.body.contains("c-limit\""), "no limit line without max_memory_mb");
+    assert!(!page.body.contains("c-limit\""), "no limit line with max_memory_mb = 0");
 }
 
 #[tokio::test]
 async fn the_history_api_returns_the_buckets() {
-    let c = start_with(|fc| fc.broker.max_memory_mb = 64).await;
+    let c = start_with(|fc| fc.broker.max_memory_mb = Some(64)).await;
     for _ in 0..40 {
         if !c.history_buckets().await.is_empty() {
             break;
