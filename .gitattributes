@@ -8,3 +8,8 @@
 *.png binary
 *.bin binary
 *.jar binary
+
+# Fuzz seeds have no extension and are the bytes the fuzzer was given, so they must never
+# be normalized; the selector seeds are the text a client writes and stay text.
+fuzz/seeds/decode_frame/** binary
+fuzz/seeds/primitive_map/** binary

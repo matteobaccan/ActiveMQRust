@@ -149,9 +149,11 @@ fn expiry_warning(leaf: &CertificateDer<'_>) -> Option<String> {
     if left <= 0 {
         Some(format!("the TLS certificate expired on {date}"))
     } else if left < EXPIRY_WARNING_DAYS * 86_400 {
+        // Rounded up: a certificate with a few hours left expires "in 1 day(s)", not in
+        // zero, and one renewed for ten days reads as ten however long the reading took.
         Some(format!(
             "the TLS certificate expires on {date}, in {} day(s)",
-            left / 86_400
+            (left + 86_399) / 86_400
         ))
     } else {
         None
@@ -238,10 +240,14 @@ mod tests {
 
     /// A self-signed certificate and its key, as PEM.
     fn self_signed(name: &str, days: i64) -> (String, String) {
+        self_signed_for(name, time::Duration::days(days))
+    }
+
+    fn self_signed_for(name: &str, valid_for: time::Duration) -> (String, String) {
         let mut params = rcgen::CertificateParams::new(vec![name.to_string()]).unwrap();
         let now = time::OffsetDateTime::now_utc();
         params.not_before = now - time::Duration::days(1);
-        params.not_after = now + time::Duration::days(days);
+        params.not_after = now + valid_for;
         params.distinguished_name = rcgen::DistinguishedName::new();
         params
             .distinguished_name
@@ -314,6 +320,23 @@ mod tests {
         assert_eq!(prepared.warnings.len(), 1, "{:?}", prepared.warnings);
         assert!(prepared.warnings[0].contains("expires on"), "{:?}", prepared.warnings);
         assert!(prepared.warnings[0].contains("10 day(s)"), "{:?}", prepared.warnings);
+    }
+
+    #[test]
+    fn a_certificate_with_hours_left_warns_in_one_day() {
+        let d = dir("hours");
+        let (cert, key) = self_signed_for("broker.example", time::Duration::hours(3));
+        std::fs::write(d.join("broker.crt"), &cert).unwrap();
+        std::fs::write(d.join("broker.key"), &key).unwrap();
+        let cfg = cfg_in(&d, |fc| {
+            fc.tls.cert = "broker.crt".into();
+            fc.tls.key = "broker.key".into();
+        })
+        .unwrap();
+        let prepared = prepare(&cfg).unwrap();
+        // Rounded up: part of a day left is a day, never "in 0 day(s)".
+        assert_eq!(prepared.warnings.len(), 1, "{:?}", prepared.warnings);
+        assert!(prepared.warnings[0].contains("in 1 day(s)"), "{:?}", prepared.warnings);
     }
 
     #[test]

@@ -1,6 +1,6 @@
 ## Why
 
-ActiveMQRust's compatibility is checked today by its own Java tests (acceptance, integration, compression, console) and by 568 selectors compared with ActiveMQ's selector engine. These tests were written together with the broker, so they share its assumptions. The Jakarta Messaging TCK (Technology Compatibility Kit) is the independent, standard suite that JMS providers use to prove conformance: running it with the ActiveMQ Java client against ActiveMQRust, and against Apache ActiveMQ 6 as a reference, shows how much of the JMS behaviour seen by applications is covered and where the two brokers differ. Target: version 0.4.0.
+ActiveMQRust's compatibility is checked today by its own Java tests (acceptance, integration, compression, console) and by 568 selectors compared with ActiveMQ's selector engine. These tests were written together with the broker, so they share its assumptions. The Jakarta Messaging TCK (Technology Compatibility Kit) is the independent, standard suite that JMS providers use to prove conformance: running it with the ActiveMQ Java client against ActiveMQRust, and against Apache ActiveMQ 6 as a reference, shows how much of the JMS behaviour seen by applications is covered and where the two brokers differ. Target: version 0.5.0.
 
 ## What Changes
 

@@ -6,6 +6,34 @@ list of merged pull requests and the compare link below it.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.4.1] - 2026-10-23
+
+### Fixed
+
+- **A frame that nests without end no longer stops the broker.** A `DestinationInfo` whose
+  `brokerPath` held another `DestinationInfo` made the decoder recurse once per level: about
+  500 levels, 11 KB on the wire, overflowed the stack of the thread decoding it, and a stack
+  overflow aborts the process with every other connection on it. It is the first frame of a
+  connection, so no login stood in the way. Data structures now nest at most 32 levels deep,
+  the limit the marshalled properties of a message already had; past it the frame is refused
+  with `data structure nested more than 32 levels deep` and only that connection is closed.
+  Every release up to 0.4.0 is affected.
+- **A selector that nests without end no longer stops the broker either.** The same shape in
+  the other parser, found by the new fuzz target: a few thousand prefix operators or open
+  parentheses in the selector of a `ConsumerInfo` recursed until the stack overflowed, and
+  the parser, the evaluation and the drop of the expression tree all walk it once per level.
+  A selector now nests at most 64 levels deep, where a real one nests a handful; past it the
+  subscription is refused with an `InvalidSelectorException` and the connection carries on.
+  Every release up to 0.4.0 is affected.
+
+### Added
+
+- **Fuzz targets for the frame decoder, the message properties and the selector parser**
+  under `fuzz/`, run with `cargo +nightly fuzz run <target>`, with their seeds kept in the
+  repository. `cargo test --release` replays those seeds and sweeps seeded random and
+  mutated input over the same entry points (`tests/fuzz_seeds.rs`), so what the fuzzer
+  finds stays guarded on Windows and macOS, where the fuzzer itself does not run.
+
 ## [0.4.0] - 2026-10-21
 
 ### Added

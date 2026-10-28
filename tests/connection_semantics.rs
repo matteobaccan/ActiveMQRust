@@ -1044,3 +1044,59 @@ async fn duplicate_windows_are_released_when_the_connection_closes() {
         "window forgotten with the old connection"
     );
 }
+
+/// A `DestinationInfo` whose `brokerPath` holds another `DestinationInfo`, `levels` deep,
+/// with the four-byte size prefix a client would put in front of it.
+fn nested_destination_info_frame(levels: usize) -> Vec<u8> {
+    let mut body: Vec<u8> = vec![t::DESTINATION_INFO];
+    for _ in 0..levels {
+        body.extend_from_slice(&1i32.to_be_bytes()); // header.command_id
+        body.extend_from_slice(&[0, 0, 0, 0]); // response_required, connection_id, destination, operation_type
+        body.extend_from_slice(&0i64.to_be_bytes()); // timeout
+        body.push(1); // broker_path: present
+        body.extend_from_slice(&1i16.to_be_bytes()); // with one element
+        body.extend_from_slice(&[1, t::DESTINATION_INFO]); // which is another DestinationInfo
+    }
+    body.extend_from_slice(&1i32.to_be_bytes());
+    body.extend_from_slice(&[0, 0, 0, 0]);
+    body.extend_from_slice(&0i64.to_be_bytes());
+    body.push(0); // innermost broker_path: absent, the nesting stops here
+    let mut frame = (body.len() as u32).to_be_bytes().to_vec();
+    frame.extend_from_slice(&body);
+    frame
+}
+
+/// Before the decoder counted its nesting, 12 KB of this frame recursed until the stack of
+/// the thread decoding it overflowed, which aborts the process and with it every connection
+/// of the broker. It is the first frame of the connection, so no login stands in its way.
+#[tokio::test]
+async fn a_frame_nested_without_end_closes_only_its_connection() {
+    let b = broker_with(|_| {});
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let broker = b.clone();
+    tokio::spawn(async move {
+        let (s, remote) = listener.accept().await.unwrap();
+        let (tx, rx) = tokio::sync::watch::channel(false);
+        mqrust::connection::serve(s, remote, broker, rx).await;
+        drop(tx);
+    });
+    let mut hostile = TcpStream::connect(addr).await.unwrap();
+    hostile.write_all(&nested_destination_info_frame(2000)).await.unwrap();
+
+    // The broker refuses the frame and closes this connection, without answering.
+    let mut buf = [0u8; 1];
+    let read = tokio::time::timeout(Duration::from_secs(10), hostile.read(&mut buf)).await;
+    assert_eq!(
+        read.expect("connection closed").unwrap(),
+        0,
+        "the connection stays open"
+    );
+
+    // And it is still there for everybody else.
+    let q = Destination::queue("AFTER.NESTING");
+    let mut c = Wire::open(&b, "ID:after-nesting").await;
+    let m = c.message(&q, "still alive");
+    assert_ok(&c.send(m).await);
+    assert_eq!(b.get_dest(&q).unwrap().snapshot().pending, 1);
+}

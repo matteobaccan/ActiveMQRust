@@ -1,0 +1,48 @@
+# ActiveMQRust by Matteo Baccan
+# SPDX-License-Identifier: MIT
+#
+# The fuzz targets. This is a package of its own, so `cargo build`, `cargo clippy` and
+# `cargo test` at the repository root never see it: it needs a nightly toolchain and
+# libFuzzer, which the Windows release build does not have. See AGENTS.md.
+
+[package]
+name = "mqrust-fuzz"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[workspace]
+
+[dependencies]
+bytes = "1"
+libfuzzer-sys = "0.4"
+
+[dependencies.mqrust]
+path = ".."
+
+[profile.release]
+debug = true
+
+[[bin]]
+name = "decode_frame"
+path = "fuzz_targets/decode_frame.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "primitive_map"
+path = "fuzz_targets/primitive_map.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "selector"
+path = "fuzz_targets/selector.rs"
+test = false
+doc = false
+bench = false

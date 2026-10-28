@@ -60,5 +60,5 @@
 
 - [x] 9.1 Acceptance scenario 3 passes against `mqrust.exe` started with no arguments (both profiles)
 - [x] 9.2 The idle connection test (over 60 s) passes
-- [ ] 9.3 The clean-machine test in Windows Sandbox passes (executable alone, scenario 3)
-- [ ] 9.4 Install, start, stop, uninstall the service on the development machine and check `mqrust.log`
+- [x] 9.3 The clean-machine test in Windows Sandbox passes (executable alone, scenario 3)
+- [x] 9.4 Install, start, stop, uninstall the service on the development machine and check `mqrust.log` (`scripts/service-check.ps1`, run by the Windows job of CI and by hand on a development machine)

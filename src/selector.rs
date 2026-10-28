@@ -705,9 +705,15 @@ impl LikeMatcher {
 //
 // As in ActiveMQ, NOT binds tighter than comparisons: `NOT a = 1` is `(NOT a) = 1`.
 
+/// Deepest nesting accepted in a selector. Real ones nest a handful of levels; a selector
+/// that goes deeper is hostile, and the parser, the evaluator and the drop of the tree all
+/// recurse once per level.
+const MAX_DEPTH: u32 = 64;
+
 struct Parser<'a> {
     toks: &'a [Lexed],
     pos: usize,
+    depth: u32,
 }
 
 impl<'a> Parser<'a> {
@@ -928,7 +934,23 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Every cycle of the grammar passes through here: a parenthesised expression returns
+    /// to `or_expr` through `primary`, and a prefix operator comes straight back. Counting
+    /// the levels here is what keeps the tree, and the recursion over it, bounded.
     fn unary(&mut self) -> Result<Expr, SelectorError> {
+        if self.depth == MAX_DEPTH {
+            return Err(error(
+                self.col(),
+                format!("Selector nested more than {MAX_DEPTH} levels deep"),
+            ));
+        }
+        self.depth += 1;
+        let e = self.nested_unary();
+        self.depth -= 1;
+        e
+    }
+
+    fn nested_unary(&mut self) -> Result<Expr, SelectorError> {
         let col = self.col();
         match self.peek() {
             Tok::Plus => {
@@ -1056,7 +1078,11 @@ impl Selector {
             return Ok(None);
         }
         let toks = lex(text)?;
-        let mut p = Parser { toks: &toks, pos: 0 };
+        let mut p = Parser {
+            toks: &toks,
+            pos: 0,
+            depth: 0,
+        };
         let expr = p.or_expr()?;
         if p.peek() != &Tok::End {
             return Err(p.error_here("end of selector"));
@@ -2042,6 +2068,20 @@ mod tests {
             compile("JMSXUserID = 'x'").uses_properties(),
             "JMSXUserID falls back to a property"
         );
+    }
+
+    #[test]
+    fn a_selector_nested_without_end_is_refused_not_followed() {
+        // The fuzzer found this one: 3.5 KB of prefix operators recursed once per operator
+        // until the stack overflowed, which aborts the broker, not the connection that
+        // subscribed. Parentheses nest the same way through `primary`.
+        for text in [&"+".repeat(100_000), &"(".repeat(100_000)] {
+            let e = Selector::compile(text).expect_err("a selector nested 100000 deep");
+            assert!(e.message.contains("nested more than 64 levels deep"), "{}", e.message);
+        }
+        // What a client really writes still compiles, nesting and all.
+        assert!(compile("((color = 'red' OR size > 2) AND NOT (flag = FALSE))").matches(&msg()));
+        assert!(compile(&format!("{}1 = 1{}", "(".repeat(60), ")".repeat(60))).matches(&msg()));
     }
 
     #[test]
